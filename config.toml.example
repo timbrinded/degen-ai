@@ -1,0 +1,18 @@
+[hyperliquid]
+account_address = "0x..."
+secret_key = "0x..."
+base_url = "https://api.hyperliquid-testnet.xyz"
+
+[llm]
+provider = "openai"  # or "anthropic"
+model = "gpt-4"
+api_key = "sk-..."
+temperature = 0.7
+max_tokens = 1000
+
+[agent]
+tick_interval_seconds = 60
+max_retries = 5
+retry_backoff_base = 2.0
+log_level = "INFO"
+prompt_template_path = "prompts/default.txt"
