@@ -1,23 +1,24 @@
 ---
 title: "MarkFix Mean Revert"
 id: markfix-mean-revert
-version: "1.1"
-date: "2025-10-21"
 markets: ["perps"]
-directionality: "reversion"
+directionality: "mean-reversion"
 risk_profile: "moderate"
-leverage: "1x–2x"
-latency_tolerance: "minutes"
-llm_compatibility: "high"
-execution_style: "taker on confirm; maker for partial adds"
-capital_floor: 300
-expected_trades_per_week: 2-6
-fees_sensitivity: "medium"
-profitability_likelihood: "medium"
-hyperliquid_fit: "Good if mark-index gaps persist for minutes"
-data_inputs: ["mark minus index","ATR","vol regime","spread"]
-tags: ["basis","reversion"]
-status: "draft"
+tags: ["basis", "reversion"]
+
+# Governance Metadata
+intended_horizon: "minutes"
+minimum_dwell_minutes: 30
+compatible_regimes: ["range-bound", "carry-friendly"]
+avoid_regimes: ["event-risk", "trending"]
+invalidation_triggers:
+  - "Mark-index gap widens beyond 2x entry threshold"
+  - "Volatility regime flips: realized vol exceeds 80th percentile"
+  - "Event tape detected: breaking news or rapid repricing begins"
+  - "Time stop reached: gap persists for more than 20 minutes without convergence"
+max_position_pct: 25.0
+max_leverage: 2.0
+expected_switching_cost_bps: 22.0
 ---
 
 ## Quick Read — Preconditions

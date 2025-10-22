@@ -1,23 +1,24 @@
 ---
 title: "Funding Flip Fade"
 id: funding-flip-fade
-version: "1.1"
-date: "2025-10-21"
 markets: ["perps"]
 directionality: "contrarian"
 risk_profile: "moderate"
-leverage: "1x–4x"
-latency_tolerance: "minutes"
-llm_compatibility: "high"
-execution_style: "limit ladder entries; taker exits"
-capital_floor: 500
-expected_trades_per_week: 2-8
-fees_sensitivity: "medium"
-profitability_likelihood: "medium (better on HL given volatile funding)"
-hyperliquid_fit: "Good (funding extremes common)"
-data_inputs: ["funding_rate z-score","open_interest","price trend","ATR"]
-tags: ["mean-reversion","funding"]
-status: "draft"
+tags: ["mean-reversion", "funding"]
+
+# Governance Metadata
+intended_horizon: "hours"
+minimum_dwell_minutes: 90
+compatible_regimes: ["range-bound", "carry-friendly"]
+avoid_regimes: ["trending", "event-risk"]
+invalidation_triggers:
+  - "Funding z-score returns to neutral band (abs(z) < 0.5) for 4 consecutive windows"
+  - "Fresh breaking news or major market event announced"
+  - "Strong breakout confirmed with volume surge and ADX > 30"
+  - "Time stop reached: position held for more than 24 hours without mean reversion"
+max_position_pct: 35.0
+max_leverage: 4.0
+expected_switching_cost_bps: 12.0
 ---
 
 ## Quick Read — Preconditions

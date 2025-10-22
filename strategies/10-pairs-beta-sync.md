@@ -1,23 +1,25 @@
 ---
 title: "Pairs Beta Sync"
 id: pairs-beta-sync
-version: "1.1"
-date: "2025-10-21"
-markets: ["perps","spot (optional)"]
+markets: ["perps", "spot"]
 directionality: "relative-value"
 risk_profile: "moderate"
-leverage: "1x–2x"
-latency_tolerance: "minutes-hours"
-llm_compatibility: "high"
-execution_style: "maker legs where possible"
-capital_floor: 800
-expected_trades_per_week: 1-4
-fees_sensitivity: "medium"
-profitability_likelihood: "medium (liquidity-dependent)"
-hyperliquid_fit: "Better with sector-mates and ETH beta"
-data_inputs: ["prices","rolling beta","cointegration test","spread volatility"]
-tags: ["pairs","stat-arb","hedged"]
-status: "draft"
+tags: ["pairs", "stat-arb", "hedged"]
+
+# Governance Metadata
+intended_horizon: "hours"
+minimum_dwell_minutes: 120
+compatible_regimes: ["range-bound", "carry-friendly"]
+avoid_regimes: ["event-risk"]
+invalidation_triggers:
+  - "Cointegration relationship breaks: rolling beta changes by more than 30%"
+  - "Protocol news or token listing announced affecting one leg"
+  - "Time stop reached: spread half-life elapsed without mean reversion"
+  - "Spread volatility spike: spread vol exceeds 2x historical average"
+  - "Leg synchronization fails: unable to execute both legs within 5 minutes"
+max_position_pct: 40.0
+max_leverage: 2.0
+expected_switching_cost_bps: 25.0
 ---
 
 ## Quick Read — Preconditions

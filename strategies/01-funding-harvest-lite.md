@@ -1,31 +1,24 @@
 ---
 title: "Funding Harvest Lite"
 id: funding-harvest-lite
-version: "1.1"
-date: "2025-10-21"
-markets: ["perps", "spot (optional)"]
-directionality: "delta-neutral preferred"
+markets: ["perps", "spot"]
+directionality: "delta-neutral"
 risk_profile: "conservative"
-leverage: "1x–3x"
-latency_tolerance: "minutes"
-llm_compatibility: "high"
-execution_style: "maker for perp legs where possible; taker for hedges"
-capital_floor: 500
-expected_trades_per_week: 3-10
-fees_sensitivity: "medium"
-profitability_likelihood: "medium–high (HL-specific; assume selective entries)"
-hyperliquid_fit: "Good (volatile funding, low gas, cheap taker when needed)"
-data_inputs:
-  [
-    "funding_rate (actual & predicted)",
-    "index_price",
-    "mark_price",
-    "spot depth (if used)",
-    "fees",
-    "ATR or RV",
-  ]
 tags: ["carry", "hedged", "delta-neutral"]
-status: "draft"
+
+# Governance Metadata
+intended_horizon: "hours"
+minimum_dwell_minutes: 120
+compatible_regimes: ["carry-friendly", "range-bound"]
+avoid_regimes: ["event-risk", "trending"]
+invalidation_triggers:
+  - "Funding rate flips sign and remains negative for 3 consecutive windows"
+  - "Mark-index divergence exceeds 50 bps for more than 15 minutes"
+  - "Spot depth collapses below 50% of 24h average"
+  - "Delta drift exceeds 0.08 notional despite rehedging attempts"
+max_position_pct: 40.0
+max_leverage: 3.0
+expected_switching_cost_bps: 15.0
 ---
 
 ## Quick Read — Preconditions

@@ -1,23 +1,24 @@
 ---
 title: "Compression Pop"
 id: compression-pop
-version: "1.1"
-date: "2025-10-21"
-markets: ["perps","spot"]
-directionality: "directional breakout"
+markets: ["perps", "spot"]
+directionality: "directional"
 risk_profile: "moderate"
-leverage: "1x–4x"
-latency_tolerance: "minutes"
-llm_compatibility: "medium-high"
-execution_style: "taker on trigger; maker for retest adds"
-capital_floor: 300
-expected_trades_per_week: 2-6
-fees_sensitivity: "medium"
-profitability_likelihood: "medium"
-hyperliquid_fit: "Good on majors; verify noise on small caps"
-data_inputs: ["range width","ATR","volume surge","OB sweep"]
-tags: ["breakout","volatility expansion"]
-status: "draft"
+tags: ["breakout", "volatility-expansion"]
+
+# Governance Metadata
+intended_horizon: "hours"
+minimum_dwell_minutes: 60
+compatible_regimes: ["range-bound", "trending"]
+avoid_regimes: ["event-risk"]
+invalidation_triggers:
+  - "Price closes back inside the compression box after 3 bars"
+  - "Volume surge fades: volume drops below 50% of breakout bar within 5 bars"
+  - "Time stop reached: 90 minutes elapsed without follow-through"
+  - "Fakeout pattern: price whipsaws through both box boundaries within 30 minutes"
+max_position_pct: 40.0
+max_leverage: 4.0
+expected_switching_cost_bps: 18.0
 ---
 
 ## Quick Read — Preconditions

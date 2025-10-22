@@ -1,24 +1,24 @@
 ---
 title: "Funding Calendar Clip"
 id: funding-calendar-clip
-version: "1.1"
-date: "2025-10-21"
 markets: ["perps"]
 directionality: "opportunistic"
 risk_profile: "moderate"
-leverage: "1x–3x"
-latency_tolerance: "minutes"
-llm_compatibility: "high"
-execution_style: "scheduled + event-driven"
-capital_floor: 300
-expected_trades_per_week: 3-8
-fees_sensitivity: "medium"
-profitability_likelihood: "medium"
-hyperliquid_fit: "Strong if funding behavior around windows is cyclical"
-data_inputs:
-  ["funding schedule/samples", "funding rate level", "oi rotation", "price"]
 tags: ["funding", "timing"]
-status: "draft"
+
+# Governance Metadata
+intended_horizon: "minutes"
+minimum_dwell_minutes: 60
+compatible_regimes: ["carry-friendly", "range-bound"]
+avoid_regimes: ["event-risk"]
+invalidation_triggers:
+  - "Funding rate flips sign unexpectedly during the window"
+  - "OI rotation pattern breaks: OI increases instead of rolling off"
+  - "Time stop reached: post-window period ends without expected behavior"
+  - "Price volatility spike: realized vol exceeds 2x normal during window"
+max_position_pct: 30.0
+max_leverage: 3.0
+expected_switching_cost_bps: 16.0
 ---
 
 ## Quick Read — Preconditions

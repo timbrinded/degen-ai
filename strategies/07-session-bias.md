@@ -1,23 +1,24 @@
 ---
 title: "Session Bias"
 id: session-bias
-version: "1.1"
-date: "2025-10-21"
-markets: ["perps","spot"]
-directionality: "time-of-day directional"
+markets: ["perps", "spot"]
+directionality: "directional"
 risk_profile: "moderate"
-leverage: "1x–2x"
-latency_tolerance: "high"
-llm_compatibility: "very high"
-execution_style: "scheduled"
-capital_floor: 200
-expected_trades_per_week: 5-10
-fees_sensitivity: "low–medium"
-profitability_likelihood: "medium-low → medium (only if asset shows seasonal edge)"
-hyperliquid_fit: "Simple to automate; skip on event days"
-data_inputs: ["intraday return profile","funding","volatility","macro/event calendar"]
-tags: ["seasonality","time-based"]
-status: "draft"
+tags: ["seasonality", "time-based"]
+
+# Governance Metadata
+intended_horizon: "hours"
+minimum_dwell_minutes: 180
+compatible_regimes: ["range-bound", "carry-friendly"]
+avoid_regimes: ["event-risk", "trending"]
+invalidation_triggers:
+  - "Macro event or breaking news announced during session"
+  - "Volatility exceeds 70th percentile threshold at session entry"
+  - "Session edge degrades: rolling 30-day Sharpe drops below 0.5"
+  - "Regime change detected: market transitions to strong trending behavior"
+max_position_pct: 25.0
+max_leverage: 2.0
+expected_switching_cost_bps: 10.0
 ---
 
 ## Quick Read — Preconditions
