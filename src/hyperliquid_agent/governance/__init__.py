@@ -20,7 +20,12 @@ from hyperliquid_agent.governance.regime import (
     RegimeSignals,
 )
 from hyperliquid_agent.governance.scorekeeper import PlanMetrics, ShadowPortfolio
-from hyperliquid_agent.governance.tripwire import TripwireAction, TripwireConfig, TripwireEvent
+from hyperliquid_agent.governance.tripwire import (
+    TripwireAction,
+    TripwireConfig,
+    TripwireEvent,
+    TripwireService,
+)
 
 __all__ = [
     # Plan Card
@@ -43,6 +48,7 @@ __all__ = [
     "TripwireAction",
     "TripwireEvent",
     "TripwireConfig",
+    "TripwireService",
     # Scorekeeper
     "PlanMetrics",
     "ShadowPortfolio",
