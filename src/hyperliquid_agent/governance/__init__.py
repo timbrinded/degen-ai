@@ -1,5 +1,10 @@
 """Governance system for strategy persistence and change management."""
 
+from hyperliquid_agent.governance.governor import (
+    GovernorConfig,
+    PlanChangeProposal,
+    StrategyGovernor,
+)
 from hyperliquid_agent.governance.plan_card import (
     ChangeCostModel,
     ExitRules,
@@ -22,6 +27,10 @@ __all__ = [
     "ExitRules",
     "ChangeCostModel",
     "StrategyPlanCard",
+    # Governor
+    "GovernorConfig",
+    "PlanChangeProposal",
+    "StrategyGovernor",
     # Regime
     "RegimeSignals",
     "RegimeClassification",
