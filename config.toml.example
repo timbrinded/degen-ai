@@ -1,18 +1,46 @@
+# Hyperliquid Trading Agent Configuration
+# Copy this file to config.toml and fill in your actual values
+
 [hyperliquid]
-account_address = "0x..."
-secret_key = "0x..."
+# Your Hyperliquid account address (wallet address)
+account_address = "0x0000000000000000000000000000000000000000"
+
+# Your account private key (keep this secure!)
+secret_key = "0x0000000000000000000000000000000000000000000000000000000000000000"
+
+# API base URL - use testnet for testing, mainnet for production
+# Testnet: https://api.hyperliquid-testnet.xyz
+# Mainnet: https://api.hyperliquid.xyz
 base_url = "https://api.hyperliquid-testnet.xyz"
 
 [llm]
-provider = "openai"  # or "anthropic"
+# LLM provider: "openai" or "anthropic"
+provider = "openai"
+
+# Model name (e.g., "gpt-4", "gpt-4-turbo", "claude-3-opus-20240229")
 model = "gpt-4"
+
+# API key for your LLM provider
 api_key = "sk-..."
+
+# Temperature for LLM responses (0.0-1.0, higher = more creative)
 temperature = 0.7
+
+# Maximum tokens in LLM response
 max_tokens = 1000
 
 [agent]
+# Time to wait between trading loop iterations (in seconds)
 tick_interval_seconds = 60
+
+# Maximum number of retries for failed API calls
 max_retries = 5
+
+# Base for exponential backoff (wait time = base^attempt)
 retry_backoff_base = 2.0
+
+# Logging level: "DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"
 log_level = "INFO"
+
+# Path to the prompt template file
 prompt_template_path = "prompts/default.txt"
