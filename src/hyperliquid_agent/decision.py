@@ -71,7 +71,7 @@ class PromptTemplate:
                 with open(md_file) as f:
                     post = frontmatter.load(f)
                     # Only include active or draft strategies
-                    status = post.get("status", "").lower()
+                    status = str(post.get("status", "")).lower()
                     if status in ["active", "draft"]:
                         strategies.append({"metadata": post.metadata, "content": post.content})
             except Exception:
@@ -109,7 +109,7 @@ class PromptTemplate:
         if not positions:
             return "No open positions"
 
-        lines = []
+        lines: list[str] = []
         for pos in positions:
             lines.append(
                 f"- {pos.coin} ({pos.market_type}): "
@@ -129,7 +129,7 @@ class PromptTemplate:
         if not self.strategies:
             return "No strategies available"
 
-        formatted = []
+        formatted: list[str] = []
         for strategy in self.strategies:
             meta = strategy["metadata"]
             formatted.append(
@@ -210,7 +210,10 @@ class DecisionEngine:
             Exception: If LLM query fails
         """
         if self.llm_config.provider == "openai":
-            response = self.client.chat.completions.create(
+            from openai import OpenAI
+
+            client: OpenAI = self.client  # type: ignore
+            response = client.chat.completions.create(
                 model=self.llm_config.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.llm_config.temperature,
@@ -218,13 +221,21 @@ class DecisionEngine:
             )
             return response.choices[0].message.content or ""
         elif self.llm_config.provider == "anthropic":
-            response = self.client.messages.create(
+            from anthropic import Anthropic
+            from anthropic.types import TextBlock
+
+            client: Anthropic = self.client  # type: ignore
+            response = client.messages.create(
                 model=self.llm_config.model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.llm_config.temperature,
                 max_tokens=self.llm_config.max_tokens,
             )
-            return response.content[0].text
+            # Extract text from the first text block
+            for block in response.content:
+                if isinstance(block, TextBlock):
+                    return block.text
+            return ""
         else:
             raise ValueError(f"Unsupported LLM provider: {self.llm_config.provider}")
 
