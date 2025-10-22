@@ -5,8 +5,6 @@ markets: ["perps"]
 directionality: "opportunistic"
 risk_profile: "moderate"
 tags: ["funding", "timing"]
-
-# Governance Metadata
 intended_horizon: "minutes"
 minimum_dwell_minutes: 60
 compatible_regimes: ["carry-friendly", "range-bound"]

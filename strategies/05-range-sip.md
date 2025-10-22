@@ -5,8 +5,6 @@ markets: ["perps", "spot"]
 directionality: "mean-reversion"
 risk_profile: "moderate"
 tags: ["range", "stat-arb"]
-
-# Governance Metadata
 intended_horizon: "minutes"
 minimum_dwell_minutes: 45
 compatible_regimes: ["range-bound"]

@@ -5,8 +5,6 @@ markets: ["perps", "spot"]
 directionality: "relative-value"
 risk_profile: "moderate"
 tags: ["pairs", "stat-arb", "hedged"]
-
-# Governance Metadata
 intended_horizon: "hours"
 minimum_dwell_minutes: 120
 compatible_regimes: ["range-bound", "carry-friendly"]

@@ -5,8 +5,6 @@ markets: ["perps", "spot"]
 directionality: "event-driven"
 risk_profile: "moderate"
 tags: ["events", "risk-on-off"]
-
-# Governance Metadata
 intended_horizon: "hours"
 minimum_dwell_minutes: 180
 compatible_regimes: ["event-risk"]

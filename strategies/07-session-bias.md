@@ -5,8 +5,6 @@ markets: ["perps", "spot"]
 directionality: "directional"
 risk_profile: "moderate"
 tags: ["seasonality", "time-based"]
-
-# Governance Metadata
 intended_horizon: "hours"
 minimum_dwell_minutes: 180
 compatible_regimes: ["range-bound", "carry-friendly"]

@@ -5,8 +5,6 @@ markets: ["perps"]
 directionality: "contrarian"
 risk_profile: "moderate"
 tags: ["mean-reversion", "funding"]
-
-# Governance Metadata
 intended_horizon: "hours"
 minimum_dwell_minutes: 90
 compatible_regimes: ["range-bound", "carry-friendly"]

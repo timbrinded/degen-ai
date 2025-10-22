@@ -5,8 +5,6 @@ markets: ["perps", "spot"]
 directionality: "directional"
 risk_profile: "moderate"
 tags: ["trend", "systematic"]
-
-# Governance Metadata
 intended_horizon: "days"
 minimum_dwell_minutes: 240
 compatible_regimes: ["trending"]

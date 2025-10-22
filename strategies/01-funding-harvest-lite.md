@@ -5,8 +5,6 @@ markets: ["perps", "spot"]
 directionality: "delta-neutral"
 risk_profile: "conservative"
 tags: ["carry", "hedged", "delta-neutral"]
-
-# Governance Metadata
 intended_horizon: "hours"
 minimum_dwell_minutes: 120
 compatible_regimes: ["carry-friendly", "range-bound"]

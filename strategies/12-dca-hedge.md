@@ -5,8 +5,6 @@ markets: ["spot", "perps"]
 directionality: "accumulation"
 risk_profile: "conservative"
 tags: ["spot", "hedged", "portfolio"]
-
-# Governance Metadata
 intended_horizon: "days"
 minimum_dwell_minutes: 1440
 compatible_regimes: ["range-bound", "carry-friendly", "trending"]
