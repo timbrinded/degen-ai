@@ -12,13 +12,14 @@ dependencies = [
     "python-frontmatter>=1.0.0",
     "tomli>=2.0.0; python_version < '3.11'",
     "eth-account>=0.13.7",
+    "colorama>=0.4.6",
 ]
 
 [project.optional-dependencies]
 dev = ["ruff>=0.8.0", "pyrefly>=0.1.0", "pytest>=8.0.0"]
 
 [project.scripts]
-hyperliquid-agent = "hyperliquid_agent.cli:main"
+degen = "hyperliquid_agent.cli:main"
 
 [build-system]
 requires = ["hatchling"]

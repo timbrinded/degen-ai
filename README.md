@@ -7,6 +7,7 @@ Autonomous trading agent for the Hyperliquid platform using LLM-based decision m
 This agent runs continuously in an unsupervised loop, monitoring your Hyperliquid positions, consulting an LLM (Large Language Model) for trading decisions, and executing trades in both spot and perpetual markets. The goal is to maximize portfolio value through AI-powered strategic trading.
 
 The agent operates in a simple three-step cycle:
+
 1. **Monitor**: Retrieve current positions, balances, and market data from Hyperliquid
 2. **Decide**: Query an LLM with formatted market data and available trading strategies
 3. **Execute**: Submit approved trades to Hyperliquid's spot and perps markets
@@ -133,6 +134,7 @@ base_url = "https://api.hyperliquid-testnet.xyz"
 ```
 
 **Getting Hyperliquid Credentials:**
+
 - Create a wallet on [Hyperliquid](https://app.hyperliquid.xyz/)
 - For testnet, use the [testnet interface](https://app.hyperliquid-testnet.xyz/)
 - Export your private key from your wallet (MetaMask, etc.)
@@ -161,6 +163,7 @@ max_tokens = 1000
 ```
 
 **Getting LLM API Keys:**
+
 - **OpenAI**: Sign up at [platform.openai.com](https://platform.openai.com/) and create an API key
 - **Anthropic**: Sign up at [console.anthropic.com](https://console.anthropic.com/) and create an API key
 
@@ -187,6 +190,7 @@ prompt_template_path = "prompts/default.txt"
 ### Testnet vs Mainnet Configuration
 
 **Testnet Configuration (Recommended for Testing):**
+
 ```toml
 [hyperliquid]
 base_url = "https://api.hyperliquid-testnet.xyz"
@@ -194,6 +198,7 @@ base_url = "https://api.hyperliquid-testnet.xyz"
 ```
 
 **Mainnet Configuration (Production):**
+
 ```toml
 [hyperliquid]
 base_url = "https://api.hyperliquid.xyz"
@@ -205,6 +210,7 @@ base_url = "https://api.hyperliquid.xyz"
 The agent uses prompt templates to format data for the LLM. You can customize the default template or create new ones:
 
 1. Copy the default template:
+
 ```bash
 cp prompts/default.txt prompts/my-strategy.txt
 ```
@@ -212,12 +218,14 @@ cp prompts/default.txt prompts/my-strategy.txt
 2. Edit your template to change how the LLM receives information
 
 3. Update your config to use the new template:
+
 ```toml
 [agent]
 prompt_template_path = "prompts/my-strategy.txt"
 ```
 
 The template uses Python string formatting with these variables:
+
 - `{portfolio_value}` - Total portfolio value
 - `{available_balance}` - Available cash balance
 - `{positions}` - Formatted list of current positions
@@ -231,6 +239,7 @@ For comprehensive documentation of all configuration options, examples, and best
 **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**
 
 This guide includes:
+
 - Detailed explanation of every configuration field
 - Multiple configuration examples (testnet, mainnet, conservative, aggressive)
 - Prompt template customization guide
@@ -243,6 +252,7 @@ This guide includes:
 ### Running the Agent
 
 **Basic usage with default config:**
+
 ```bash
 hyperliquid-agent
 ```
@@ -250,11 +260,13 @@ hyperliquid-agent
 This looks for `config.toml` in the current directory.
 
 **Using a custom config file:**
+
 ```bash
 hyperliquid-agent --config path/to/my-config.toml
 ```
 
 **View help and options:**
+
 ```bash
 hyperliquid-agent --help
 ```
@@ -290,6 +302,7 @@ When you start the agent, it will:
 
 **Console Output:**
 The agent logs to console in real-time. You'll see:
+
 - Tick numbers and timestamps
 - Portfolio value and changes
 - LLM decisions and reasoning
@@ -300,6 +313,7 @@ The agent logs to console in real-time. You'll see:
 Detailed logs are written to `logs/agent.log` in JSON format for analysis.
 
 **Example Console Output:**
+
 ```
 2025-10-22 10:30:00 - INFO - Starting trading agent
 2025-10-22 10:30:00 - INFO - Starting tick 1
@@ -323,17 +337,20 @@ Press `Ctrl+C` to gracefully stop the agent. It will complete the current tick a
 ### Setup Development Environment
 
 1. Clone and enter the repository:
+
 ```bash
 git clone <repository-url>
 cd hyperliquid-trading-agent
 ```
 
 2. Install with dev dependencies:
+
 ```bash
 uv pip install -e ".[dev]"
 ```
 
 3. Set up pre-commit hooks (optional):
+
 ```bash
 # Format and lint before committing
 git config core.hooksPath .githooks
@@ -342,11 +359,13 @@ git config core.hooksPath .githooks
 ### Code Quality Tools
 
 **Format code with Ruff:**
+
 ```bash
 uv run ruff format src/ tests/
 ```
 
 **Lint code with Ruff:**
+
 ```bash
 uv run ruff check src/ tests/
 
@@ -355,11 +374,13 @@ uv run ruff check --fix src/ tests/
 ```
 
 **Type check with Pyrefly:**
+
 ```bash
 uv run pyrefly check src/
 ```
 
 **Run all quality checks:**
+
 ```bash
 uv run ruff format src/ tests/ && \
 uv run ruff check src/ tests/ && \
@@ -369,11 +390,13 @@ uv run pyrefly check src/
 ### Testing
 
 **Run all tests:**
+
 ```bash
 uv run pytest
 ```
 
 **Run specific test categories:**
+
 ```bash
 # Unit tests only
 uv run pytest tests/unit/
@@ -383,6 +406,7 @@ uv run pytest tests/integration/
 ```
 
 **Run with coverage:**
+
 ```bash
 uv run pytest --cov=hyperliquid_agent --cov-report=html
 ```
@@ -401,16 +425,19 @@ The codebase follows a modular architecture:
 ### Adding New Features
 
 **Adding a new LLM provider:**
+
 1. Update `LLMConfig` in `config.py` to support new provider
 2. Add initialization logic in `DecisionEngine._init_llm_client()`
 3. Implement query logic in `DecisionEngine._query_llm()`
 
 **Adding new market types:**
+
 1. Update `TradeAction.market_type` type hints
 2. Add execution logic in `TradeExecutor._submit_order()`
 3. Update prompt template to include new market type
 
 **Adding risk management:**
+
 1. Create new `risk.py` module
 2. Add validation in `TradeExecutor.execute_action()`
 3. Integrate checks before order submission
@@ -441,11 +468,13 @@ The LLM receives all active strategies and can choose which to follow based on c
 ### Creating Custom Strategies
 
 1. Create a new markdown file in `strategies/`:
+
 ```bash
 touch strategies/03-my-strategy.md
 ```
 
 2. Add front matter metadata:
+
 ```yaml
 ---
 id: my-strategy
@@ -504,33 +533,39 @@ status: active
 ### Common Issues
 
 **"Module not found" errors:**
+
 ```bash
 # Reinstall the package
 uv pip install -e .
 ```
 
 **"Invalid API key" errors:**
+
 - Verify your LLM API key in `config.toml`
 - Check that you're using the correct provider (openai vs anthropic)
 - Ensure your API key has sufficient credits/quota
 
 **"Connection refused" to Hyperliquid:**
+
 - Check your internet connection
 - Verify the `base_url` in config (testnet vs mainnet)
 - Check Hyperliquid API status
 
 **"Insufficient balance" errors:**
+
 - Ensure you have funds in your Hyperliquid account
 - For testnet, request testnet funds from Hyperliquid
 - Check that your account address is correct
 
 **Agent not making trades:**
+
 - Check logs for LLM decision reasoning
 - Verify strategies are marked as `status: active` in front matter
 - Ensure LLM is returning valid JSON responses
 - Check that positions meet strategy criteria
 
 **High API costs:**
+
 - Increase `tick_interval_seconds` to reduce LLM queries
 - Use a cheaper model (e.g., gpt-3.5-turbo instead of gpt-4)
 - Reduce `max_tokens` in LLM config

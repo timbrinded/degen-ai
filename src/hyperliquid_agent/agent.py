@@ -7,12 +7,42 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, NoReturn, TypeVar
 
+from colorama import Fore, Style, init
+
 from hyperliquid_agent.config import Config
 from hyperliquid_agent.decision import DecisionEngine, PromptTemplate
 from hyperliquid_agent.executor import TradeExecutor
 from hyperliquid_agent.monitor import PositionMonitor
 
+# Initialize colorama for cross-platform colored output
+init(autoreset=True)
+
 T = TypeVar("T")
+
+
+class ColoredConsoleFormatter(logging.Formatter):
+    """Custom formatter that outputs colored logs for console."""
+
+    COLORS = {
+        "DEBUG": Fore.CYAN,
+        "INFO": Fore.GREEN,
+        "WARNING": Fore.YELLOW,
+        "ERROR": Fore.RED,
+        "CRITICAL": Fore.RED + Style.BRIGHT,
+    }
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Format log record with colors.
+
+        Args:
+            record: Log record to format
+
+        Returns:
+            Colored log string
+        """
+        level_color = self.COLORS.get(record.levelname, "")
+        record.levelname = f"{level_color}{record.levelname}{Style.RESET_ALL}"
+        return super().format(record)
 
 
 class JSONFormatter(logging.Formatter):
@@ -83,6 +113,10 @@ class JSONFormatter(logging.Formatter):
             log_data["max_retries"] = record.max_retries
         if hasattr(record, "log_level"):
             log_data["log_level"] = record.log_level
+        if hasattr(record, "llm_response_length"):
+            log_data["llm_response_length"] = record.llm_response_length
+        if hasattr(record, "llm_actions_count"):
+            log_data["llm_actions_count"] = record.llm_actions_count
 
         # Add exception info if present
         if record.exc_info:
@@ -234,6 +268,32 @@ class TradingAgent:
             )
             return
         
+        # Log LLM response summary
+        self.logger.info(
+            f"LLM Response Summary: {len(decision.actions)} actions proposed, "
+            f"response length: {len(decision.raw_response)} chars",
+            extra={
+                "tick": self.tick_count,
+                "llm_response_length": len(decision.raw_response),
+                "llm_actions_count": len(decision.actions),
+            },
+        )
+        
+        # Log strategy being followed
+        if decision.selected_strategy:
+            self.logger.info(
+                f"Strategy Selected: {decision.selected_strategy}",
+                extra={
+                    "tick": self.tick_count,
+                    "selected_strategy": decision.selected_strategy,
+                },
+            )
+        else:
+            self.logger.info(
+                "No specific strategy selected - using general decision making",
+                extra={"tick": self.tick_count},
+            )
+        
         self.logger.info(
             f"Decision received: {len(decision.actions)} actions",
             extra={
@@ -323,10 +383,10 @@ class TradingAgent:
         file_handler.setFormatter(JSONFormatter())
         logger.addHandler(file_handler)
         
-        # Console handler with human-readable format
+        # Console handler with colored human-readable format
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
-        console_formatter = logging.Formatter(
+        console_formatter = ColoredConsoleFormatter(
             "%(asctime)s [%(levelname)s] %(message)s",
             datefmt="%Y-%m-%d %H:%M:%S"
         )
