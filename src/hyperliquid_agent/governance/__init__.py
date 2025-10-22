@@ -19,7 +19,11 @@ from hyperliquid_agent.governance.regime import (
     RegimeDetectorConfig,
     RegimeSignals,
 )
-from hyperliquid_agent.governance.scorekeeper import PlanMetrics, ShadowPortfolio
+from hyperliquid_agent.governance.scorekeeper import (
+    PlanMetrics,
+    PlanScorekeeper,
+    ShadowPortfolio,
+)
 from hyperliquid_agent.governance.tripwire import (
     TripwireAction,
     TripwireConfig,
@@ -52,4 +56,5 @@ __all__ = [
     # Scorekeeper
     "PlanMetrics",
     "ShadowPortfolio",
+    "PlanScorekeeper",
 ]
