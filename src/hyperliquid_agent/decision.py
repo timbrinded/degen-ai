@@ -29,6 +29,7 @@ class DecisionResult:
 
     actions: list[TradeAction]
     selected_strategy: str | None = None
+    target_allocation: dict[str, float] | None = None  # Optional target allocation
     raw_response: str = ""
     success: bool = True
     error: str | None = None
@@ -182,20 +183,27 @@ class DecisionEngine:
             account_state: Current account state
 
         Returns:
-            Decision result with actions
+            Decision result with actions and/or target allocation
         """
         try:
             prompt = self.prompt_template.format(account_state)
             response = self._query_llm(prompt)
-            actions, selected_strategy = self._parse_response(response)
+            actions, selected_strategy, target_allocation = self._parse_response(response)
             return DecisionResult(
                 actions=actions,
                 selected_strategy=selected_strategy,
+                target_allocation=target_allocation,
                 raw_response=response,
                 success=True,
             )
         except Exception as e:
-            return DecisionResult(actions=[], raw_response="", success=False, error=str(e))
+            return DecisionResult(
+                actions=[],
+                target_allocation=None,
+                raw_response="",
+                success=False,
+                error=str(e),
+            )
 
     def _query_llm(self, prompt: str) -> str:
         """Send prompt to LLM and get response.
@@ -239,14 +247,16 @@ class DecisionEngine:
         else:
             raise ValueError(f"Unsupported LLM provider: {self.llm_config.provider}")
 
-    def _parse_response(self, response: str) -> tuple[list[TradeAction], str | None]:
-        """Parse LLM response into structured actions.
+    def _parse_response(
+        self, response: str
+    ) -> tuple[list[TradeAction], str | None, dict[str, float] | None]:
+        """Parse LLM response into structured actions and/or target allocation.
 
         Args:
             response: Raw LLM response text
 
         Returns:
-            Tuple of (list of TradeAction objects, selected strategy ID)
+            Tuple of (list of TradeAction objects, selected strategy ID, target allocation dict)
 
         Raises:
             ValueError: If response cannot be parsed
@@ -281,6 +291,16 @@ class DecisionEngine:
 
         # Extract selected strategy
         selected_strategy = data.get("selected_strategy")
+
+        # Extract target allocation if present
+        target_allocation = None
+        if "target_allocation" in data:
+            target_alloc_data = data["target_allocation"]
+            if isinstance(target_alloc_data, dict):
+                # Validate and normalize allocation
+                target_allocation = {
+                    str(k): float(v) for k, v in target_alloc_data.items()
+                }
 
         # Parse actions
         actions = []
@@ -328,4 +348,4 @@ class DecisionEngine:
                 )
             )
 
-        return actions, selected_strategy
+        return actions, selected_strategy, target_allocation

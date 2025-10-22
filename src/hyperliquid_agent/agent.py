@@ -13,6 +13,11 @@ from hyperliquid_agent.config import Config
 from hyperliquid_agent.decision import DecisionEngine, PromptTemplate
 from hyperliquid_agent.executor import TradeExecutor
 from hyperliquid_agent.monitor import PositionMonitor
+from hyperliquid_agent.portfolio import (
+    PortfolioRebalancer,
+    PortfolioState,
+    TargetAllocation,
+)
 
 # Initialize colorama for cross-platform colored output
 init(autoreset=True)
@@ -177,6 +182,13 @@ class TradingAgent:
         
         self.executor = TradeExecutor(config.hyperliquid)
         
+        # Initialize portfolio rebalancer
+        self.rebalancer = PortfolioRebalancer(
+            min_trade_value=10.0,
+            max_slippage_pct=0.005,
+            rebalance_threshold=0.05,
+        )
+        
         # Initialize tick counter
         self.tick_count = 0
         self.last_portfolio_value: float | None = None
@@ -294,17 +306,57 @@ class TradingAgent:
                 extra={"tick": self.tick_count},
             )
         
+        # Step 2.5: If LLM provided target allocation, generate rebalancing plan
+        actions_to_execute = decision.actions
+        
+        if decision.target_allocation:
+            self.logger.info(
+                f"Target allocation provided: {decision.target_allocation}",
+                extra={"tick": self.tick_count},
+            )
+            
+            # Convert account state to portfolio state
+            portfolio_state = PortfolioState.from_account_state(account_state)
+            
+            # Create target allocation object
+            target = TargetAllocation(
+                allocations=decision.target_allocation,
+                strategy_id=decision.selected_strategy,
+            )
+            
+            # Generate rebalancing plan
+            plan = self.rebalancer.create_rebalancing_plan(portfolio_state, target)
+            
+            self.logger.info(
+                f"Rebalancing plan generated: {len(plan.actions)} actions, "
+                f"estimated cost: ${plan.estimated_cost:.2f}",
+                extra={
+                    "tick": self.tick_count,
+                    "num_rebalance_actions": len(plan.actions),
+                    "estimated_cost": plan.estimated_cost,
+                },
+            )
+            
+            if plan.reasoning:
+                self.logger.info(
+                    f"Rebalancing reasoning: {plan.reasoning}",
+                    extra={"tick": self.tick_count},
+                )
+            
+            # Use rebalancing plan actions instead of direct LLM actions
+            actions_to_execute = plan.actions
+        
         self.logger.info(
-            f"Decision received: {len(decision.actions)} actions",
+            f"Decision received: {len(actions_to_execute)} actions to execute",
             extra={
                 "tick": self.tick_count,
-                "num_actions": len(decision.actions),
+                "num_actions": len(actions_to_execute),
                 "selected_strategy": decision.selected_strategy,
             },
         )
         
         # Step 3: Execute trades with retry logic
-        for i, action in enumerate(decision.actions):
+        for i, action in enumerate(actions_to_execute):
             self.logger.info(
                 f"Executing action {i + 1}/{len(decision.actions)}",
                 extra={
@@ -354,7 +406,7 @@ class TradingAgent:
         
         self.logger.info(
             f"Tick {self.tick_count} completed",
-            extra={"tick": self.tick_count, "actions_executed": len(decision.actions)},
+            extra={"tick": self.tick_count, "actions_executed": len(actions_to_execute)},
         )
 
     def _setup_logging(self) -> logging.Logger:

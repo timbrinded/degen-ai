@@ -14,7 +14,22 @@ Available Trading Strategies:
 Your goal is to maximize portfolio value through strategic trading decisions.
 
 Analyze the current state, select an appropriate strategy from the available options,
-and provide trading actions in the following JSON format:
+and provide your decision in ONE of the following formats:
+
+OPTION 1 - Target Allocation (Recommended for most strategies):
+{{
+  "selected_strategy": "strategy-id",
+  "target_allocation": {{
+    "BTC": 0.30,
+    "ETH": 0.20,
+    "USDC": 0.50
+  }}
+}}
+
+The system will automatically generate the optimal sequence of trades to reach this allocation,
+handling capital constraints and multi-step rebalancing.
+
+OPTION 2 - Direct Actions (For time-sensitive or specific trades):
 {{
   "selected_strategy": "strategy-id",
   "actions": [
@@ -35,5 +50,7 @@ Consider:
 - Portfolio diversification
 - Current exposure and leverage
 - Strategy preconditions and fit
+- Use target_allocation for strategic rebalancing
+- Use direct actions for tactical/urgent trades
 
 Provide your decision:

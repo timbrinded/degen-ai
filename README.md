@@ -35,9 +35,17 @@ hyperliquid-trading-agent/
 │       ├── monitor.py      # Position monitoring
 │       ├── decision.py     # LLM decision engine
 │       ├── executor.py     # Trade execution
+│       ├── portfolio.py    # Portfolio state & rebalancing (NEW!)
 │       └── config.py       # Configuration management
 ├── prompts/
 │   └── default.txt         # Default LLM prompt template
+├── strategies/             # Trading strategy definitions
+├── docs/
+│   ├── CONFIGURATION.md    # Detailed configuration guide
+│   ├── PORTFOLIO_MANAGEMENT.md  # Portfolio rebalancing docs (NEW!)
+│   └── ARCHITECTURE_DIAGRAM.md  # System architecture (NEW!)
+├── examples/
+│   └── portfolio_rebalancing_example.py  # Demo script (NEW!)
 ├── tests/
 │   ├── unit/
 │   ├── integration/
@@ -450,6 +458,54 @@ The codebase follows a modular architecture:
 4. Run quality checks: `ruff format`, `ruff check`, `pyrefly check`
 5. Commit with clear messages
 6. Push and create a pull request
+
+## Portfolio Management
+
+The agent now supports **target allocation-based portfolio management**, allowing the LLM to specify desired portfolio allocations rather than individual trades. The system automatically generates optimal rebalancing plans that respect capital constraints and execution order.
+
+### Two Decision Modes
+
+**Mode 1: Target Allocation (Recommended)**
+```json
+{
+  "selected_strategy": "balanced-growth",
+  "target_allocation": {
+    "BTC": 0.40,
+    "ETH": 0.30,
+    "USDC": 0.30
+  }
+}
+```
+
+The system automatically:
+- Calculates allocation deltas
+- Orders trades (close overweight positions first)
+- Respects capital constraints
+- Filters dust trades
+
+**Mode 2: Direct Actions (Legacy)**
+```json
+{
+  "selected_strategy": "compression-pop",
+  "actions": [
+    {"action_type": "buy", "coin": "BTC", "size": 0.5}
+  ]
+}
+```
+
+### Documentation
+
+- **[Portfolio Management Guide](docs/PORTFOLIO_MANAGEMENT.md)**: Comprehensive documentation
+- **[Architecture Diagram](docs/ARCHITECTURE_DIAGRAM.md)**: Visual system flow
+- **[Example Script](examples/portfolio_rebalancing_example.py)**: Runnable demo
+
+### Quick Example
+
+```bash
+# Run the portfolio rebalancing demo
+cd hyperliquid-trading-agent
+uv run python examples/portfolio_rebalancing_example.py
+```
 
 ## Trading Strategies
 
