@@ -15,6 +15,8 @@ from hyperliquid_agent.governance.plan_card import (
 from hyperliquid_agent.governance.regime import (
     ExternalDataProvider,
     RegimeClassification,
+    RegimeDetector,
+    RegimeDetectorConfig,
     RegimeSignals,
 )
 from hyperliquid_agent.governance.scorekeeper import PlanMetrics, ShadowPortfolio
@@ -34,6 +36,8 @@ __all__ = [
     # Regime
     "RegimeSignals",
     "RegimeClassification",
+    "RegimeDetector",
+    "RegimeDetectorConfig",
     "ExternalDataProvider",
     # Tripwire
     "TripwireAction",
