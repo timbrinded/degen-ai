@@ -3,7 +3,7 @@
 import logging
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import NoReturn
 
 from hyperliquid_agent.agent import TradingAgent
@@ -40,6 +40,31 @@ class GovernedAgentConfig:
     fast_loop_interval_seconds: int = 10
     medium_loop_interval_minutes: int = 30
     slow_loop_interval_hours: int = 24
+
+
+@dataclass
+class TradingConstants:
+    """Constants for trading calculations to avoid magic numbers."""
+
+    # Allocation thresholds
+    ALLOCATION_GAP_THRESHOLD_PCT: float = 1.0  # Only trade if gap exceeds this
+
+    # Fee estimates (basis points)
+    MAKER_FEE_BPS: float = 2.0
+    TAKER_FEE_BPS: float = 5.0
+    AVG_FEE_BPS: float = 3.5  # Mixed maker/taker
+
+    # Slippage estimates (basis points)
+    BASE_SLIPPAGE_BPS: float = 3.0
+    ENTRY_SLIPPAGE_BPS: float = 5.0
+    ENTRY_FEE_BPS: float = 10.0
+
+    # Funding estimates (basis points)
+    CARRY_LOSS_BPS: float = 10.0  # Lost funding when exiting carry
+    CARRY_GAIN_BPS: float = 5.0  # Gained funding when entering carry
+
+    # Scorekeeper
+    DEFAULT_SLIPPAGE_BPS: float = 5.0
 
 
 class GovernedTradingAgent:
@@ -82,6 +107,9 @@ class GovernedTradingAgent:
 
         # Tick counter
         self.tick_count = 0
+
+        # Trading constants
+        self.constants = TradingConstants()
 
     def run(self) -> NoReturn:
         """Run the main governed loop indefinitely."""
@@ -126,7 +154,6 @@ class GovernedTradingAgent:
             # Sleep until next fast loop iteration
             time.sleep(self.governance_config.fast_loop_interval_seconds)
 
-
     def _should_run_medium_loop(self, current_time: datetime) -> bool:
         """Check if medium loop should run based on elapsed time.
 
@@ -157,6 +184,145 @@ class GovernedTradingAgent:
         elapsed_hours = (current_time - self.last_slow_loop).total_seconds() / 3600
         return elapsed_hours >= self.governance_config.slow_loop_interval_hours
 
+    def _handle_tripwire_events(self, tripwire_events: list) -> bool:
+        """Handle tripwire events and determine if execution should be skipped.
+
+        Args:
+            tripwire_events: List of triggered tripwire events
+
+        Returns:
+            True if execution should be skipped, False otherwise
+        """
+        for event in tripwire_events:
+            self.logger.warning(
+                f"Tripwire fired: {event.trigger} ({event.severity})",
+                extra={
+                    "tick": self.tick_count,
+                    "severity": event.severity,
+                    "category": event.category,
+                    "trigger": event.trigger,
+                    "action": event.action.value,
+                    "details": event.details,
+                },
+            )
+
+            # Use match/case for cleaner control flow (Python 3.10+)
+            match event.action:
+                case TripwireAction.INVALIDATE_PLAN:
+                    if self.governor.active_plan:
+                        self.governor.active_plan.status = "invalidated"
+                        self.logger.warning(
+                            f"Plan {self.governor.active_plan.plan_id} invalidated by tripwire",
+                            extra={
+                                "tick": self.tick_count,
+                                "plan_id": self.governor.active_plan.plan_id,
+                            },
+                        )
+
+                case TripwireAction.FREEZE_NEW_RISK:
+                    self.logger.warning(
+                        "Freezing new risk - skipping plan execution",
+                        extra={"tick": self.tick_count},
+                    )
+                    return True
+
+                case TripwireAction.CUT_SIZE_TO_FLOOR:
+                    self.logger.critical(
+                        "Cut size to floor triggered - emergency risk reduction needed",
+                        extra={"tick": self.tick_count},
+                    )
+                    # TODO: Implement emergency position reduction
+                    return True
+
+                case TripwireAction.ESCALATE_TO_SLOW_LOOP:
+                    self.logger.warning(
+                        "Escalating to slow loop for regime re-evaluation",
+                        extra={"tick": self.tick_count},
+                    )
+                    self.last_slow_loop = None  # Force slow loop next iteration
+
+        return False
+
+    def _generate_rebalance_actions(
+        self,
+        target_allocations_data: list[dict],
+        current_allocations: dict[str, float],
+        total_value: float,
+        account_state: EnhancedAccountState,
+    ) -> list[TradeAction]:
+        """Generate trade actions to rebalance portfolio to target allocations.
+
+        Args:
+            target_allocations_data: List of target allocation dicts
+            current_allocations: Current allocation percentages by coin
+            total_value: Total portfolio value
+            account_state: Current account state with positions
+
+        Returns:
+            List of TradeAction objects to execute
+        """
+        actions = []
+
+        for target_data in target_allocations_data:
+            coin = str(target_data["coin"])
+            target_pct = float(target_data["target_pct"])
+            market_type = str(target_data["market_type"])
+
+            current_pct = current_allocations.get(coin, 0.0)
+            gap_pct = target_pct - current_pct
+
+            # Only trade if gap exceeds threshold
+            if abs(gap_pct) > self.constants.ALLOCATION_GAP_THRESHOLD_PCT:
+                # Calculate size needed
+                target_value = (target_pct / 100) * total_value
+                current_value = (current_pct / 100) * total_value
+                value_gap = target_value - current_value
+
+                # Find current price
+                matching_pos = next((p for p in account_state.positions if p.coin == coin), None)
+                if matching_pos:
+                    current_price = matching_pos.current_price
+                else:
+                    self.logger.warning(
+                        f"Cannot determine price for {coin} - no existing position",
+                        extra={"tick": self.tick_count, "coin": coin},
+                    )
+                    continue
+
+                # Calculate size to trade
+                size = abs(value_gap / current_price) if current_price > 0 else 0.0
+
+                if size > 0:
+                    action_type = "buy" if gap_pct > 0 else "sell"
+                    # Validate market_type is correct literal
+                    if market_type not in ["spot", "perp"]:
+                        market_type = "perp"  # Default to perp
+
+                    actions.append(
+                        TradeAction(
+                            action_type=action_type,  # type: ignore
+                            coin=coin,
+                            market_type=market_type,  # type: ignore
+                            size=size,
+                            price=None,  # Market order
+                            reasoning=f"Rebalancing to target: {current_pct:.1f}% -> {target_pct:.1f}%",
+                        )
+                    )
+
+                    self.logger.info(
+                        f"Generated {action_type} action for {coin}: {size:.4f} (gap: {gap_pct:.1f}%)",
+                        extra={
+                            "tick": self.tick_count,
+                            "coin": coin,
+                            "action_type": action_type,
+                            "size": size,
+                            "current_pct": current_pct,
+                            "target_pct": target_pct,
+                            "gap_pct": gap_pct,
+                        },
+                    )
+
+        return actions
 
     def _execute_fast_loop(self, current_time: datetime):
         """Execute fast loop: follow active plan deterministically.
@@ -209,52 +375,9 @@ class GovernedTradingAgent:
         )
 
         # Handle tripwire events
-        for event in tripwire_events:
-            self.logger.warning(
-                f"Tripwire fired: {event.trigger} ({event.severity})",
-                extra={
-                    "tick": self.tick_count,
-                    "severity": event.severity,
-                    "category": event.category,
-                    "trigger": event.trigger,
-                    "action": event.action.value,
-                    "details": event.details,
-                },
-            )
-
-            # Handle different tripwire actions
-            if event.action == TripwireAction.INVALIDATE_PLAN:
-                if self.governor.active_plan:
-                    self.governor.active_plan.status = "invalidated"
-                    self.logger.warning(
-                        f"Plan {self.governor.active_plan.plan_id} invalidated by tripwire",
-                        extra={"tick": self.tick_count, "plan_id": self.governor.active_plan.plan_id},
-                    )
-
-            elif event.action == TripwireAction.FREEZE_NEW_RISK:
-                # Skip execution this tick - don't open new positions
-                self.logger.warning(
-                    "Freezing new risk - skipping plan execution",
-                    extra={"tick": self.tick_count},
-                )
-                return
-
-            elif event.action == TripwireAction.CUT_SIZE_TO_FLOOR:
-                # Emergency position reduction - would implement emergency exit logic
-                self.logger.critical(
-                    "Cut size to floor triggered - emergency risk reduction needed",
-                    extra={"tick": self.tick_count},
-                )
-                # TODO: Implement emergency position reduction
-                return
-
-            elif event.action == TripwireAction.ESCALATE_TO_SLOW_LOOP:
-                # Force slow loop execution on next iteration
-                self.logger.warning(
-                    "Escalating to slow loop for regime re-evaluation",
-                    extra={"tick": self.tick_count},
-                )
-                self.last_slow_loop = None  # Force slow loop next iteration
+        should_skip_execution = self._handle_tripwire_events(tripwire_events)
+        if should_skip_execution:
+            return
 
         # Execute active plan if exists and is active
         if self.governor.active_plan and self.governor.active_plan.status == "active":
@@ -274,7 +397,6 @@ class GovernedTradingAgent:
         # Update scorekeeper metrics
         if self.governor.active_plan:
             self.scorekeeper.update_metrics(account_state, self.governor.active_plan)
-
 
     def _execute_medium_loop(self, current_time: datetime):
         """Execute medium loop: plan review and maintenance.
@@ -416,7 +538,6 @@ class GovernedTradingAgent:
                 extra={"tick": self.tick_count},
             )
 
-
     def _execute_slow_loop(self, current_time: datetime):
         """Execute slow loop: regime detection and macro analysis.
 
@@ -487,7 +608,6 @@ class GovernedTradingAgent:
                 "regime_history_length": len(self.regime_detector.regime_history),
             },
         )
-
 
     def _handle_plan_change_proposal(self, proposed_plan: StrategyPlanCard, current_time: datetime):
         """Handle a proposed plan change from LLM.
@@ -611,10 +731,7 @@ class GovernedTradingAgent:
                 },
             )
 
-
-    def _execute_plan_targets(
-        self, account_state: EnhancedAccountState, plan: StrategyPlanCard
-    ):
+    def _execute_plan_targets(self, account_state: EnhancedAccountState, plan: StrategyPlanCard):
         """Execute trades to move toward plan targets.
 
         Args:
@@ -633,7 +750,10 @@ class GovernedTradingAgent:
         # Determine target allocations based on plan status
         if plan.status == "rebalancing" and self.governor.rebalance_schedule:
             # Use rebalance schedule for gradual rotation
-            current_step = int(plan.rebalance_progress_pct / self.governance_config.governor.partial_rotation_pct_per_cycle)
+            current_step = int(
+                plan.rebalance_progress_pct
+                / self.governance_config.governor.partial_rotation_pct_per_cycle
+            )
 
             if current_step < len(self.governor.rebalance_schedule):
                 step_data = self.governor.rebalance_schedule[current_step]
@@ -693,70 +813,9 @@ class GovernedTradingAgent:
             current_allocations[position.coin] = current_pct
 
         # Generate trade actions to close allocation gaps
-        actions = []
-
-        for target_data in target_allocations_data:
-            coin = str(target_data["coin"])
-            target_pct = float(target_data["target_pct"])
-            market_type = str(target_data["market_type"])
-
-            current_pct = current_allocations.get(coin, 0.0)
-            gap_pct = target_pct - current_pct
-
-            # Only trade if gap exceeds threshold (e.g., 1%)
-            if abs(gap_pct) > 1.0:
-                # Calculate size needed
-                target_value = (target_pct / 100) * total_value
-                current_value = (current_pct / 100) * total_value
-                value_gap = target_value - current_value
-
-                # Find current price
-                matching_pos = next(
-                    (p for p in account_state.positions if p.coin == coin), None
-                )
-                if matching_pos:
-                    current_price = matching_pos.current_price
-                else:
-                    # Would need to fetch current price from market data
-                    # For now, skip if we don't have a position
-                    self.logger.warning(
-                        f"Cannot determine price for {coin} - no existing position",
-                        extra={"tick": self.tick_count, "coin": coin},
-                    )
-                    continue
-
-                # Calculate size to trade
-                size = abs(value_gap / current_price) if current_price > 0 else 0.0
-
-                if size > 0:
-                    action_type = "buy" if gap_pct > 0 else "sell"
-                    # Validate market_type is correct literal
-                    if market_type not in ["spot", "perp"]:
-                        market_type = "perp"  # Default to perp
-                    
-                    actions.append(
-                        TradeAction(
-                            action_type=action_type,  # type: ignore
-                            coin=coin,
-                            market_type=market_type,  # type: ignore
-                            size=size,
-                            price=None,  # Market order
-                            reasoning=f"Rebalancing to target: {current_pct:.1f}% -> {target_pct:.1f}%",
-                        )
-                    )
-
-                    self.logger.info(
-                        f"Generated {action_type} action for {coin}: {size:.4f} (gap: {gap_pct:.1f}%)",
-                        extra={
-                            "tick": self.tick_count,
-                            "coin": coin,
-                            "action_type": action_type,
-                            "size": size,
-                            "current_pct": current_pct,
-                            "target_pct": target_pct,
-                            "gap_pct": gap_pct,
-                        },
-                    )
+        actions = self._generate_rebalance_actions(
+            target_allocations_data, current_allocations, total_value, account_state
+        )
 
         # Execute trades via base agent's executor
         if actions:
@@ -788,7 +847,9 @@ class GovernedTradingAgent:
                     if result.success:
                         # Would calculate actual slippage from execution
                         # For now, use estimated slippage
-                        self.scorekeeper.record_trade(is_winning=True, slippage_bps=5.0)
+                        self.scorekeeper.record_trade(
+                            is_winning=True, slippage_bps=self.constants.DEFAULT_SLIPPAGE_BPS
+                        )
 
                 except Exception as e:
                     self.logger.error(
@@ -805,7 +866,6 @@ class GovernedTradingAgent:
                 "No rebalancing trades needed - allocations within threshold",
                 extra={"tick": self.tick_count},
             )
-
 
     def _calculate_change_cost(
         self, old_plan: StrategyPlanCard | None, new_plan: StrategyPlanCard
@@ -828,8 +888,8 @@ class GovernedTradingAgent:
         if old_plan is None:
             # No existing plan - only entry costs
             return ChangeCostModel(
-                estimated_fees_bps=10.0,  # Typical maker/taker fees
-                estimated_slippage_bps=5.0,  # Estimated market impact
+                estimated_fees_bps=self.constants.ENTRY_FEE_BPS,
+                estimated_slippage_bps=self.constants.ENTRY_SLIPPAGE_BPS,
                 estimated_funding_change_bps=0.0,  # No funding change
                 opportunity_cost_bps=0.0,  # No opportunity cost
             )
@@ -851,28 +911,32 @@ class GovernedTradingAgent:
         # Estimate fees based on turnover
         # Hyperliquid typical fees: ~0.02% maker, ~0.05% taker
         # Assume mix of maker/taker orders
-        avg_fee_rate = 0.035  # 3.5 bps
+        avg_fee_rate = self.constants.AVG_FEE_BPS / 100.0  # Convert bps to percentage
         estimated_fees_bps = total_turnover_pct * avg_fee_rate
 
         # Estimate slippage based on turnover and market conditions
         # Higher turnover = more market impact
-        # Base slippage: 2-5 bps per trade
         # Scale with turnover
-        base_slippage_bps = 3.0
         slippage_multiplier = 1.0 + (total_turnover_pct / 100.0)  # Scale with turnover
-        estimated_slippage_bps = base_slippage_bps * slippage_multiplier
+        estimated_slippage_bps = self.constants.BASE_SLIPPAGE_BPS * slippage_multiplier
 
         # Estimate funding rate impact
         # If switching from carry strategy to non-carry, lose funding income
         # Simplified: check if strategies have different funding exposure
         estimated_funding_change_bps = 0.0
 
-        if "carry" in old_plan.strategy_name.lower() and "carry" not in new_plan.strategy_name.lower():
+        if (
+            "carry" in old_plan.strategy_name.lower()
+            and "carry" not in new_plan.strategy_name.lower()
+        ):
             # Losing carry income
-            estimated_funding_change_bps = 10.0  # Estimated lost funding over holding period
-        elif "carry" not in old_plan.strategy_name.lower() and "carry" in new_plan.strategy_name.lower():
+            estimated_funding_change_bps = self.constants.CARRY_LOSS_BPS
+        elif (
+            "carry" not in old_plan.strategy_name.lower()
+            and "carry" in new_plan.strategy_name.lower()
+        ):
             # Gaining carry income
-            estimated_funding_change_bps = -5.0  # Negative cost = benefit
+            estimated_funding_change_bps = -self.constants.CARRY_GAIN_BPS  # Negative cost = benefit
 
         # Estimate opportunity cost using scorekeeper
         opportunity_cost_bps = self.scorekeeper.estimate_opportunity_cost()
@@ -888,7 +952,6 @@ class GovernedTradingAgent:
             estimated_funding_change_bps=estimated_funding_change_bps,
             opportunity_cost_bps=opportunity_cost_bps,
         )
-
 
     def _extract_regime_signals(self, account_state: EnhancedAccountState) -> RegimeSignals:
         """Extract regime signals from enhanced account state.
@@ -912,12 +975,20 @@ class GovernedTradingAgent:
                 price_sma_50=medium.sma_50 if hasattr(medium, "sma_50") else 0.0,
                 adx=medium.adx if hasattr(medium, "adx") else 0.0,
                 # Volatility
-                realized_vol_24h=medium.realized_vol_24h if hasattr(medium, "realized_vol_24h") else 0.0,
+                realized_vol_24h=medium.realized_vol_24h
+                if hasattr(medium, "realized_vol_24h")
+                else 0.0,
                 # Funding/Carry
-                avg_funding_rate=medium.avg_funding_rate if hasattr(medium, "avg_funding_rate") else 0.0,
+                avg_funding_rate=medium.avg_funding_rate
+                if hasattr(medium, "avg_funding_rate")
+                else 0.0,
                 # Liquidity
-                bid_ask_spread_bps=medium.avg_spread_bps if hasattr(medium, "avg_spread_bps") else 0.0,
-                order_book_depth=medium.avg_order_book_depth if hasattr(medium, "avg_order_book_depth") else 0.0,
+                bid_ask_spread_bps=medium.avg_spread_bps
+                if hasattr(medium, "avg_spread_bps")
+                else 0.0,
+                order_book_depth=medium.avg_order_book_depth
+                if hasattr(medium, "avg_order_book_depth")
+                else 0.0,
                 # Enhanced signals (optional)
                 cross_asset_correlation=None,
                 macro_risk_score=None,
