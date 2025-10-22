@@ -1,7 +1,12 @@
 """Position monitoring and account state retrieval."""
 
+import time
 from dataclasses import dataclass
 from typing import Literal
+
+from hyperliquid.info import Info
+
+from hyperliquid_agent.config import HyperliquidConfig
 
 
 @dataclass
@@ -30,14 +35,15 @@ class AccountState:
 class PositionMonitor:
     """Monitors positions and retrieves account state from Hyperliquid."""
 
-    def __init__(self, config) -> None:
+    def __init__(self, config: HyperliquidConfig) -> None:
         """Initialize the position monitor.
 
         Args:
             config: HyperliquidConfig instance
         """
-        # TODO: Initialize Hyperliquid Info client
-        raise NotImplementedError("PositionMonitor not yet implemented")
+        self.info = Info(config.base_url, skip_ws=True)
+        self.account_address = config.account_address
+        self.last_valid_state: AccountState | None = None
 
     def get_current_state(self) -> AccountState:
         """Retrieve current account state from Hyperliquid.
@@ -48,5 +54,80 @@ class PositionMonitor:
         Raises:
             Exception: If unable to retrieve state and no cached state available
         """
-        # TODO: Implement state retrieval
-        raise NotImplementedError("State retrieval not yet implemented")
+        try:
+            user_state = self.info.user_state(self.account_address)
+            state = self._parse_user_state(user_state)
+            self.last_valid_state = state
+            return state
+        except Exception as e:
+            # Return last known state with staleness flag if available
+            if self.last_valid_state:
+                self.last_valid_state.is_stale = True
+                return self.last_valid_state
+            raise Exception(f"Failed to retrieve account state and no cached state available: {e}")
+
+    def _parse_user_state(self, raw_state: dict) -> AccountState:
+        """Parse Hyperliquid API response into AccountState.
+
+        Args:
+            raw_state: Raw API response from user_state endpoint
+
+        Returns:
+            Parsed AccountState object
+        """
+        # Extract account value and margin summary
+        margin_summary = raw_state.get("marginSummary", {})
+        account_value = float(margin_summary.get("accountValue", 0.0))
+        
+        # Extract withdrawable balance (available balance)
+        withdrawable = float(raw_state.get("withdrawable", 0.0))
+        
+        # Parse positions from assetPositions
+        positions = []
+        asset_positions = raw_state.get("assetPositions", [])
+        
+        for asset_pos in asset_positions:
+            position_data = asset_pos.get("position", {})
+            coin = position_data.get("coin", "")
+            
+            # Skip if no position size
+            size_str = position_data.get("szi", "0")
+            size = float(size_str)
+            if size == 0:
+                continue
+            
+            # Extract position details
+            entry_price = float(position_data.get("entryPx", 0.0))
+            
+            # Get current price from position data or mark price
+            mark_px = float(position_data.get("positionValue", 0.0))
+            if size != 0 and mark_px != 0:
+                current_price = abs(mark_px / size)
+            else:
+                current_price = entry_price
+            
+            # Extract unrealized PnL
+            unrealized_pnl = float(position_data.get("unrealizedPnl", 0.0))
+            
+            # Determine market type (perp is default for Hyperliquid positions)
+            # Spot positions would be in a different structure
+            market_type: Literal["spot", "perp"] = "perp"
+            
+            positions.append(
+                Position(
+                    coin=coin,
+                    size=abs(size),  # Use absolute value for size
+                    entry_price=entry_price,
+                    current_price=current_price,
+                    unrealized_pnl=unrealized_pnl,
+                    market_type=market_type,
+                )
+            )
+        
+        return AccountState(
+            portfolio_value=account_value,
+            available_balance=withdrawable,
+            positions=positions,
+            timestamp=time.time(),
+            is_stale=False,
+        )
