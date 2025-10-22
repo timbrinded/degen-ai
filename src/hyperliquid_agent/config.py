@@ -57,6 +57,7 @@ def load_config(config_path: str = "config.toml") -> Config:
         FileNotFoundError: If config file doesn't exist
         ValueError: If required fields are missing or invalid
     """
+    import os
     import tomllib
     from pathlib import Path
 
@@ -108,11 +109,15 @@ def load_config(config_path: str = "config.toml") -> Config:
 
     # Parse Agent config with defaults
     agent_data = data.get("agent", {})
+
+    # Allow LOG_LEVEL environment variable to override config file
+    log_level = os.environ.get("LOG_LEVEL", agent_data.get("log_level", "INFO")).upper()
+
     agent_config = AgentConfig(
         tick_interval_seconds=agent_data.get("tick_interval_seconds", 60),
         max_retries=agent_data.get("max_retries", 5),
         retry_backoff_base=agent_data.get("retry_backoff_base", 2.0),
-        log_level=agent_data.get("log_level", "INFO"),
+        log_level=log_level,
         prompt_template_path=agent_data.get("prompt_template_path", "prompts/default.txt"),
     )
 

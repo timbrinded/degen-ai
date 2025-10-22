@@ -3,9 +3,10 @@
 import json
 import logging
 import time
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, NoReturn, TypeVar
+from typing import Any, NoReturn, TypeVar
 
 from colorama import Fore, Style, init
 
@@ -63,7 +64,7 @@ class JSONFormatter(logging.Formatter):
             JSON-formatted log string
         """
         log_data: dict[str, Any] = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -122,6 +123,16 @@ class JSONFormatter(logging.Formatter):
             log_data["llm_response_length"] = record.llm_response_length
         if hasattr(record, "llm_actions_count"):
             log_data["llm_actions_count"] = record.llm_actions_count
+        if hasattr(record, "llm_input_tokens"):
+            log_data["llm_input_tokens"] = record.llm_input_tokens
+        if hasattr(record, "llm_output_tokens"):
+            log_data["llm_output_tokens"] = record.llm_output_tokens
+        if hasattr(record, "llm_cost_usd"):
+            log_data["llm_cost_usd"] = record.llm_cost_usd
+        if hasattr(record, "llm_total_cost_usd"):
+            log_data["llm_total_cost_usd"] = record.llm_total_cost_usd
+        if hasattr(record, "llm_total_calls"):
+            log_data["llm_total_calls"] = record.llm_total_calls
 
         # Add exception info if present
         if record.exc_info:
@@ -130,9 +141,7 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_data)
 
 
-def retry_with_backoff(
-    func: Callable[[], T], max_retries: int, backoff_base: float
-) -> T:
+def retry_with_backoff(func: Callable[[], T], max_retries: int, backoff_base: float) -> T:
     """Retry a function with exponential backoff.
 
     Args:
@@ -154,8 +163,7 @@ def retry_with_backoff(
                 raise
             wait_time = backoff_base**attempt
             logging.getLogger(__name__).warning(
-                f"Attempt {attempt + 1}/{max_retries} failed: {e}. "
-                f"Retrying in {wait_time:.1f}s..."
+                f"Attempt {attempt + 1}/{max_retries} failed: {e}. Retrying in {wait_time:.1f}s..."
             )
             time.sleep(wait_time)
     # This should never be reached, but satisfies type checker
@@ -173,22 +181,22 @@ class TradingAgent:
         """
         self.config = config
         self.logger = self._setup_logging()
-        
+
         # Initialize all components
         self.monitor = PositionMonitor(config.hyperliquid)
-        
+
         prompt_template = PromptTemplate(config.agent.prompt_template_path)
         self.decision_engine = DecisionEngine(config.llm, prompt_template)
-        
+
         self.executor = TradeExecutor(config.hyperliquid)
-        
+
         # Initialize portfolio rebalancer
         self.rebalancer = PortfolioRebalancer(
             min_trade_value=10.0,
             max_slippage_pct=0.005,
             rebalance_threshold=0.05,
         )
-        
+
         # Initialize tick counter
         self.tick_count = 0
         self.last_portfolio_value: float | None = None
@@ -203,7 +211,7 @@ class TradingAgent:
                 "log_level": self.config.agent.log_level,
             },
         )
-        
+
         while True:
             try:
                 self._execute_tick()
@@ -213,7 +221,7 @@ class TradingAgent:
                     exc_info=e,
                     extra={"tick": self.tick_count},
                 )
-            
+
             # Sleep until next tick
             time.sleep(self.config.agent.tick_interval_seconds)
 
@@ -221,7 +229,7 @@ class TradingAgent:
         """Execute one iteration of the trading loop."""
         self.tick_count += 1
         self.logger.info(f"Starting tick {self.tick_count}", extra={"tick": self.tick_count})
-        
+
         # Step 1: Monitor positions with retry logic
         try:
             account_state = retry_with_backoff(
@@ -236,7 +244,7 @@ class TradingAgent:
                 extra={"tick": self.tick_count},
             )
             return
-        
+
         # Log account state
         self.logger.info(
             "Account state retrieved",
@@ -248,7 +256,7 @@ class TradingAgent:
                 "is_stale": account_state.is_stale,
             },
         )
-        
+
         # Log portfolio value change
         if self.last_portfolio_value is not None:
             value_change = account_state.portfolio_value - self.last_portfolio_value
@@ -267,30 +275,46 @@ class TradingAgent:
                     "change_pct": pct_change,
                 },
             )
-        
+
         self.last_portfolio_value = account_state.portfolio_value
-        
+
         # Step 2: Get decision from LLM
         decision = self.decision_engine.get_decision(account_state)
-        
+
         if not decision.success:
             self.logger.error(
                 f"Decision engine failed: {decision.error}",
                 extra={"tick": self.tick_count, "error": decision.error},
             )
             return
-        
-        # Log LLM response summary
+
+        # Log LLM response summary with cost tracking
         self.logger.info(
             f"LLM Response Summary: {len(decision.actions)} actions proposed, "
-            f"response length: {len(decision.raw_response)} chars",
+            f"response length: {len(decision.raw_response)} chars, "
+            f"tokens: {decision.input_tokens}→{decision.output_tokens}, "
+            f"cost: ${decision.cost_usd:.6f}",
             extra={
                 "tick": self.tick_count,
                 "llm_response_length": len(decision.raw_response),
                 "llm_actions_count": len(decision.actions),
+                "llm_input_tokens": decision.input_tokens,
+                "llm_output_tokens": decision.output_tokens,
+                "llm_cost_usd": decision.cost_usd,
             },
         )
-        
+
+        # Log running total cost
+        self.logger.info(
+            f"LLM Running Total: {self.decision_engine.total_calls} calls, "
+            f"${self.decision_engine.total_cost_usd:.6f} total cost",
+            extra={
+                "tick": self.tick_count,
+                "llm_total_cost_usd": self.decision_engine.total_cost_usd,
+                "llm_total_calls": self.decision_engine.total_calls,
+            },
+        )
+
         # Log strategy being followed
         if decision.selected_strategy:
             self.logger.info(
@@ -305,28 +329,28 @@ class TradingAgent:
                 "No specific strategy selected - using general decision making",
                 extra={"tick": self.tick_count},
             )
-        
+
         # Step 2.5: If LLM provided target allocation, generate rebalancing plan
         actions_to_execute = decision.actions
-        
+
         if decision.target_allocation:
             self.logger.info(
                 f"Target allocation provided: {decision.target_allocation}",
                 extra={"tick": self.tick_count},
             )
-            
+
             # Convert account state to portfolio state
             portfolio_state = PortfolioState.from_account_state(account_state)
-            
+
             # Create target allocation object
             target = TargetAllocation(
                 allocations=decision.target_allocation,
                 strategy_id=decision.selected_strategy,
             )
-            
+
             # Generate rebalancing plan
             plan = self.rebalancer.create_rebalancing_plan(portfolio_state, target)
-            
+
             self.logger.info(
                 f"Rebalancing plan generated: {len(plan.actions)} actions, "
                 f"estimated cost: ${plan.estimated_cost:.2f}",
@@ -336,16 +360,16 @@ class TradingAgent:
                     "estimated_cost": plan.estimated_cost,
                 },
             )
-            
+
             if plan.reasoning:
                 self.logger.info(
                     f"Rebalancing reasoning: {plan.reasoning}",
                     extra={"tick": self.tick_count},
                 )
-            
+
             # Use rebalancing plan actions instead of direct LLM actions
             actions_to_execute = plan.actions
-        
+
         self.logger.info(
             f"Decision received: {len(actions_to_execute)} actions to execute",
             extra={
@@ -354,7 +378,7 @@ class TradingAgent:
                 "selected_strategy": decision.selected_strategy,
             },
         )
-        
+
         # Step 3: Execute trades with retry logic
         for i, action in enumerate(actions_to_execute):
             self.logger.info(
@@ -369,10 +393,10 @@ class TradingAgent:
                     "reasoning": action.reasoning,
                 },
             )
-            
+
             try:
                 result = retry_with_backoff(
-                    lambda: self.executor.execute_action(action),
+                    lambda a=action: self.executor.execute_action(a),
                     self.config.agent.max_retries,
                     self.config.agent.retry_backoff_base,
                 )
@@ -387,7 +411,7 @@ class TradingAgent:
                     },
                 )
                 continue
-            
+
             # Log execution result
             log_level = logging.INFO if result.success else logging.ERROR
             self.logger.log(
@@ -403,7 +427,7 @@ class TradingAgent:
                     "error": result.error,
                 },
             )
-        
+
         self.logger.info(
             f"Tick {self.tick_count} completed",
             extra={"tick": self.tick_count, "actions_executed": len(actions_to_execute)},
@@ -418,31 +442,31 @@ class TradingAgent:
         # Create logger
         logger = logging.getLogger("hyperliquid_agent")
         logger.setLevel(self.config.agent.log_level)
-        
+
         # Remove existing handlers to avoid duplicates
         logger.handlers.clear()
-        
+
         # Prevent propagation to root logger
         logger.propagate = False
-        
+
         # Create logs directory if it doesn't exist
         logs_dir = Path("logs")
         logs_dir.mkdir(exist_ok=True)
-        
+
         # File handler with structured JSON logging
         file_handler = logging.FileHandler(logs_dir / "agent.log")
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(JSONFormatter())
         logger.addHandler(file_handler)
-        
+
         # Console handler with colored human-readable format
         console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
+        # Use the same log level as the logger for console output
+        console_handler.setLevel(self.config.agent.log_level)
         console_formatter = ColoredConsoleFormatter(
-            "%(asctime)s [%(levelname)s] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S"
+            "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
         )
         console_handler.setFormatter(console_formatter)
         logger.addHandler(console_handler)
-        
+
         return logger

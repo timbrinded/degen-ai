@@ -1,6 +1,7 @@
 """Decision engine for generating trading decisions using LLM."""
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -33,6 +34,10 @@ class DecisionResult:
     raw_response: str = ""
     success: bool = True
     error: str | None = None
+    # Cost tracking
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
 
 
 class PromptTemplate:
@@ -155,6 +160,12 @@ class DecisionEngine:
         self.llm_config = llm_config
         self.prompt_template = prompt_template
         self.client = self._init_llm_client()
+        self.logger = logging.getLogger("hyperliquid_agent.decision")
+        # Cost tracking
+        self.total_cost_usd = 0.0
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_calls = 0
 
     def _init_llm_client(self):
         """Initialize LLM client based on provider.
@@ -187,14 +198,24 @@ class DecisionEngine:
         """
         try:
             prompt = self.prompt_template.format(account_state)
-            response = self._query_llm(prompt)
+            response, input_tokens, output_tokens, cost_usd = self._query_llm(prompt)
             actions, selected_strategy, target_allocation = self._parse_response(response)
+
+            # Update running totals
+            self.total_input_tokens += input_tokens
+            self.total_output_tokens += output_tokens
+            self.total_cost_usd += cost_usd
+            self.total_calls += 1
+
             return DecisionResult(
                 actions=actions,
                 selected_strategy=selected_strategy,
                 target_allocation=target_allocation,
                 raw_response=response,
                 success=True,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_usd=cost_usd,
             )
         except Exception as e:
             return DecisionResult(
@@ -205,29 +226,125 @@ class DecisionEngine:
                 error=str(e),
             )
 
-    def _query_llm(self, prompt: str) -> str:
-        """Send prompt to LLM and get response.
+    def _calculate_cost(
+        self, model: str, provider: str, input_tokens: int, output_tokens: int
+    ) -> float:
+        """Calculate cost in USD based on token usage.
+
+        Args:
+            model: Model name
+            provider: Provider name (openai or anthropic)
+            input_tokens: Number of input tokens
+            output_tokens: Number of output tokens
+
+        Returns:
+            Cost in USD
+        """
+        # Pricing as of 2025 (per million tokens)
+        # OpenAI pricing
+        openai_pricing = {
+            "gpt-4o": {"input": 2.50, "output": 10.00},
+            "gpt-4o-mini": {"input": 0.15, "output": 0.60},
+            "gpt-4-turbo": {"input": 10.00, "output": 30.00},
+            "gpt-5-mini-2025-08-07": {"input": 0.25, "output": 2.00},
+            "gpt-4": {"input": 30.00, "output": 60.00},
+            "gpt-3.5-turbo": {"input": 0.50, "output": 1.50},
+            "o1": {"input": 15.00, "output": 60.00},
+            "o1-mini": {"input": 3.00, "output": 12.00},
+            "o3-mini": {"input": 1.10, "output": 4.40},
+        }
+
+        # Anthropic pricing
+        anthropic_pricing = {
+            "claude-3-5-sonnet-20241022": {"input": 3.00, "output": 15.00},
+            "claude-3-5-haiku-20241022": {"input": 0.80, "output": 4.00},
+            "claude-3-opus-20240229": {"input": 15.00, "output": 75.00},
+            "claude-3-sonnet-20240229": {"input": 3.00, "output": 15.00},
+            "claude-3-haiku-20240307": {"input": 0.25, "output": 1.25},
+        }
+
+        pricing = openai_pricing if provider == "openai" else anthropic_pricing
+
+        # Find matching model (handle version suffixes)
+        model_pricing = None
+        for key in pricing:
+            if model.startswith(key):
+                model_pricing = pricing[key]
+                break
+
+        if not model_pricing:
+            # Default to a reasonable estimate if model not found
+            self.logger.warning(f"Unknown model pricing for {model}, using default estimate")
+            model_pricing = {"input": 1.00, "output": 3.00}
+
+        input_cost = (input_tokens / 1_000_000) * model_pricing["input"]
+        output_cost = (output_tokens / 1_000_000) * model_pricing["output"]
+
+        return input_cost + output_cost
+
+    def _query_llm(self, prompt: str) -> tuple[str, int, int, float]:
+        """Send prompt to LLM and get response with usage tracking.
 
         Args:
             prompt: Formatted prompt string
 
         Returns:
-            LLM response text
+            Tuple of (response text, input tokens, output tokens, cost in USD)
 
         Raises:
             Exception: If LLM query fails
         """
+        self.logger.debug(
+            f"Making LLM call: provider={self.llm_config.provider}, "
+            f"model={self.llm_config.model}, "
+            f"max_tokens={self.llm_config.max_tokens}"
+        )
+
         if self.llm_config.provider == "openai":
             from openai import OpenAI
 
             client: OpenAI = self.client  # type: ignore
-            response = client.chat.completions.create(
-                model=self.llm_config.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=self.llm_config.temperature,
-                max_tokens=self.llm_config.max_tokens,
+
+            # GPT-5 models use the responses API
+            if self.llm_config.model.startswith("gpt-5"):
+                self.logger.debug("gpt-5 model selected, using responses api")
+                response = client.responses.create(
+                    model=self.llm_config.model,
+                    input=prompt,
+                    max_output_tokens=self.llm_config.max_tokens,
+                )
+                result = response.output_text or ""
+                # GPT-5 API may have different usage tracking
+                input_tokens = getattr(response, "input_tokens", 0)
+                output_tokens = getattr(response, "output_tokens", 0)
+            else:
+                # GPT-4 and earlier models use completions API
+                self.logger.debug("non gpt-5 model selected, using completions api")
+                response = client.chat.completions.create(
+                    model=self.llm_config.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=self.llm_config.temperature,
+                    max_tokens=self.llm_config.max_tokens,
+                )
+                result = response.choices[0].message.content or ""
+                input_tokens = response.usage.prompt_tokens if response.usage else 0
+                output_tokens = response.usage.completion_tokens if response.usage else 0
+
+            self.logger.debug(f"LLM response received: {len(result)} characters")
+
+            # Check for empty response
+            if not result or not result.strip():
+                raise ValueError(
+                    f"LLM returned empty response. Model: {self.llm_config.model}, "
+                    f"Provider: {self.llm_config.provider}. This may indicate an API issue "
+                    "or the model refusing to respond."
+                )
+
+            cost = self._calculate_cost(
+                self.llm_config.model, self.llm_config.provider, input_tokens, output_tokens
             )
-            return response.choices[0].message.content or ""
+            return result, input_tokens, output_tokens, cost
+
         elif self.llm_config.provider == "anthropic":
             from anthropic import Anthropic
             from anthropic.types import TextBlock
@@ -239,11 +356,23 @@ class DecisionEngine:
                 temperature=self.llm_config.temperature,
                 max_tokens=self.llm_config.max_tokens,
             )
+
+            # Extract usage information
+            input_tokens = response.usage.input_tokens
+            output_tokens = response.usage.output_tokens
+
             # Extract text from the first text block
+            result = ""
             for block in response.content:
                 if isinstance(block, TextBlock):
-                    return block.text
-            return ""
+                    result = block.text
+                    self.logger.debug(f"LLM response received: {len(result)} characters")
+                    break
+
+            cost = self._calculate_cost(
+                self.llm_config.model, self.llm_config.provider, input_tokens, output_tokens
+            )
+            return result, input_tokens, output_tokens, cost
         else:
             raise ValueError(f"Unsupported LLM provider: {self.llm_config.provider}")
 
@@ -289,6 +418,11 @@ class DecisionEngine:
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in response: {e}") from e
 
+        # Check if LLM returned an error state
+        if data.get("error"):
+            error_reason = data.get("error_reason", "LLM reported error without reason")
+            raise ValueError(f"LLM decision error: {error_reason}")
+
         # Extract selected strategy
         selected_strategy = data.get("selected_strategy")
 
@@ -298,9 +432,7 @@ class DecisionEngine:
             target_alloc_data = data["target_allocation"]
             if isinstance(target_alloc_data, dict):
                 # Validate and normalize allocation
-                target_allocation = {
-                    str(k): float(v) for k, v in target_alloc_data.items()
-                }
+                target_allocation = {str(k): float(v) for k, v in target_alloc_data.items()}
 
         # Parse actions
         actions = []

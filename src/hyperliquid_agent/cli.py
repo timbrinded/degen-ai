@@ -8,7 +8,7 @@ app = typer.Typer()
 
 
 @app.command()
-def run(
+def start(
     config: Path = typer.Option(
         "config.toml",
         "--config",

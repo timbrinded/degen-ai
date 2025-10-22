@@ -44,6 +44,16 @@ OPTION 2 - Direct Actions (For time-sensitive or specific trades):
   ]
 }}
 
+OPTION 3 - Error/Unable to Decide (REQUIRED fallback if you cannot make a decision):
+{{
+  "error": true,
+  "error_reason": "Detailed explanation of why you cannot make a decision",
+  "actions": []
+}}
+
+CRITICAL: You MUST respond with valid JSON in one of the above formats. Never return an empty response.
+If you cannot analyze the data, lack information, or encounter any issue, use OPTION 3 (error format).
+
 Consider:
 - Risk management and position sizing
 - Market conditions and trends
@@ -52,5 +62,6 @@ Consider:
 - Strategy preconditions and fit
 - Use target_allocation for strategic rebalancing
 - Use direct actions for tactical/urgent trades
+- Use error format if unable to decide
 
-Provide your decision:
+Provide your decision as valid JSON:

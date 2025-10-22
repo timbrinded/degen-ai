@@ -139,9 +139,7 @@ class PortfolioRebalancer:
 
         # Filter out small deviations below threshold
         significant_deltas = {
-            coin: delta
-            for coin, delta in deltas.items()
-            if abs(delta) >= self.rebalance_threshold
+            coin: delta for coin, delta in deltas.items() if abs(delta) >= self.rebalance_threshold
         }
 
         if not significant_deltas:
@@ -189,11 +187,11 @@ class PortfolioRebalancer:
                     market_type=position.market_type,
                     size=size_to_reduce,
                     price=None,  # Market order
-                    reasoning=f"Reduce {coin} from {current.allocations.get(coin, 0)*100:.1f}% to {target.allocations.get(coin, 0)*100:.1f}%",
+                    reasoning=f"Reduce {coin} from {current.allocations.get(coin, 0) * 100:.1f}% to {target.allocations.get(coin, 0) * 100:.1f}%",
                 )
             )
             reasoning_parts.append(
-                f"Reduce {coin}: {current.allocations.get(coin, 0)*100:.1f}% → {target.allocations.get(coin, 0)*100:.1f}%"
+                f"Reduce {coin}: {current.allocations.get(coin, 0) * 100:.1f}% → {target.allocations.get(coin, 0) * 100:.1f}%"
             )
 
         # Phase 2: Open/increase underweight positions (uses capital)
@@ -237,9 +235,7 @@ class PortfolioRebalancer:
             else:
                 # Skip if we don't have price data
                 # In production, this would fetch from market data
-                reasoning_parts.append(
-                    f"Skipped {coin}: no price data available for new position"
-                )
+                reasoning_parts.append(f"Skipped {coin}: no price data available for new position")
                 continue
 
             size_to_buy = increase_value / estimated_price
@@ -251,11 +247,11 @@ class PortfolioRebalancer:
                     market_type=market_type,
                     size=size_to_buy,
                     price=None,  # Market order
-                    reasoning=f"Increase {coin} from {current.allocations.get(coin, 0)*100:.1f}% to {target.allocations.get(coin, 0)*100:.1f}%",
+                    reasoning=f"Increase {coin} from {current.allocations.get(coin, 0) * 100:.1f}% to {target.allocations.get(coin, 0) * 100:.1f}%",
                 )
             )
             reasoning_parts.append(
-                f"Increase {coin}: {current.allocations.get(coin, 0)*100:.1f}% → {target.allocations.get(coin, 0)*100:.1f}%"
+                f"Increase {coin}: {current.allocations.get(coin, 0) * 100:.1f}% → {target.allocations.get(coin, 0) * 100:.1f}%"
             )
 
             # Update available capital

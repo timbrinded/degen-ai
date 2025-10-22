@@ -78,41 +78,41 @@ class PositionMonitor:
         # Extract account value and margin summary
         margin_summary = raw_state.get("marginSummary", {})
         account_value = float(margin_summary.get("accountValue", 0.0))
-        
+
         # Extract withdrawable balance (available balance)
         withdrawable = float(raw_state.get("withdrawable", 0.0))
-        
+
         # Parse positions from assetPositions
         positions = []
         asset_positions = raw_state.get("assetPositions", [])
-        
+
         for asset_pos in asset_positions:
             position_data = asset_pos.get("position", {})
             coin = position_data.get("coin", "")
-            
+
             # Skip if no position size
             size_str = position_data.get("szi", "0")
             size = float(size_str)
             if size == 0:
                 continue
-            
+
             # Extract position details
             entry_price = float(position_data.get("entryPx", 0.0))
-            
+
             # Get current price from position data or mark price
             mark_px = float(position_data.get("positionValue", 0.0))
             if size != 0 and mark_px != 0:
                 current_price = abs(mark_px / size)
             else:
                 current_price = entry_price
-            
+
             # Extract unrealized PnL
             unrealized_pnl = float(position_data.get("unrealizedPnl", 0.0))
-            
+
             # Determine market type (perp is default for Hyperliquid positions)
             # Spot positions would be in a different structure
             market_type: Literal["spot", "perp"] = "perp"
-            
+
             positions.append(
                 Position(
                     coin=coin,
@@ -123,7 +123,7 @@ class PositionMonitor:
                     market_type=market_type,
                 )
             )
-        
+
         return AccountState(
             portfolio_value=account_value,
             available_balance=withdrawable,

@@ -2,10 +2,11 @@
 
 import logging
 from dataclasses import dataclass
+from decimal import ROUND_DOWN, Decimal
+from typing import Any
 
 import eth_account
 from eth_account.signers.local import LocalAccount
-
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
 
@@ -39,7 +40,9 @@ class TradeExecutor:
             wallet=account,
             base_url=config.base_url,
         )
+        self.info = Info(config.base_url, skip_ws=True)
         self.logger = logging.getLogger(__name__)
+        self._asset_metadata_cache: dict[str, Any] = {}
 
     def execute_action(self, action: TradeAction) -> ExecutionResult:
         """Execute a single trade action.
@@ -88,6 +91,68 @@ class TradeExecutor:
                 exc_info=True,
             )
             return ExecutionResult(action=action, success=False, error=error_msg)
+
+    def _get_asset_metadata(self, coin: str) -> Any:
+        """Get asset metadata including szDecimals.
+
+        Args:
+            coin: Asset symbol (e.g., 'BTC', 'ETH')
+
+        Returns:
+            Asset metadata dictionary
+
+        Raises:
+            ValueError: If asset not found
+        """
+        if coin in self._asset_metadata_cache:
+            return self._asset_metadata_cache[coin]
+
+        try:
+            meta = self.info.meta()
+            universe = meta.get("universe", [])
+
+            for asset in universe:
+                if asset.get("name") == coin:
+                    self._asset_metadata_cache[coin] = asset
+                    return asset
+
+            raise ValueError(f"Asset {coin} not found in universe")
+        except Exception as e:
+            self.logger.error(f"Failed to get metadata for {coin}: {e}")
+            raise
+
+    def _round_size(self, size: float, coin: str) -> float:
+        """Round size to conform to asset's szDecimals requirement.
+
+        Args:
+            size: Raw size value
+            coin: Asset symbol
+
+        Returns:
+            Rounded size that conforms to exchange requirements
+        """
+        try:
+            metadata = self._get_asset_metadata(coin)
+            sz_decimals = metadata.get("szDecimals", 0)
+
+            # Use Decimal for precise rounding
+            size_decimal = Decimal(str(size))
+
+            # Round down to szDecimals places
+            quantizer = Decimal(10) ** -sz_decimals
+            rounded = size_decimal.quantize(quantizer, rounding=ROUND_DOWN)
+
+            result = float(rounded)
+
+            if result != size:
+                self.logger.debug(
+                    f"Rounded {coin} size from {size} to {result} (szDecimals={sz_decimals})"
+                )
+
+            return result
+        except Exception as e:
+            self.logger.warning(f"Failed to round size for {coin}, using original value: {e}")
+            return size
 
     def _validate_action(self, action: TradeAction) -> bool:
         """Validate action parameters before submission.
@@ -145,11 +210,14 @@ class TradeExecutor:
             if action.size is None:
                 raise ValueError("Size must be specified for close action")
 
+            # Round size to conform to exchange requirements
+            rounded_size = self._round_size(action.size, action.coin)
+
             # Submit market order to close
             return self.exchange.market_open(
                 name=action.coin,
                 is_buy=is_buy,
-                sz=action.size,
+                sz=rounded_size,
                 px=None,  # Market order
             )
 
@@ -157,12 +225,15 @@ class TradeExecutor:
         if action.size is None:
             raise ValueError(f"Size must be specified for {action.action_type} action")
 
+        # Round size to conform to exchange requirements
+        rounded_size = self._round_size(action.size, action.coin)
+
         # Market order (price is None)
         if action.price is None:
             return self.exchange.market_open(
                 name=action.coin,
                 is_buy=is_buy,
-                sz=action.size,
+                sz=rounded_size,
                 px=None,
             )
 
@@ -170,7 +241,7 @@ class TradeExecutor:
         return self.exchange.order(
             name=action.coin,
             is_buy=is_buy,
-            sz=action.size,
+            sz=rounded_size,
             limit_px=action.price,
             order_type={"limit": {"tif": "Gtc"}},  # Good-til-cancel
         )
