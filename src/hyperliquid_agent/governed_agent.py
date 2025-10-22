@@ -127,6 +127,7 @@ class GovernedTradingAgent:
             current_time = datetime.now()
 
             try:
+                # TODO: Turn this into async parallel processes
                 # Determine which loops to run
                 run_fast = True
                 run_medium = self._should_run_medium_loop(current_time)

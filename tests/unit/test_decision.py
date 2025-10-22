@@ -25,7 +25,7 @@ def llm_config_openai():
         model="gpt-4",
         api_key="sk-test123",
         temperature=0.7,
-        max_tokens=1000,
+        max_tokens=10000,
     )
 
 
@@ -37,7 +37,7 @@ def llm_config_anthropic():
         model="claude-3-opus-20240229",
         api_key="sk-ant-test123",
         temperature=0.7,
-        max_tokens=1000,
+        max_tokens=10000,
     )
 
 

@@ -108,7 +108,7 @@ def test_load_minimal_config_with_defaults(minimal_config_toml):
 
         # Verify defaults are applied
         assert config.llm.temperature == 0.7
-        assert config.llm.max_tokens == 1000
+        assert config.llm.max_tokens == 10000
         assert config.agent.tick_interval_seconds == 60
         assert config.agent.max_retries == 5
         assert config.agent.retry_backoff_base == 2.0

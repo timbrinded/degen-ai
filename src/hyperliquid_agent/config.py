@@ -21,7 +21,7 @@ class LLMConfig:
     model: str
     api_key: str
     temperature: float = 0.7
-    max_tokens: int = 1000
+    max_tokens: int = 10000
 
 
 @dataclass
@@ -104,7 +104,7 @@ def load_config(config_path: str = "config.toml") -> Config:
         model=llm_data["model"],
         api_key=llm_data["api_key"],
         temperature=llm_data.get("temperature", 0.7),
-        max_tokens=llm_data.get("max_tokens", 1000),
+        max_tokens=llm_data.get("max_tokens", 10000),
     )
 
     # Parse Agent config with defaults
