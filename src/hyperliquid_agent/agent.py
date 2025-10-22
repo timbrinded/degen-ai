@@ -1,9 +1,11 @@
 """Main trading agent orchestration."""
 
+import json
 import logging
 import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, NoReturn, TypeVar
+from typing import Any, Callable, NoReturn, TypeVar
 
 from hyperliquid_agent.config import Config
 from hyperliquid_agent.decision import DecisionEngine, PromptTemplate
@@ -11,6 +13,82 @@ from hyperliquid_agent.executor import TradeExecutor
 from hyperliquid_agent.monitor import PositionMonitor
 
 T = TypeVar("T")
+
+
+class JSONFormatter(logging.Formatter):
+    """Custom formatter that outputs logs as valid JSON."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        """Format log record as JSON.
+
+        Args:
+            record: Log record to format
+
+        Returns:
+            JSON-formatted log string
+        """
+        log_data: dict[str, Any] = {
+            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+
+        # Add extra fields if present
+        if hasattr(record, "tick"):
+            log_data["tick"] = record.tick
+        if hasattr(record, "portfolio_value"):
+            log_data["portfolio_value"] = record.portfolio_value
+        if hasattr(record, "available_balance"):
+            log_data["available_balance"] = record.available_balance
+        if hasattr(record, "num_positions"):
+            log_data["num_positions"] = record.num_positions
+        if hasattr(record, "is_stale"):
+            log_data["is_stale"] = record.is_stale
+        if hasattr(record, "previous_value"):
+            log_data["previous_value"] = record.previous_value
+        if hasattr(record, "current_value"):
+            log_data["current_value"] = record.current_value
+        if hasattr(record, "change"):
+            log_data["change"] = record.change
+        if hasattr(record, "change_pct"):
+            log_data["change_pct"] = record.change_pct
+        if hasattr(record, "num_actions"):
+            log_data["num_actions"] = record.num_actions
+        if hasattr(record, "selected_strategy"):
+            log_data["selected_strategy"] = record.selected_strategy
+        if hasattr(record, "action_type"):
+            log_data["action_type"] = record.action_type
+        if hasattr(record, "coin"):
+            log_data["coin"] = record.coin
+        if hasattr(record, "market_type"):
+            log_data["market_type"] = record.market_type
+        if hasattr(record, "size"):
+            log_data["size"] = record.size
+        if hasattr(record, "price"):
+            log_data["price"] = record.price
+        if hasattr(record, "reasoning"):
+            log_data["reasoning"] = record.reasoning
+        if hasattr(record, "success"):
+            log_data["success"] = record.success
+        if hasattr(record, "order_id"):
+            log_data["order_id"] = record.order_id
+        if hasattr(record, "error"):
+            log_data["error"] = record.error
+        if hasattr(record, "actions_executed"):
+            log_data["actions_executed"] = record.actions_executed
+        if hasattr(record, "tick_interval"):
+            log_data["tick_interval"] = record.tick_interval
+        if hasattr(record, "max_retries"):
+            log_data["max_retries"] = record.max_retries
+        if hasattr(record, "log_level"):
+            log_data["log_level"] = record.log_level
+
+        # Add exception info if present
+        if record.exc_info:
+            log_data["exception"] = self.formatException(record.exc_info)
+
+        return json.dumps(log_data)
 
 
 def retry_with_backoff(
@@ -220,7 +298,7 @@ class TradingAgent:
         )
 
     def _setup_logging(self) -> logging.Logger:
-        """Configure structured logging.
+        """Configure structured logging with JSON format for files and human-readable format for console.
 
         Returns:
             Configured logger instance
@@ -232,32 +310,26 @@ class TradingAgent:
         # Remove existing handlers to avoid duplicates
         logger.handlers.clear()
         
-        # Create formatters
-        # Use JSON-like structured format for file logs
-        file_formatter = logging.Formatter(
-            '{"timestamp": "%(asctime)s", "level": "%(levelname)s", '
-            '"logger": "%(name)s", "message": "%(message)s"%(extra)s}',
-            datefmt="%Y-%m-%dT%H:%M:%S",
-        )
-        
-        # Use simpler format for console
-        console_formatter = logging.Formatter(
-            "%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
-        )
+        # Prevent propagation to root logger
+        logger.propagate = False
         
         # Create logs directory if it doesn't exist
         logs_dir = Path("logs")
         logs_dir.mkdir(exist_ok=True)
         
-        # File handler
+        # File handler with structured JSON logging
         file_handler = logging.FileHandler(logs_dir / "agent.log")
         file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(file_formatter)
+        file_handler.setFormatter(JSONFormatter())
         logger.addHandler(file_handler)
         
-        # Console handler
+        # Console handler with human-readable format
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.INFO)
+        console_formatter = logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        )
         console_handler.setFormatter(console_formatter)
         logger.addHandler(console_handler)
         
