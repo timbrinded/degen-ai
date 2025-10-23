@@ -7,6 +7,87 @@ import typer
 app = typer.Typer()
 
 
+def _create_governed_agent(config_path: str):
+    """Helper to create a GovernedTradingAgent instance from config.
+
+    Args:
+        config_path: Path to configuration file
+
+    Returns:
+        Tuple of (Config, GovernedTradingAgent)
+
+    Raises:
+        typer.Exit: If governance config is missing
+    """
+    from hyperliquid_agent.config import load_config
+    from hyperliquid_agent.governed_agent import GovernedAgentConfig, GovernedTradingAgent
+    from hyperliquid_agent.governance.governor import GovernorConfig
+    from hyperliquid_agent.governance.regime import RegimeDetectorConfig
+    from hyperliquid_agent.governance.tripwire import TripwireConfig
+
+    cfg = load_config(config_path)
+
+    if cfg.governance is None:
+        typer.echo("Error: [governance] section missing in config file", err=True)
+        raise typer.Exit(code=1)
+
+    # Convert config dicts to proper types
+    governor_config = GovernorConfig(
+        minimum_advantage_over_cost_bps=cfg.governance.governor.get(
+            "minimum_advantage_over_cost_bps", 50.0
+        ),
+        cooldown_after_change_minutes=cfg.governance.governor.get(
+            "cooldown_after_change_minutes", 60
+        ),
+        partial_rotation_pct_per_cycle=cfg.governance.governor.get(
+            "partial_rotation_pct_per_cycle", 25.0
+        ),
+        state_persistence_path=cfg.governance.governor.get(
+            "state_persistence_path", "state/governor.json"
+        ),
+    )
+
+    regime_config = RegimeDetectorConfig(
+        confirmation_cycles_required=cfg.governance.regime_detector.get(
+            "confirmation_cycles_required", 3
+        ),
+        hysteresis_enter_threshold=cfg.governance.regime_detector.get(
+            "hysteresis_enter_threshold", 0.7
+        ),
+        hysteresis_exit_threshold=cfg.governance.regime_detector.get(
+            "hysteresis_exit_threshold", 0.4
+        ),
+        event_lock_window_hours_before=cfg.governance.regime_detector.get(
+            "event_lock_window_hours_before", 2
+        ),
+        event_lock_window_hours_after=cfg.governance.regime_detector.get(
+            "event_lock_window_hours_after", 1
+        ),
+    )
+
+    tripwire_config = TripwireConfig(
+        min_margin_ratio=cfg.governance.tripwire.get("min_margin_ratio", 0.15),
+        liquidation_proximity_threshold=cfg.governance.tripwire.get(
+            "liquidation_proximity_threshold", 0.25
+        ),
+        daily_loss_limit_pct=cfg.governance.tripwire.get("daily_loss_limit_pct", 5.0),
+        max_data_staleness_seconds=cfg.governance.tripwire.get("max_data_staleness_seconds", 300),
+        max_api_failure_count=cfg.governance.tripwire.get("max_api_failure_count", 3),
+    )
+
+    gov_config = GovernedAgentConfig(
+        governor=governor_config,
+        regime_detector=regime_config,
+        tripwire=tripwire_config,
+        fast_loop_interval_seconds=cfg.governance.fast_loop_interval_seconds,
+        medium_loop_interval_minutes=cfg.governance.medium_loop_interval_minutes,
+        slow_loop_interval_hours=cfg.governance.slow_loop_interval_hours,
+    )
+
+    agent = GovernedTradingAgent(cfg, gov_config)
+    return cfg, agent
+
+
 @app.command()
 def start(
     config: Path = typer.Option(
@@ -15,14 +96,36 @@ def start(
         "-c",
         help="Path to configuration file",
     ),
+    governed: bool = typer.Option(
+        False,
+        "--governed",
+        "-g",
+        help="Run in governed mode with multi-timescale decision-making",
+    ),
 ) -> None:
     """Start the Hyperliquid trading agent."""
-    from hyperliquid_agent.agent import TradingAgent
     from hyperliquid_agent.config import load_config
 
-    cfg = load_config(str(config))
-    agent = TradingAgent(cfg)
-    agent.run()
+    if governed:
+        cfg, agent = _create_governed_agent(str(config))
+
+        typer.echo("Starting agent in GOVERNED mode...")
+        if cfg.governance:
+            typer.echo(
+                f"  Fast loop: every {cfg.governance.fast_loop_interval_seconds}s | "
+                f"Medium loop: every {cfg.governance.medium_loop_interval_minutes}m | "
+                f"Slow loop: every {cfg.governance.slow_loop_interval_hours}h"
+            )
+
+        agent.run()
+    else:
+        from hyperliquid_agent.agent import TradingAgent
+        from hyperliquid_agent.config import load_config
+
+        cfg = load_config(str(config))
+        typer.echo("Starting agent in STANDARD mode...")
+        agent = TradingAgent(cfg)
+        agent.run()
 
 
 @app.command()
@@ -64,6 +167,241 @@ def status(
             typer.echo(f"  Unrealized PnL: {pnl_sign}${pos.unrealized_pnl:,.2f}")
 
     typer.echo(f"\n{'=' * 60}\n")
+
+
+@app.command()
+def gov_plan(
+    config: Path = typer.Option(
+        "config.toml",
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
+) -> None:
+    """Show active governance plan status."""
+    _, agent = _create_governed_agent(str(config))
+
+    # Get plan status
+    status = agent.get_active_plan_status()
+
+    typer.echo(f"\n{'=' * 70}")
+    typer.echo("ACTIVE PLAN STATUS")
+    typer.echo(f"{'=' * 70}")
+
+    if not status["has_active_plan"]:
+        typer.echo(f"\n{status['message']}")
+        typer.echo(f"\n{'=' * 70}\n")
+        return
+
+    typer.echo(f"\nPlan ID:          {status['plan_id']}")
+    typer.echo(f"Strategy:         {status['strategy_name']} (v{status['strategy_version']})")
+    typer.echo(f"Status:           {status['status'].upper()}")
+    typer.echo(f"Objective:        {status['objective']}")
+    typer.echo(f"Time Horizon:     {status['time_horizon']}")
+    typer.echo(f"Target Duration:  {status['target_holding_period_hours']}h")
+
+    typer.echo(f"\n{'-' * 70}")
+    typer.echo("TIMING")
+    typer.echo(f"{'-' * 70}")
+    typer.echo(f"Created:          {status['created_at']}")
+    typer.echo(f"Activated:        {status['activated_at']}")
+    typer.echo(
+        f"Dwell Time:       {status['dwell_elapsed_minutes']:.1f} / {status['minimum_dwell_minutes']} min"
+    )
+    typer.echo(f"Cooldown:         {status['cooldown_elapsed_minutes']:.1f} min")
+    typer.echo(f"Can Review:       {'✓ YES' if status['can_review'] else '✗ NO'}")
+    typer.echo(f"Review Reason:    {status['review_reason']}")
+
+    if status["rebalance_progress_pct"] > 0:
+        typer.echo(f"Rebalance:        {status['rebalance_progress_pct']:.1f}% complete")
+
+    typer.echo(f"\n{'-' * 70}")
+    typer.echo("TARGET ALLOCATIONS")
+    typer.echo(f"{'-' * 70}")
+    for alloc in status["target_allocations"]:
+        typer.echo(
+            f"  {alloc['coin']:8s} {alloc['target_pct']:6.2f}% ({alloc['market_type']}, {alloc['leverage']}x)"
+        )
+
+    typer.echo(f"\n{'-' * 70}")
+    typer.echo("RISK BUDGET")
+    typer.echo(f"{'-' * 70}")
+    typer.echo(f"Max Leverage:     {status['risk_budget']['max_leverage']}x")
+    typer.echo(f"Max Adverse Exc:  {status['risk_budget']['max_adverse_excursion_pct']}%")
+    typer.echo(f"Max Drawdown:     {status['risk_budget']['plan_max_drawdown_pct']}%")
+
+    typer.echo(f"\n{'-' * 70}")
+    typer.echo("REGIME COMPATIBILITY")
+    typer.echo(f"{'-' * 70}")
+    typer.echo(f"Compatible:       {', '.join(status['compatible_regimes'])}")
+    typer.echo(f"Avoid:            {', '.join(status['avoid_regimes'])}")
+
+    typer.echo(f"\n{'=' * 70}\n")
+
+
+@app.command()
+def gov_regime(
+    config: Path = typer.Option(
+        "config.toml",
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
+) -> None:
+    """Show current regime classification status."""
+    _, agent = _create_governed_agent(str(config))
+
+    # Get regime status
+    status = agent.get_regime_status()
+
+    typer.echo(f"\n{'=' * 70}")
+    typer.echo("REGIME CLASSIFICATION STATUS")
+    typer.echo(f"{'=' * 70}")
+
+    typer.echo(f"\nCurrent Regime:   {status['current_regime'].upper()}")
+    typer.echo(f"History Length:   {status['history_length']} classifications")
+
+    if status["in_event_lock"]:
+        typer.echo(f"\n⚠️  EVENT LOCK ACTIVE")
+        typer.echo(f"    {status['event_lock_reason']}")
+
+    typer.echo(f"\n{'-' * 70}")
+    typer.echo("CONFIGURATION")
+    typer.echo(f"{'-' * 70}")
+    typer.echo(f"Confirmation Cycles:  {status['confirmation_cycles_required']}")
+    typer.echo(f"Enter Threshold:      {status['hysteresis_enter_threshold']:.2f}")
+    typer.echo(f"Exit Threshold:       {status['hysteresis_exit_threshold']:.2f}")
+
+    if status["recent_classifications"]:
+        typer.echo(f"\n{'-' * 70}")
+        typer.echo("RECENT CLASSIFICATIONS")
+        typer.echo(f"{'-' * 70}")
+        for classification in status["recent_classifications"]:
+            typer.echo(
+                f"  {classification['timestamp'][:19]} | "
+                f"{classification['regime']:15s} | "
+                f"confidence: {classification['confidence']:.2f}"
+            )
+
+    typer.echo(f"\n{'=' * 70}\n")
+
+
+@app.command()
+def gov_tripwire(
+    config: Path = typer.Option(
+        "config.toml",
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
+) -> None:
+    """Show tripwire status and active alerts."""
+    _, agent = _create_governed_agent(str(config))
+
+    # Get tripwire status
+    status = agent.get_tripwire_status()
+
+    typer.echo(f"\n{'=' * 70}")
+    typer.echo("TRIPWIRE STATUS")
+    typer.echo(f"{'=' * 70}")
+
+    typer.echo(f"\nActive Tripwires: {status['active_tripwires']}")
+
+    if status["active_tripwires"] > 0:
+        typer.echo(f"\n⚠️  ALERTS ACTIVE")
+        typer.echo(f"\n{'-' * 70}")
+        typer.echo("TRIGGERED EVENTS")
+        typer.echo(f"{'-' * 70}")
+        for event in status["events"]:
+            severity_icon = "🔴" if event["severity"] == "critical" else "🟡"
+            typer.echo(f"\n{severity_icon} {event['severity'].upper()} - {event['category']}")
+            typer.echo(f"   Trigger: {event['trigger']}")
+            typer.echo(f"   Action:  {event['action']}")
+            typer.echo(f"   Time:    {event['timestamp'][:19]}")
+            if event["details"]:
+                typer.echo(f"   Details: {event['details']}")
+    else:
+        typer.echo("\n✓ All systems nominal - no tripwires active")
+
+    typer.echo(f"\n{'-' * 70}")
+    typer.echo("CURRENT STATE")
+    typer.echo(f"{'-' * 70}")
+    typer.echo(f"Portfolio Value:  ${status['current_state']['portfolio_value']:,.2f}")
+    typer.echo(f"Daily Loss:       {status['current_state']['daily_loss_pct']:.2f}%")
+    typer.echo(f"API Failures:     {status['current_state']['api_failure_count']}")
+
+    typer.echo(f"\n{'-' * 70}")
+    typer.echo("CONFIGURATION")
+    typer.echo(f"{'-' * 70}")
+    typer.echo(f"Min Margin Ratio:         {status['config']['min_margin_ratio']:.2f}")
+    typer.echo(
+        f"Liquidation Threshold:    {status['config']['liquidation_proximity_threshold']:.2f}"
+    )
+    typer.echo(f"Daily Loss Limit:         {status['config']['daily_loss_limit_pct']:.1f}%")
+    typer.echo(f"Max Data Staleness:       {status['config']['max_data_staleness_seconds']}s")
+    typer.echo(f"Max API Failures:         {status['config']['max_api_failure_count']}")
+
+    typer.echo(f"\n{'=' * 70}\n")
+
+
+@app.command()
+def gov_metrics(
+    config: Path = typer.Option(
+        "config.toml",
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
+) -> None:
+    """Show plan performance metrics."""
+    _, agent = _create_governed_agent(str(config))
+
+    # Get performance metrics
+    metrics = agent.get_plan_performance_metrics()
+
+    typer.echo(f"\n{'=' * 70}")
+    typer.echo("PLAN PERFORMANCE METRICS")
+    typer.echo(f"{'=' * 70}")
+
+    if not metrics["has_active_metrics"]:
+        typer.echo(f"\n{metrics['message']}")
+        typer.echo(f"Completed Plans: {metrics['completed_plans_count']}")
+        typer.echo(f"\n{'=' * 70}\n")
+        return
+
+    typer.echo(f"\nPlan ID:          {metrics['plan_id']}")
+    typer.echo(f"Start Time:       {metrics['start_time']}")
+    typer.echo(f"Duration:         {metrics['duration_hours']:.2f} hours")
+
+    typer.echo(f"\n{'-' * 70}")
+    typer.echo("PERFORMANCE")
+    typer.echo(f"{'-' * 70}")
+    pnl_sign = "+" if metrics["total_pnl"] >= 0 else ""
+    typer.echo(f"Total PnL:        {pnl_sign}${metrics['total_pnl']:,.2f}")
+    typer.echo(f"Risk Taken:       {metrics['total_risk_taken']:.2f}")
+    typer.echo(f"PnL per Risk:     {metrics['pnl_per_unit_risk']:.4f}")
+
+    typer.echo(f"\n{'-' * 70}")
+    typer.echo("EXECUTION QUALITY")
+    typer.echo(f"{'-' * 70}")
+    typer.echo(f"Total Trades:     {metrics['total_trades']}")
+    typer.echo(f"Winning Trades:   {metrics['winning_trades']}")
+    typer.echo(f"Hit Rate:         {metrics['hit_rate']:.1%}")
+    typer.echo(f"Avg Slippage:     {metrics['avg_slippage_bps']:.2f} bps")
+
+    typer.echo(f"\n{'-' * 70}")
+    typer.echo("PLAN ADHERENCE")
+    typer.echo(f"{'-' * 70}")
+    typer.echo(f"Avg Drift:        {metrics['avg_drift_from_targets_pct']:.2f}%")
+    typer.echo(f"Rebalances:       {metrics['rebalance_count']}")
+
+    typer.echo(f"\n{'-' * 70}")
+    typer.echo("TRACKING")
+    typer.echo(f"{'-' * 70}")
+    typer.echo(f"Completed Plans:  {metrics['completed_plans_count']}")
+    typer.echo(f"Shadow Portfolios: {metrics['shadow_portfolios_count']}")
+
+    typer.echo(f"\n{'=' * 70}\n")
 
 
 @app.command()

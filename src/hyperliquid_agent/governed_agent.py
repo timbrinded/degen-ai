@@ -1012,3 +1012,189 @@ class GovernedTradingAgent:
             bid_ask_spread_bps=0.0,
             order_book_depth=0.0,
         )
+
+    # Status methods for CLI commands
+
+    def get_active_plan_status(self) -> dict:
+        """Get current active plan status.
+
+        Returns:
+            Dictionary with active plan information
+        """
+        if self.governor.active_plan is None:
+            return {
+                "has_active_plan": False,
+                "message": "No active plan",
+            }
+
+        plan = self.governor.active_plan
+        current_time = datetime.now()
+
+        # Calculate dwell time elapsed
+        dwell_elapsed_minutes = 0.0
+        if plan.activated_at:
+            dwell_elapsed_minutes = (current_time - plan.activated_at).total_seconds() / 60
+
+        # Calculate cooldown elapsed
+        cooldown_elapsed_minutes = 0.0
+        if self.governor.last_change_at:
+            cooldown_elapsed_minutes = (
+                current_time - self.governor.last_change_at
+            ).total_seconds() / 60
+
+        # Check if review is permitted
+        can_review, review_reason = self.governor.can_review_plan(current_time)
+
+        return {
+            "has_active_plan": True,
+            "plan_id": plan.plan_id,
+            "strategy_name": plan.strategy_name,
+            "strategy_version": plan.strategy_version,
+            "objective": plan.objective,
+            "status": plan.status,
+            "created_at": plan.created_at.isoformat(),
+            "activated_at": plan.activated_at.isoformat() if plan.activated_at else None,
+            "time_horizon": plan.time_horizon,
+            "target_holding_period_hours": plan.target_holding_period_hours,
+            "minimum_dwell_minutes": plan.minimum_dwell_minutes,
+            "dwell_elapsed_minutes": dwell_elapsed_minutes,
+            "cooldown_elapsed_minutes": cooldown_elapsed_minutes,
+            "can_review": can_review,
+            "review_reason": review_reason,
+            "rebalance_progress_pct": plan.rebalance_progress_pct,
+            "target_allocations": [
+                {
+                    "coin": alloc.coin,
+                    "target_pct": alloc.target_pct,
+                    "market_type": alloc.market_type,
+                    "leverage": alloc.leverage,
+                }
+                for alloc in plan.target_allocations
+            ],
+            "risk_budget": {
+                "max_leverage": plan.risk_budget.max_leverage,
+                "max_adverse_excursion_pct": plan.risk_budget.max_adverse_excursion_pct,
+                "plan_max_drawdown_pct": plan.risk_budget.plan_max_drawdown_pct,
+            },
+            "compatible_regimes": plan.compatible_regimes,
+            "avoid_regimes": plan.avoid_regimes,
+        }
+
+    def get_regime_status(self) -> dict:
+        """Get current regime classification status.
+
+        Returns:
+            Dictionary with regime information
+        """
+        current_regime = self.regime_detector.current_regime
+        history_length = len(self.regime_detector.regime_history)
+
+        # Get recent regime history
+        recent_regimes = []
+        if self.regime_detector.regime_history:
+            recent_regimes = [
+                {
+                    "regime": classification.regime,
+                    "confidence": classification.confidence,
+                    "timestamp": classification.timestamp.isoformat(),
+                }
+                for classification in list(self.regime_detector.regime_history)[-5:]
+            ]
+
+        # Check event lock status
+        current_time = datetime.now()
+        in_event_lock, event_lock_reason = self.regime_detector.is_in_event_lock_window(
+            current_time
+        )
+
+        return {
+            "current_regime": current_regime,
+            "history_length": history_length,
+            "recent_classifications": recent_regimes,
+            "in_event_lock": in_event_lock,
+            "event_lock_reason": event_lock_reason,
+            "confirmation_cycles_required": self.regime_detector.config.confirmation_cycles_required,
+            "hysteresis_enter_threshold": self.regime_detector.config.hysteresis_enter_threshold,
+            "hysteresis_exit_threshold": self.regime_detector.config.hysteresis_exit_threshold,
+        }
+
+    def get_tripwire_status(self) -> dict:
+        """Get current tripwire status.
+
+        Returns:
+            Dictionary with tripwire information
+        """
+        # Get current account state
+        account_state = self.monitor.get_current_state()
+
+        # Check all tripwires
+        tripwire_events = self.tripwire_service.check_all_tripwires(
+            account_state, self.governor.active_plan
+        )
+
+        # Format events
+        events = [
+            {
+                "severity": event.severity,
+                "category": event.category,
+                "trigger": event.trigger,
+                "action": event.action.value,
+                "timestamp": event.timestamp.isoformat(),
+                "details": event.details,
+            }
+            for event in tripwire_events
+        ]
+
+        return {
+            "active_tripwires": len(tripwire_events),
+            "events": events,
+            "config": {
+                "min_margin_ratio": self.tripwire_service.config.min_margin_ratio,
+                "liquidation_proximity_threshold": self.tripwire_service.config.liquidation_proximity_threshold,
+                "daily_loss_limit_pct": self.tripwire_service.config.daily_loss_limit_pct,
+                "max_data_staleness_seconds": self.tripwire_service.config.max_data_staleness_seconds,
+                "max_api_failure_count": self.tripwire_service.config.max_api_failure_count,
+            },
+            "current_state": {
+                "api_failure_count": self.tripwire_service.api_failure_count,
+                "daily_loss_pct": self.tripwire_service.daily_loss_pct,
+                "portfolio_value": account_state.portfolio_value,
+            },
+        }
+
+    def get_plan_performance_metrics(self) -> dict:
+        """Get current plan performance metrics.
+
+        Returns:
+            Dictionary with performance metrics
+        """
+        if self.scorekeeper.active_metrics is None:
+            return {
+                "has_active_metrics": False,
+                "message": "No active plan being tracked",
+                "completed_plans_count": len(self.scorekeeper.completed_plans),
+            }
+
+        metrics = self.scorekeeper.active_metrics
+        current_time = datetime.now()
+
+        # Calculate duration
+        duration_hours = (current_time - metrics.start_time).total_seconds() / 3600
+
+        return {
+            "has_active_metrics": True,
+            "plan_id": metrics.plan_id,
+            "start_time": metrics.start_time.isoformat(),
+            "duration_hours": duration_hours,
+            "total_pnl": metrics.total_pnl,
+            "total_risk_taken": metrics.total_risk_taken,
+            "pnl_per_unit_risk": metrics.pnl_per_unit_risk,
+            "total_trades": metrics.total_trades,
+            "winning_trades": metrics.winning_trades,
+            "hit_rate": metrics.hit_rate,
+            "avg_slippage_bps": metrics.avg_slippage_bps,
+            "avg_drift_from_targets_pct": metrics.avg_drift_from_targets_pct,
+            "rebalance_count": metrics.rebalance_count,
+            "completed_plans_count": len(self.scorekeeper.completed_plans),
+            "shadow_portfolios_count": len(self.scorekeeper.shadow_portfolios),
+        }
