@@ -1,5 +1,6 @@
 """Signal collection system for time-scale-appropriate market signals."""
 
+from hyperliquid_agent.signals.cache import CacheEntry, CacheMetrics, SQLiteCacheLayer
 from hyperliquid_agent.signals.calculations import (
     calculate_realized_volatility,
     calculate_sma,
@@ -17,6 +18,8 @@ from hyperliquid_agent.signals.models import (
     MediumLoopSignals,
     SlowLoopSignals,
 )
+from hyperliquid_agent.signals.orchestrator import SignalOrchestrator
+from hyperliquid_agent.signals.service import SignalRequest, SignalResponse, SignalService
 
 __all__ = [
     # Models
@@ -33,4 +36,14 @@ __all__ = [
     "calculate_spread_bps",
     "calculate_sma",
     "calculate_trend_score",
+    # Cache
+    "SQLiteCacheLayer",
+    "CacheEntry",
+    "CacheMetrics",
+    # Service
+    "SignalService",
+    "SignalRequest",
+    "SignalResponse",
+    # Orchestrator
+    "SignalOrchestrator",
 ]
