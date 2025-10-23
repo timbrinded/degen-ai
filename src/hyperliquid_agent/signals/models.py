@@ -1,9 +1,140 @@
 """Signal data models for time-scale-appropriate market signals."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 
 from hyperliquid_agent.monitor import AccountState
+
+
+@dataclass
+class SignalQualityMetadata:
+    """Metadata about signal data quality and freshness.
+
+    Tracks the quality, age, and source of signal data to enable downstream
+    components to assess data reliability and make informed decisions about
+    whether to use or discard signals.
+    """
+
+    timestamp: datetime
+    """When the signal data was collected or last updated."""
+
+    confidence: float
+    """Confidence score from 0.0 to 1.0 based on data completeness and freshness.
+
+    - 1.0: Fresh data from all expected sources
+    - 0.5-0.9: Partial data or slightly stale
+    - <0.5: Stale data (>10 minutes old) or significant missing data
+    - 0.0: No valid data available
+    """
+
+    staleness_seconds: float
+    """Age of the data in seconds. 0.0 for fresh data, increases with cache age."""
+
+    sources: list[str]
+    """List of data sources that contributed to this signal (e.g., ['hyperliquid', 'coingecko'])."""
+
+    is_cached: bool
+    """Whether this data came from cache (True) or fresh fetch (False)."""
+
+    def calculate_confidence(
+        self,
+        expected_sources: list[str],
+        max_staleness_seconds: float = 600.0,  # 10 minutes
+    ) -> float:
+        """Calculate confidence score based on data completeness and freshness.
+
+        Args:
+            expected_sources: List of sources that should have provided data
+            max_staleness_seconds: Maximum acceptable staleness before confidence drops below 0.5
+
+        Returns:
+            Confidence score from 0.0 to 1.0
+        """
+        # Start with base confidence
+        confidence = 1.0
+
+        # Reduce confidence based on missing sources
+        if expected_sources:
+            source_completeness = len(self.sources) / len(expected_sources)
+            confidence *= source_completeness
+
+        # Reduce confidence based on staleness
+        if self.staleness_seconds > max_staleness_seconds:
+            # Data older than 10 minutes gets confidence below 0.5
+            staleness_penalty = max_staleness_seconds / max(self.staleness_seconds, 1.0)
+            confidence *= staleness_penalty
+        elif self.staleness_seconds > 0:
+            # Linear decay from 1.0 to 0.5 as staleness approaches max
+            staleness_factor = 1.0 - (0.5 * self.staleness_seconds / max_staleness_seconds)
+            confidence *= staleness_factor
+
+        # Ensure confidence stays in valid range
+        return max(0.0, min(1.0, confidence))
+
+    @classmethod
+    def create_fresh(cls, sources: list[str]) -> "SignalQualityMetadata":
+        """Create metadata for freshly fetched data.
+
+        Args:
+            sources: List of data sources that provided the data
+
+        Returns:
+            SignalQualityMetadata with fresh timestamp and high confidence
+        """
+        return cls(
+            timestamp=datetime.now(),
+            confidence=1.0,
+            staleness_seconds=0.0,
+            sources=sources,
+            is_cached=False,
+        )
+
+    @classmethod
+    def create_cached(
+        cls, sources: list[str], cache_age_seconds: float, expected_sources: list[str] | None = None
+    ) -> "SignalQualityMetadata":
+        """Create metadata for cached data with automatic confidence calculation.
+
+        Args:
+            sources: List of data sources in the cached data
+            cache_age_seconds: Age of the cached data in seconds
+            expected_sources: Optional list of expected sources for confidence calculation
+
+        Returns:
+            SignalQualityMetadata with cached flag and calculated confidence
+        """
+        metadata = cls(
+            timestamp=datetime.now(),
+            confidence=0.0,  # Will be calculated
+            staleness_seconds=cache_age_seconds,
+            sources=sources,
+            is_cached=True,
+        )
+
+        # Calculate confidence based on staleness and completeness
+        if expected_sources:
+            metadata.confidence = metadata.calculate_confidence(expected_sources)
+        else:
+            # Without expected sources, base confidence only on staleness
+            metadata.confidence = metadata.calculate_confidence([])
+
+        return metadata
+
+    @classmethod
+    def create_fallback(cls) -> "SignalQualityMetadata":
+        """Create metadata for fallback/default data with zero confidence.
+
+        Returns:
+            SignalQualityMetadata indicating no valid data available
+        """
+        return cls(
+            timestamp=datetime.now(),
+            confidence=0.0,
+            staleness_seconds=float("inf"),
+            sources=[],
+            is_cached=False,
+        )
 
 
 @dataclass
