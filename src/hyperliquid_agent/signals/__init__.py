@@ -19,6 +19,14 @@ from hyperliquid_agent.signals.models import (
     SlowLoopSignals,
 )
 from hyperliquid_agent.signals.orchestrator import SignalOrchestrator
+from hyperliquid_agent.signals.providers import (
+    CircuitBreaker,
+    CircuitState,
+    DataProvider,
+    ProviderResponse,
+    RetryConfig,
+    fetch_with_retry,
+)
 from hyperliquid_agent.signals.service import SignalRequest, SignalResponse, SignalService
 
 __all__ = [
@@ -40,6 +48,13 @@ __all__ = [
     "SQLiteCacheLayer",
     "CacheEntry",
     "CacheMetrics",
+    # Providers
+    "DataProvider",
+    "ProviderResponse",
+    "RetryConfig",
+    "CircuitBreaker",
+    "CircuitState",
+    "fetch_with_retry",
     # Service
     "SignalService",
     "SignalRequest",
