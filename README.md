@@ -255,6 +255,193 @@ This guide includes:
 - Security best practices
 - Troubleshooting tips
 
+## Governance System
+
+The agent includes an optional **Strategy Governance System** that prevents "strategy thrash" by introducing multi-timescale decision-making, policy persistence, and change governance. This transforms the agent from a tick-level oracle into a disciplined planner that commits to strategies and only changes them when conditions truly warrant it.
+
+### Why Governance?
+
+Without governance, the LLM can flip strategies every tick based on minor market fluctuations, leading to:
+- Excessive transaction costs from constant rebalancing
+- Whipsaw losses from entering/exiting positions repeatedly
+- Inability to let strategies play out over their intended time horizon
+- Death by a thousand cuts from fees and slippage
+
+The governance system solves this by enforcing **plan persistence**, **dwell times**, and **change thresholds**.
+
+### Multi-Timescale Architecture
+
+The governance system separates concerns across three time-scales:
+
+**Fast Loop (Execution)** - Runs every 5-30 seconds
+- Executes the active Strategy Plan Card deterministically
+- No LLM consultation, no strategy selection
+- Manages orders, enforces per-trade risk checks
+- Monitors tripwires for safety overrides
+
+**Medium Loop (Tactical Planning)** - Runs every 15 minutes to 2 hours
+- Produces and maintains Strategy Plan Cards
+- Consults LLM only when plan review is permitted
+- Evaluates plan change proposals against cost thresholds
+- Implements gradual rebalancing for large position changes
+
+**Slow Loop (Macro/Regime)** - Runs daily/weekly or on event triggers
+- Detects market regime changes with hysteresis
+- Updates macro event calendar
+- Can override dwell times when regime shifts are confirmed
+- Forces plan re-evaluation for structural market changes
+
+### Strategy Plan Cards
+
+A Strategy Plan Card is a first-class commitment that includes:
+
+- **Identity**: Strategy name, version, plan ID, creation timestamp
+- **Intent**: Objective, target holding period, time horizon, key thesis
+- **Targets**: Portfolio allocations, leverage bands
+- **Risk Budget**: Position limits, max leverage, drawdown limits
+- **Exit Rules**: Profit targets, stop conditions, invalidation triggers
+- **Change Cost**: Estimated fees, slippage, funding impact, opportunity cost
+- **Dwell Time**: Minimum commitment duration before changes are permitted
+
+### Key Governance Features
+
+**Dwell Time Enforcement**
+- Plans must remain active for their minimum dwell time (e.g., 2 hours)
+- Prevents premature abandonment of strategies
+- Can be overridden by regime changes or tripwires
+
+**Change Cost Analysis**
+- Calculates total cost of switching strategies (fees + slippage + funding + opportunity cost)
+- Requires expected advantage to exceed change cost by a configurable threshold (e.g., 50 bps)
+- Rejects unprofitable strategy switches
+
+**Regime Detection with Hysteresis**
+- Classifies markets into regimes: trending, range-bound, carry-friendly, event-risk
+- Requires sustained confirmation over multiple cycles before regime changes
+- Different thresholds for entering vs exiting regimes prevent ping-ponging
+
+**Independent Safety Tripwires**
+- Monitor account safety (margin, liquidation proximity, daily loss limits)
+- Check plan invalidation triggers (strategy-specific conditions)
+- Monitor operational health (API failures, stale data)
+- Override LLM decisions when safety is at risk
+
+**Gradual Rebalancing**
+- Large strategy changes are executed over multiple cycles
+- Reduces market impact and slippage
+- Tracks rebalance progress and prevents new changes until complete
+
+**Event Lock Windows**
+- Freezes plan changes before/after scheduled macro events (FOMC, CPI, etc.)
+- Prevents strategy switches during high-volatility periods
+- Maintains positions through announcements unless tripwires fire
+
+### Running with Governance
+
+**Enable governed mode:**
+
+```bash
+hyperliquid-agent --governed
+```
+
+**Run with custom config:**
+
+```bash
+hyperliquid-agent --governed --config config.toml
+```
+
+**View governance status:**
+
+```bash
+# Show active plan
+hyperliquid-agent status plan
+
+# Show current regime
+hyperliquid-agent status regime
+
+# Show tripwire status
+hyperliquid-agent status tripwires
+
+# Show plan performance
+hyperliquid-agent status metrics
+```
+
+### Governance Configuration
+
+The governance system is configured in the `[governance]` section of `config.toml`:
+
+```toml
+[governance]
+fast_loop_interval_seconds = 10
+medium_loop_interval_minutes = 30
+slow_loop_interval_hours = 24
+
+[governance.governor]
+minimum_advantage_over_cost_bps = 50.0
+cooldown_after_change_minutes = 60
+partial_rotation_pct_per_cycle = 25.0
+
+[governance.regime_detector]
+confirmation_cycles_required = 3
+hysteresis_enter_threshold = 0.7
+hysteresis_exit_threshold = 0.4
+
+[governance.tripwire]
+daily_loss_limit_pct = 5.0
+min_margin_ratio = 0.15
+```
+
+See **[docs/GOVERNANCE_CONFIG.md](docs/GOVERNANCE_CONFIG.md)** for detailed configuration guidance.
+
+### Strategy Metadata for Governance
+
+Strategies now include governance-specific metadata in their front matter:
+
+```yaml
+---
+title: "Funding Harvest Lite"
+intended_horizon: "hours"
+minimum_dwell_minutes: 120
+compatible_regimes: ["carry-friendly", "range-bound"]
+avoid_regimes: ["event-risk"]
+invalidation_triggers:
+  - "Funding rate flips negative for 3 consecutive windows"
+  - "Delta drift exceeds 0.08 despite rehedging"
+max_position_pct: 40.0
+max_leverage: 3.0
+expected_switching_cost_bps: 15.0
+---
+```
+
+See **[docs/STRATEGY_GOVERNANCE_METADATA.md](docs/STRATEGY_GOVERNANCE_METADATA.md)** for complete metadata documentation.
+
+### When to Use Governance
+
+**Use governed mode when:**
+- You want to reduce transaction costs from strategy thrashing
+- You're running strategies with specific time horizons (hours to days)
+- You want the agent to commit to plans and see them through
+- You need safety tripwires independent of LLM decisions
+- You're trading with real capital and want disciplined behavior
+
+**Use standard mode when:**
+- You want maximum LLM flexibility every tick
+- You're testing new strategies and want rapid iteration
+- You're running very short-term strategies (seconds to minutes)
+- You prefer manual oversight over automated governance
+
+### Governance vs Standard Mode Comparison
+
+| Aspect | Standard Mode | Governed Mode |
+|--------|--------------|---------------|
+| LLM Queries | Every tick | Only when review permitted |
+| Strategy Changes | Unrestricted | Dwell time + cost threshold |
+| Execution | LLM decides each tick | Follows active plan |
+| Safety | Manual monitoring | Automated tripwires |
+| Transaction Costs | Higher (frequent changes) | Lower (committed plans) |
+| Latency Tolerance | Requires fast LLM | Tolerates slow LLM |
+| Best For | Testing, short-term | Production, medium-term |
+
 ## Usage
 
 ### Running the Agent

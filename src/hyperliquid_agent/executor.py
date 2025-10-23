@@ -40,6 +40,7 @@ class TradeExecutor:
             wallet=account,
             base_url=config.base_url,
         )
+
         self.info = Info(config.base_url, skip_ws=True)
         self.logger = logging.getLogger(__name__)
         self._asset_metadata_cache: dict[str, Any] = {}
