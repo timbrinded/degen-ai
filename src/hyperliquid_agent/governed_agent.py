@@ -89,11 +89,15 @@ class GovernedTradingAgent:
         # Initialize base agent components (but don't use its run loop)
         self.base_agent = TradingAgent(config)
 
-        # Initialize governance components
-        self.governor = StrategyGovernor(governance_config.governor)
-        self.regime_detector = RegimeDetector(governance_config.regime_detector)
-        self.tripwire_service = TripwireService(governance_config.tripwire)
-        self.scorekeeper = PlanScorekeeper()
+        # Initialize governance components with logger
+        self.governor = StrategyGovernor(governance_config.governor, logger=self.base_agent.logger)
+        self.regime_detector = RegimeDetector(
+            governance_config.regime_detector, logger=self.base_agent.logger
+        )
+        self.tripwire_service = TripwireService(
+            governance_config.tripwire, logger=self.base_agent.logger
+        )
+        self.scorekeeper = PlanScorekeeper(logger=self.base_agent.logger)
 
         # Initialize enhanced monitor
         self.monitor = EnhancedPositionMonitor(config.hyperliquid)

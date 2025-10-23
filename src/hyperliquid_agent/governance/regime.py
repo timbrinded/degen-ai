@@ -1,5 +1,6 @@
 """Regime detection and classification data models."""
 
+import logging
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -111,18 +112,21 @@ class RegimeDetector:
         self,
         config: RegimeDetectorConfig,
         external_data_provider: ExternalDataProvider | None = None,
+        logger: logging.Logger | None = None,
     ):
         """Initialize regime detector.
 
         Args:
             config: Configuration for regime detection
             external_data_provider: Optional external data source for enhanced signals
+            logger: Optional logger instance for governance event logging
         """
         self.config = config
         self.current_regime: str = "unknown"
         self.regime_history: deque = deque(maxlen=config.confirmation_cycles_required)
         self.macro_calendar: list[dict] = []
         self.external_data = external_data_provider
+        self.logger = logger or logging.getLogger(__name__)
 
     def classify_regime(self, signals: RegimeSignals) -> RegimeClassification:
         """Classify current market regime based on signals.
@@ -143,50 +147,110 @@ class RegimeDetector:
             base_confidence = self._adjust_confidence_with_external_data(signals)
 
         # Trending: Strong directional movement
-        if signals.adx > 25 and abs(signals.price_sma_20 - signals.price_sma_50) / signals.price_sma_50 > 0.02:
+        if (
+            signals.adx > 25
+            and abs(signals.price_sma_20 - signals.price_sma_50) / signals.price_sma_50 > 0.02
+        ):
             confidence = min(signals.adx / 40, 1.0) * base_confidence
-            return RegimeClassification(
+            classification = RegimeClassification(
                 regime="trending",
                 confidence=confidence,
                 timestamp=datetime.now(),
                 signals=signals,
             )
+            self.logger.debug(
+                f"Regime classified: trending (confidence: {confidence:.2f})",
+                extra={
+                    "governance_event": "regime_classified",
+                    "regime": "trending",
+                    "confidence": confidence,
+                    "adx": signals.adx,
+                    "sma_20": signals.price_sma_20,
+                    "sma_50": signals.price_sma_50,
+                    "realized_vol_24h": signals.realized_vol_24h,
+                },
+            )
+            return classification
 
         # Range-bound: Low volatility, tight range
         if signals.realized_vol_24h < 0.3 and signals.adx < 20:
             confidence = 0.8 * base_confidence
-            return RegimeClassification(
+            classification = RegimeClassification(
                 regime="range-bound",
                 confidence=confidence,
                 timestamp=datetime.now(),
                 signals=signals,
             )
+            self.logger.debug(
+                f"Regime classified: range-bound (confidence: {confidence:.2f})",
+                extra={
+                    "governance_event": "regime_classified",
+                    "regime": "range-bound",
+                    "confidence": confidence,
+                    "adx": signals.adx,
+                    "realized_vol_24h": signals.realized_vol_24h,
+                },
+            )
+            return classification
 
         # Carry-friendly: Positive funding, low volatility
         if signals.avg_funding_rate > 0.01 and signals.realized_vol_24h < 0.4:
             confidence = 0.75 * base_confidence
-            return RegimeClassification(
+            classification = RegimeClassification(
                 regime="carry-friendly",
                 confidence=confidence,
                 timestamp=datetime.now(),
                 signals=signals,
             )
+            self.logger.debug(
+                f"Regime classified: carry-friendly (confidence: {confidence:.2f})",
+                extra={
+                    "governance_event": "regime_classified",
+                    "regime": "carry-friendly",
+                    "confidence": confidence,
+                    "avg_funding_rate": signals.avg_funding_rate,
+                    "realized_vol_24h": signals.realized_vol_24h,
+                },
+            )
+            return classification
 
         # Event-risk: Near scheduled macro event
         if self._is_near_macro_event():
-            return RegimeClassification(
+            classification = RegimeClassification(
                 regime="event-risk",
                 confidence=1.0,
                 timestamp=datetime.now(),
                 signals=signals,
             )
+            self.logger.info(
+                "Regime classified: event-risk (near macro event)",
+                extra={
+                    "governance_event": "regime_classified",
+                    "regime": "event-risk",
+                    "confidence": 1.0,
+                    "macro_events_count": len(self.macro_calendar),
+                },
+            )
+            return classification
 
-        return RegimeClassification(
+        classification = RegimeClassification(
             regime="unknown",
             confidence=0.5,
             timestamp=datetime.now(),
             signals=signals,
         )
+        self.logger.debug(
+            "Regime classified: unknown (no clear regime detected)",
+            extra={
+                "governance_event": "regime_classified",
+                "regime": "unknown",
+                "confidence": 0.5,
+                "adx": signals.adx,
+                "realized_vol_24h": signals.realized_vol_24h,
+                "avg_funding_rate": signals.avg_funding_rate,
+            },
+        )
+        return classification
 
     def _adjust_confidence_with_external_data(self, signals: RegimeSignals) -> float:
         """Adjust regime classification confidence using external data (enhanced version).
@@ -208,9 +272,11 @@ class RegimeDetector:
         adjustment = 1.0
 
         # Example: Cross-asset correlation confirmation
-        if signals.cross_asset_correlation is not None:
-            if abs(signals.cross_asset_correlation) > 0.7:
-                adjustment *= 1.1  # Strong correlation increases confidence
+        if (
+            signals.cross_asset_correlation is not None
+            and abs(signals.cross_asset_correlation) > 0.7
+        ):
+            adjustment *= 1.1  # Strong correlation increases confidence
 
         # Example: Macro risk alignment
         if signals.macro_risk_score is not None:
@@ -235,6 +301,16 @@ class RegimeDetector:
         self.regime_history.append(classification)
 
         if len(self.regime_history) < self.config.confirmation_cycles_required:
+            self.logger.debug(
+                f"Regime confirmation pending: {len(self.regime_history)}/{self.config.confirmation_cycles_required} cycles",
+                extra={
+                    "governance_event": "regime_confirmation_pending",
+                    "current_regime": self.current_regime,
+                    "latest_classification": classification.regime,
+                    "history_length": len(self.regime_history),
+                    "required_cycles": self.config.confirmation_cycles_required,
+                },
+            )
             return False, "Insufficient history for confirmation"
 
         # Check for sustained new regime
@@ -242,6 +318,14 @@ class RegimeDetector:
         candidate_regime = max(set(recent_regimes), key=recent_regimes.count)
 
         if candidate_regime == self.current_regime:
+            self.logger.debug(
+                "No regime change detected",
+                extra={
+                    "governance_event": "regime_no_change",
+                    "current_regime": self.current_regime,
+                    "recent_regimes": recent_regimes,
+                },
+            )
             return False, "No regime change"
 
         # Apply hysteresis
@@ -251,8 +335,32 @@ class RegimeDetector:
         if candidate_confidence >= self.config.hysteresis_enter_threshold:
             old_regime = self.current_regime
             self.current_regime = candidate_regime
+
+            self.logger.info(
+                f"Regime change confirmed: {old_regime} → {candidate_regime}",
+                extra={
+                    "governance_event": "regime_change_confirmed",
+                    "old_regime": old_regime,
+                    "new_regime": candidate_regime,
+                    "candidate_confidence": candidate_confidence,
+                    "hysteresis_threshold": self.config.hysteresis_enter_threshold,
+                    "confirmation_cycles": len(self.regime_history),
+                    "recent_regimes": recent_regimes,
+                },
+            )
             return True, f"Regime change confirmed: {old_regime} → {candidate_regime}"
 
+        self.logger.debug(
+            f"Regime change not confirmed: {candidate_confidence:.2f} < {self.config.hysteresis_enter_threshold}",
+            extra={
+                "governance_event": "regime_change_not_confirmed",
+                "current_regime": self.current_regime,
+                "candidate_regime": candidate_regime,
+                "candidate_confidence": candidate_confidence,
+                "hysteresis_threshold": self.config.hysteresis_enter_threshold,
+                "recent_regimes": recent_regimes,
+            },
+        )
         return (
             False,
             f"Regime change not confirmed: {candidate_confidence:.2f} < {self.config.hysteresis_enter_threshold}",

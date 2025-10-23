@@ -1,5 +1,6 @@
 """Tripwire Service for independent safety monitoring."""
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -50,16 +51,18 @@ class TripwireEvent:
 class TripwireService:
     """Independent safety monitoring service with override authority."""
 
-    def __init__(self, config: TripwireConfig):
+    def __init__(self, config: TripwireConfig, logger: logging.Logger | None = None):
         """Initialize the tripwire service.
 
         Args:
             config: TripwireConfig instance
+            logger: Optional logger instance for governance event logging
         """
         self.config = config
         self.api_failure_count: int = 0
         self.daily_start_portfolio_value: float | None = None
         self.daily_loss_pct: float = 0.0
+        self.logger = logger or logging.getLogger(__name__)
 
     def _check_account_safety(self, account_state: AccountState) -> list[TripwireEvent]:
         """Check account safety tripwires.
@@ -103,7 +106,9 @@ class TripwireService:
         # Note: Hyperliquid API provides margin data in marginSummary
         # This would require extending AccountState to include margin_ratio
         # For now, we'll check if portfolio value is dangerously low relative to positions
-        total_position_value = sum(abs(pos.size * pos.current_price) for pos in account_state.positions)
+        total_position_value = sum(
+            abs(pos.size * pos.current_price) for pos in account_state.positions
+        )
         if total_position_value > 0:
             effective_margin_ratio = account_state.available_balance / total_position_value
             if effective_margin_ratio < self.config.min_margin_ratio:
@@ -215,46 +220,44 @@ class TripwireService:
                     pass
 
         # Volatility triggers
-        if "volatility" in trigger_lower or "vol" in trigger_lower:
-            # Examples: "realized volatility exceeds 60%", "vol spikes above 80%"
-            if "exceed" in trigger_lower or "above" in trigger_lower or "spike" in trigger_lower:
-                try:
-                    # Extract threshold
-                    for word in trigger_lower.split():
-                        if "%" in word:
-                            threshold = float(word.replace("%", ""))
-                            # Would check against actual volatility
-                            # return realized_vol > threshold
-                            return False
-                except ValueError:
-                    pass
+        if ("volatility" in trigger_lower or "vol" in trigger_lower) and (
+            "exceed" in trigger_lower or "above" in trigger_lower or "spike" in trigger_lower
+        ):
+            try:
+                # Extract threshold
+                for word in trigger_lower.split():
+                    if "%" in word:
+                        threshold = float(word.replace("%", ""))
+                        # Would check against actual volatility
+                        # return realized_vol > threshold
+                        return False
+            except ValueError:
+                pass
 
         # PnL-based triggers
-        if "pnl" in trigger_lower or "loss" in trigger_lower or "drawdown" in trigger_lower:
-            # Examples: "plan drawdown exceeds 10%", "loss exceeds 5%"
-            if plan.activated_at:
-                # Calculate plan-level PnL
-                # This would require tracking initial portfolio value at plan activation
-                # For now, we can use unrealized PnL as a proxy
-                total_unrealized_pnl = sum(pos.unrealized_pnl for pos in account_state.positions)
-                pnl_pct = (total_unrealized_pnl / account_state.portfolio_value) * 100
+        if (
+            "pnl" in trigger_lower or "loss" in trigger_lower or "drawdown" in trigger_lower
+        ) and plan.activated_at:
+            # Calculate plan-level PnL
+            # This would require tracking initial portfolio value at plan activation
+            # For now, we can use unrealized PnL as a proxy
+            total_unrealized_pnl = sum(pos.unrealized_pnl for pos in account_state.positions)
+            pnl_pct = (total_unrealized_pnl / account_state.portfolio_value) * 100
 
-                # Extract threshold
-                try:
-                    for word in trigger_lower.split():
-                        if "%" in word:
-                            threshold = float(word.replace("%", ""))
-                            if "exceed" in trigger_lower or "above" in trigger_lower:
-                                return abs(pnl_pct) > threshold
-                except ValueError:
-                    pass
+            # Extract threshold
+            try:
+                for word in trigger_lower.split():
+                    if "%" in word:
+                        threshold = float(word.replace("%", ""))
+                        if "exceed" in trigger_lower or "above" in trigger_lower:
+                            return abs(pnl_pct) > threshold
+            except ValueError:
+                pass
 
         # Basis/spread triggers
-        if "basis" in trigger_lower or "spread" in trigger_lower:
-            # Examples: "perp-spot basis inverts", "spread widens beyond 2%"
-            if "invert" in trigger_lower:
-                # Would check if basis changed sign
-                return False
+        if ("basis" in trigger_lower or "spread" in trigger_lower) and "invert" in trigger_lower:
+            # Would check if basis changed sign
+            return False
 
         # Position size triggers
         if "position" in trigger_lower and ("exceed" in trigger_lower or "above" in trigger_lower):
@@ -354,16 +357,100 @@ class TripwireService:
         Returns:
             List of all triggered tripwire events
         """
+        self.logger.debug(
+            "Checking all tripwires",
+            extra={
+                "governance_event": "tripwire_check_start",
+                "has_active_plan": active_plan is not None,
+                "plan_id": active_plan.plan_id if active_plan else None,
+                "portfolio_value": account_state.portfolio_value,
+                "available_balance": account_state.available_balance,
+            },
+        )
+
         events = []
 
         # Account safety checks (always run)
-        events.extend(self._check_account_safety(account_state))
+        safety_events = self._check_account_safety(account_state)
+        events.extend(safety_events)
+        if safety_events:
+            self.logger.warning(
+                f"Account safety tripwires fired: {len(safety_events)} events",
+                extra={
+                    "governance_event": "tripwire_account_safety_fired",
+                    "event_count": len(safety_events),
+                    "events": [
+                        {
+                            "severity": e.severity,
+                            "trigger": e.trigger,
+                            "action": e.action.value,
+                        }
+                        for e in safety_events
+                    ],
+                },
+            )
 
         # Plan invalidation checks (only if plan exists and checking is enabled)
         if active_plan and self.config.check_invalidation_triggers:
-            events.extend(self._check_plan_invalidation(account_state, active_plan))
+            invalidation_events = self._check_plan_invalidation(account_state, active_plan)
+            events.extend(invalidation_events)
+            if invalidation_events:
+                self.logger.warning(
+                    f"Plan invalidation tripwires fired: {len(invalidation_events)} events",
+                    extra={
+                        "governance_event": "tripwire_plan_invalidation_fired",
+                        "plan_id": active_plan.plan_id,
+                        "strategy_name": active_plan.strategy_name,
+                        "event_count": len(invalidation_events),
+                        "events": [
+                            {
+                                "severity": e.severity,
+                                "trigger": e.trigger,
+                                "action": e.action.value,
+                            }
+                            for e in invalidation_events
+                        ],
+                    },
+                )
 
         # Operational health checks (always run)
-        events.extend(self._check_operational_health(account_state))
+        operational_events = self._check_operational_health(account_state)
+        events.extend(operational_events)
+        if operational_events:
+            self.logger.warning(
+                f"Operational health tripwires fired: {len(operational_events)} events",
+                extra={
+                    "governance_event": "tripwire_operational_fired",
+                    "event_count": len(operational_events),
+                    "events": [
+                        {
+                            "severity": e.severity,
+                            "trigger": e.trigger,
+                            "action": e.action.value,
+                        }
+                        for e in operational_events
+                    ],
+                },
+            )
+
+        # Log summary
+        if events:
+            self.logger.warning(
+                f"Tripwire check complete: {len(events)} total events fired",
+                extra={
+                    "governance_event": "tripwire_check_complete",
+                    "total_events": len(events),
+                    "critical_events": sum(1 for e in events if e.severity == "critical"),
+                    "warning_events": sum(1 for e in events if e.severity == "warning"),
+                },
+            )
+        else:
+            self.logger.debug(
+                "Tripwire check complete: no events fired",
+                extra={
+                    "governance_event": "tripwire_check_complete",
+                    "total_events": 0,
+                },
+            )
 
         return events

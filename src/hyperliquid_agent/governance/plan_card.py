@@ -1,7 +1,7 @@
 """Strategy Plan Card data models for governance."""
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Literal
 
@@ -161,7 +161,9 @@ class StrategyPlanCard:
             data["last_reviewed_at"] = datetime.fromisoformat(data["last_reviewed_at"])
 
         # Parse nested objects
-        data["target_allocations"] = [TargetAllocation.from_dict(a) for a in data["target_allocations"]]
+        data["target_allocations"] = [
+            TargetAllocation.from_dict(a) for a in data["target_allocations"]
+        ]
         data["allowed_leverage_range"] = tuple(data["allowed_leverage_range"])
         data["risk_budget"] = RiskBudget.from_dict(data["risk_budget"])
         data["exit_rules"] = ExitRules.from_dict(data["exit_rules"])

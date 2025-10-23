@@ -1,6 +1,7 @@
 """Plan Scorekeeper for tracking strategy performance and shadow portfolios."""
 
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass
 from datetime import datetime
 
 from hyperliquid_agent.governance.plan_card import StrategyPlanCard
@@ -50,11 +51,16 @@ class ShadowPortfolio:
 class PlanScorekeeper:
     """Tracks plan-level performance and manages shadow portfolios."""
 
-    def __init__(self):
-        """Initialize the Plan Scorekeeper."""
+    def __init__(self, logger: logging.Logger | None = None):
+        """Initialize the Plan Scorekeeper.
+
+        Args:
+            logger: Optional logger instance for governance event logging
+        """
         self.active_metrics: PlanMetrics | None = None
         self.completed_plans: list[PlanMetrics] = []
         self.shadow_portfolios: list[ShadowPortfolio] = []
+        self.logger = logger or logging.getLogger(__name__)
 
     def start_tracking_plan(self, plan: StrategyPlanCard, initial_portfolio_value: float):
         """Begin tracking a new plan.
@@ -69,6 +75,17 @@ class PlanScorekeeper:
             end_time=None,
             initial_portfolio_value=initial_portfolio_value,
             peak_portfolio_value=initial_portfolio_value,
+        )
+
+        self.logger.info(
+            f"Started tracking plan: {plan.plan_id}",
+            extra={
+                "governance_event": "plan_tracking_started",
+                "plan_id": plan.plan_id,
+                "strategy_name": plan.strategy_name,
+                "initial_portfolio_value": initial_portfolio_value,
+                "start_time": self.active_metrics.start_time.isoformat(),
+            },
         )
 
     def update_metrics(self, account_state: AccountState, plan: StrategyPlanCard):
@@ -149,14 +166,46 @@ class PlanScorekeeper:
 
         # Calculate final metrics
         duration_hours = (
-            (self.active_metrics.end_time - self.active_metrics.start_time).total_seconds() / 3600
-        )
+            self.active_metrics.end_time - self.active_metrics.start_time
+        ).total_seconds() / 3600
 
         # Calculate hit rate if we have trade data
         if self.active_metrics.total_trades > 0:
             self.active_metrics.hit_rate = (
                 self.active_metrics.winning_trades / self.active_metrics.total_trades
             )
+
+        # Calculate final PnL percentage
+        pnl_pct = (
+            (self.active_metrics.total_pnl / self.active_metrics.initial_portfolio_value * 100)
+            if self.active_metrics.initial_portfolio_value > 0
+            else 0.0
+        )
+
+        # Log plan finalization with comprehensive metrics
+        self.logger.info(
+            f"Plan finalized: {self.active_metrics.plan_id}",
+            extra={
+                "governance_event": "plan_finalized",
+                "plan_id": self.active_metrics.plan_id,
+                "start_time": self.active_metrics.start_time.isoformat(),
+                "end_time": self.active_metrics.end_time.isoformat(),
+                "duration_hours": duration_hours,
+                "initial_portfolio_value": self.active_metrics.initial_portfolio_value,
+                "final_portfolio_value": final_portfolio_value,
+                "total_pnl": self.active_metrics.total_pnl,
+                "pnl_pct": pnl_pct,
+                "peak_portfolio_value": self.active_metrics.peak_portfolio_value,
+                "max_drawdown_pct": self.active_metrics.max_drawdown_pct,
+                "pnl_per_unit_risk": self.active_metrics.pnl_per_unit_risk,
+                "total_trades": self.active_metrics.total_trades,
+                "winning_trades": self.active_metrics.winning_trades,
+                "hit_rate": self.active_metrics.hit_rate,
+                "avg_slippage_bps": self.active_metrics.avg_slippage_bps,
+                "avg_drift_from_targets_pct": self.active_metrics.avg_drift_from_targets_pct,
+                "rebalance_count": self.active_metrics.rebalance_count,
+            },
+        )
 
         # Generate natural language summary
         summary = f"""
@@ -165,7 +214,7 @@ Plan {self.active_metrics.plan_id} Post-Mortem:
 Duration: {duration_hours:.1f} hours
 Initial Value: ${self.active_metrics.initial_portfolio_value:.2f}
 Final Value: ${final_portfolio_value:.2f}
-Total PnL: ${self.active_metrics.total_pnl:.2f} ({(self.active_metrics.total_pnl / self.active_metrics.initial_portfolio_value * 100):.2f}%)
+Total PnL: ${self.active_metrics.total_pnl:.2f} ({pnl_pct:.2f}%)
 Peak Value: ${self.active_metrics.peak_portfolio_value:.2f}
 Max Drawdown: {self.active_metrics.max_drawdown_pct:.2f}%
 PnL per Unit Risk: {self.active_metrics.pnl_per_unit_risk:.2f}
