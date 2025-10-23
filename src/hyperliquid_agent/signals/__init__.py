@@ -26,6 +26,12 @@ from hyperliquid_agent.signals.models import (
     SlowLoopSignals,
 )
 from hyperliquid_agent.signals.orchestrator import SignalOrchestrator
+from hyperliquid_agent.signals.processor import (
+    ComputedSignalProcessor,
+    PortfolioMetrics,
+    TechnicalIndicators,
+    VolatilityMetrics,
+)
 from hyperliquid_agent.signals.providers import (
     CircuitBreaker,
     CircuitState,
@@ -74,4 +80,9 @@ __all__ = [
     "SignalResponse",
     # Orchestrator
     "SignalOrchestrator",
+    # Processor
+    "ComputedSignalProcessor",
+    "TechnicalIndicators",
+    "VolatilityMetrics",
+    "PortfolioMetrics",
 ]
