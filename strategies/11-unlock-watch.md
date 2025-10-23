@@ -1,23 +1,22 @@
 ---
 title: "Unlock Watch"
 id: unlock-watch
-version: "1.1"
-date: "2025-10-21"
-markets: ["perps","spot"]
+markets: ["perps", "spot"]
 directionality: "event-driven"
 risk_profile: "moderate"
-leverage: "1x–2x"
-latency_tolerance: "high"
-llm_compatibility: "high"
-execution_style: "taker on trigger"
-capital_floor: 300
-expected_trades_per_week: 0-3 (sporadic)
-fees_sensitivity: "low"
-profitability_likelihood: "medium (if disciplined)"
-hyperliquid_fit: "Works on tokens with known unlocks/airdrops"
-data_inputs: ["token unlock calendar","ATR","HTF levels","funding"]
-tags: ["events","risk-on/off"]
-status: "draft"
+tags: ["events", "risk-on-off"]
+intended_horizon: "hours"
+minimum_dwell_minutes: 180
+compatible_regimes: ["event-risk"]
+avoid_regimes: []
+invalidation_triggers:
+  - "Liquidity collapses: bid-ask spread exceeds 100 bps around event"
+  - "Max loss per event reached: position hits predefined loss threshold"
+  - "Event outcome differs from historical pattern: no expected reaction within 2 hours"
+  - "Surprise announcement: unexpected protocol change or delay announced"
+max_position_pct: 20.0
+max_leverage: 2.0
+expected_switching_cost_bps: 30.0
 ---
 
 ## Quick Read — Preconditions

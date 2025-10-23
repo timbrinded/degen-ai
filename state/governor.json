@@ -1,0 +1,84 @@
+{
+  "active_plan": {
+    "plan_id": "plan_20251023_101344",
+    "strategy_name": "dca-hedge",
+    "strategy_version": "1.0",
+    "created_at": "2025-10-23T10:13:44.026688",
+    "objective": "Gradually accumulate spot ETH (primary) while limiting drawdown via small perp hedges during elevated volatility or persistent negative drift; preserve capital and reduce average entry price over time.",
+    "target_holding_period_hours": 168,
+    "time_horizon": "days",
+    "key_thesis": "Systematic, schedule-driven buys reduce average entry risk for a core long position. When volatility or negative drift rises, activate a small, proportionate short-perp hedge (20\u201340% beta) to cap adverse moves \u2014 improving risk-adjusted returns versus naive accumulation.",
+    "target_allocations": [
+      {
+        "coin": "ETH",
+        "target_pct": 25.0,
+        "market_type": "spot",
+        "leverage": 1.0
+      },
+      {
+        "coin": "ETH",
+        "target_pct": 5.0,
+        "market_type": "perp",
+        "leverage": 1.0
+      },
+      {
+        "coin": "USDC",
+        "target_pct": 70.0,
+        "market_type": "spot",
+        "leverage": 1.0
+      }
+    ],
+    "allowed_leverage_range": [
+      1.0,
+      1.0
+    ],
+    "risk_budget": {
+      "max_position_pct": {
+        "BTC": 40.0,
+        "ETH": 60.0
+      },
+      "max_leverage": 1.0,
+      "max_adverse_excursion_pct": 15.0,
+      "plan_max_drawdown_pct": 20.0,
+      "per_trade_risk_pct": 1.0
+    },
+    "exit_rules": {
+      "profit_target_pct": 50.0,
+      "stop_loss_pct": 30.0,
+      "time_based_review_hours": 168,
+      "invalidation_triggers": [
+        "spot liquidity materially degrades (depth < threshold)",
+        "sustained funding instability causing hedge unusability",
+        "realized volatility regime shifts to extreme (e.g., ATR% > historical p95) for >48h",
+        "portfolio drawdown exceeds plan_max_drawdown_pct"
+      ]
+    },
+    "change_cost": {
+      "estimated_fees_bps": 5.0,
+      "estimated_slippage_bps": 5.0,
+      "estimated_funding_change_bps": 2.0,
+      "opportunity_cost_bps": 5.0
+    },
+    "expected_edge_bps": 120.0,
+    "kpis_to_track": [
+      "Average cost per ETH vs spot benchmark",
+      "PnL per unit risk",
+      "Hedge effectiveness (delta reduction vs expected)",
+      "Execution slippage vs estimates",
+      "Drawdown vs plan_max_drawdown"
+    ],
+    "minimum_dwell_minutes": 1440,
+    "compatible_regimes": [
+      "range-bound",
+      "carry-friendly",
+      "trending"
+    ],
+    "avoid_regimes": [],
+    "status": "active",
+    "activated_at": "2025-10-23T10:13:02.168726",
+    "last_reviewed_at": null,
+    "rebalance_progress_pct": 0.0
+  },
+  "last_change_at": "2025-10-23T10:13:02.168726",
+  "rebalance_schedule": null
+}

@@ -26,8 +26,9 @@ class AccountState:
     """Current account state snapshot."""
 
     portfolio_value: float
-    available_balance: float
+    available_balance: float  # Perp margin balance
     positions: list[Position]
+    spot_balances: dict[str, float]  # coin -> balance (e.g., {"USDC": 100.0})
     timestamp: float
     is_stale: bool = False
 
@@ -56,7 +57,8 @@ class PositionMonitor:
         """
         try:
             user_state = self.info.user_state(self.account_address)
-            state = self._parse_user_state(user_state)
+            spot_state = self.info.spot_user_state(self.account_address)
+            state = self._parse_user_state(user_state, spot_state)
             self.last_valid_state = state
             return state
         except Exception as e:
@@ -64,13 +66,16 @@ class PositionMonitor:
             if self.last_valid_state:
                 self.last_valid_state.is_stale = True
                 return self.last_valid_state
-            raise Exception(f"Failed to retrieve account state and no cached state available: {e}")
+            raise Exception(
+                f"Failed to retrieve account state and no cached state available: {e}"
+            ) from e
 
-    def _parse_user_state(self, raw_state: dict) -> AccountState:
+    def _parse_user_state(self, raw_state: dict, spot_state: dict) -> AccountState:
         """Parse Hyperliquid API response into AccountState.
 
         Args:
-            raw_state: Raw API response from user_state endpoint
+            raw_state: Raw API response from user_state endpoint (perp)
+            spot_state: Raw API response from spot_user_state endpoint
 
         Returns:
             Parsed AccountState object
@@ -79,8 +84,20 @@ class PositionMonitor:
         margin_summary = raw_state.get("marginSummary", {})
         account_value = float(margin_summary.get("accountValue", 0.0))
 
-        # Extract withdrawable balance (available balance)
+        # Extract withdrawable balance (available balance for perp)
         withdrawable = float(raw_state.get("withdrawable", 0.0))
+
+        # Parse spot balances
+        spot_balances: dict[str, float] = {}
+        balances = spot_state.get("balances", [])
+        for balance in balances:
+            coin = balance.get("coin", "")
+            total = float(balance.get("total", 0.0))
+            if total > 0:
+                spot_balances[coin] = total
+
+        # Calculate total spot value (for now, just USDC since it's 1:1)
+        spot_value = spot_balances.get("USDC", 0.0)
 
         # Parse positions from assetPositions
         positions = []
@@ -101,16 +118,12 @@ class PositionMonitor:
 
             # Get current price from position data or mark price
             mark_px = float(position_data.get("positionValue", 0.0))
-            if size != 0 and mark_px != 0:
-                current_price = abs(mark_px / size)
-            else:
-                current_price = entry_price
+            current_price = abs(mark_px / size) if size != 0 and mark_px != 0 else entry_price
 
             # Extract unrealized PnL
             unrealized_pnl = float(position_data.get("unrealizedPnl", 0.0))
 
             # Determine market type (perp is default for Hyperliquid positions)
-            # Spot positions would be in a different structure
             market_type: Literal["spot", "perp"] = "perp"
 
             positions.append(
@@ -124,10 +137,14 @@ class PositionMonitor:
                 )
             )
 
+        # Total portfolio value includes perp account value + spot balances
+        total_portfolio_value = account_value + spot_value
+
         return AccountState(
-            portfolio_value=account_value,
+            portfolio_value=total_portfolio_value,
             available_balance=withdrawable,
             positions=positions,
+            spot_balances=spot_balances,
             timestamp=time.time(),
             is_stale=False,
         )

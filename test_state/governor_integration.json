@@ -1,0 +1,62 @@
+{
+  "active_plan": {
+    "plan_id": "test_plan_001",
+    "strategy_name": "funding-harvest",
+    "strategy_version": "1.0",
+    "created_at": "2025-10-23T13:29:43.198281",
+    "objective": "Harvest funding rates",
+    "target_holding_period_hours": 24,
+    "time_horizon": "hours",
+    "key_thesis": "Positive funding",
+    "target_allocations": [
+      {
+        "coin": "BTC",
+        "target_pct": 50.0,
+        "market_type": "perp",
+        "leverage": 1.5
+      }
+    ],
+    "allowed_leverage_range": [
+      1.0,
+      2.0
+    ],
+    "risk_budget": {
+      "max_position_pct": {
+        "BTC": 60.0
+      },
+      "max_leverage": 2.0,
+      "max_adverse_excursion_pct": 5.0,
+      "plan_max_drawdown_pct": 10.0,
+      "per_trade_risk_pct": 2.0
+    },
+    "exit_rules": {
+      "profit_target_pct": 10.0,
+      "stop_loss_pct": 5.0,
+      "time_based_review_hours": 24,
+      "invalidation_triggers": []
+    },
+    "change_cost": {
+      "estimated_fees_bps": 10.0,
+      "estimated_slippage_bps": 5.0,
+      "estimated_funding_change_bps": 2.0,
+      "opportunity_cost_bps": 3.0
+    },
+    "expected_edge_bps": 100.0,
+    "kpis_to_track": [
+      "funding_pnl"
+    ],
+    "minimum_dwell_minutes": 10,
+    "compatible_regimes": [
+      "carry-friendly"
+    ],
+    "avoid_regimes": [
+      "event-risk"
+    ],
+    "status": "active",
+    "activated_at": "2025-10-23T13:29:43.198455",
+    "last_reviewed_at": null,
+    "rebalance_progress_pct": 0.0
+  },
+  "last_change_at": "2025-10-23T13:29:43.198455",
+  "rebalance_schedule": null
+}

@@ -44,3 +44,96 @@ log_level = "INFO"
 
 # Path to the prompt template file
 prompt_template_path = "prompts/default.txt"
+
+# ============================================================================
+# GOVERNANCE SYSTEM CONFIGURATION
+# ============================================================================
+# The governance system prevents "strategy thrash" by introducing multi-timescale
+# decision-making, policy persistence, and change governance. It separates execution
+# (fast loop), planning (medium loop), and regime detection (slow loop).
+
+[governance]
+# Fast loop: Deterministic execution following the active plan (no LLM queries)
+# Recommended: 5-30 seconds for responsive execution
+fast_loop_interval_seconds = 10
+
+# Medium loop: Tactical planning and Strategy Plan Card maintenance (LLM queries)
+# Recommended: 15-120 minutes for hobby trading, 5-30 minutes for active trading
+medium_loop_interval_minutes = 30
+
+# Slow loop: Regime detection and macro-level policy changes
+# Recommended: 24 hours for hobby trading, 4-12 hours for active trading
+slow_loop_interval_hours = 24
+
+[governance.governor]
+# Minimum advantage required over change cost (in basis points)
+# This prevents unprofitable strategy switches. The expected advantage from a new
+# strategy must exceed the switching cost by at least this amount.
+# Recommended: 50-100 bps for conservative, 25-50 bps for aggressive
+minimum_advantage_over_cost_bps = 50.0
+
+# Cooldown period after plan changes (in minutes)
+# Prevents rapid strategy flip-flopping by enforcing a minimum time between changes.
+# Recommended: 60-120 minutes for hobby trading, 30-60 minutes for active trading
+cooldown_after_change_minutes = 60
+
+# Percentage of portfolio to rotate per medium loop cycle during rebalancing
+# Gradual rebalancing reduces market impact and slippage. Lower values = slower rotation.
+# Recommended: 25-50% for hobby trading, 10-25% for active trading
+partial_rotation_pct_per_cycle = 25.0
+
+# Path to persist governor state (relative to project root)
+# The governor saves active plan, timing state, and rebalance progress to survive restarts.
+state_persistence_path = "state/governor.json"
+
+[governance.regime_detector]
+# Number of medium loop cycles required to confirm regime change
+# Higher values prevent false regime changes from temporary market noise.
+# Recommended: 3-5 cycles for hobby trading, 2-3 cycles for active trading
+confirmation_cycles_required = 3
+
+# Confidence threshold to enter a new regime (0.0-1.0)
+# Higher values require stronger evidence before switching regimes.
+# Recommended: 0.6-0.8 for conservative, 0.5-0.6 for aggressive
+hysteresis_enter_threshold = 0.7
+
+# Confidence threshold to exit current regime (0.0-1.0)
+# Lower than enter threshold creates hysteresis, preventing ping-ponging.
+# Recommended: 0.3-0.5 (should be 0.2-0.3 below enter threshold)
+hysteresis_exit_threshold = 0.4
+
+# Hours before scheduled macro event to lock plan changes
+# Prevents strategy changes immediately before high-impact events (FOMC, CPI, etc.)
+# Recommended: 2-4 hours for conservative, 1-2 hours for aggressive
+event_lock_window_hours_before = 2
+
+# Hours after scheduled macro event to lock plan changes
+# Allows volatility to settle before making strategy decisions.
+# Recommended: 1-2 hours for conservative, 0.5-1 hour for aggressive
+event_lock_window_hours_after = 1
+
+[governance.tripwire]
+# Minimum margin ratio before triggering safety tripwire (0.0-1.0)
+# Triggers when account margin falls below this level. Lower = more aggressive.
+# Recommended: 0.15-0.25 for hobby trading (exchange minimum is typically 0.03-0.05)
+min_margin_ratio = 0.15
+
+# Proximity to liquidation price that triggers warning (0.0-1.0)
+# Triggers when position is within this percentage of liquidation price.
+# Recommended: 0.20-0.30 for conservative, 0.15-0.20 for aggressive
+liquidation_proximity_threshold = 0.25
+
+# Maximum daily loss percentage before cutting positions (0.0-100.0)
+# Absolute safety limit - cuts positions when daily loss exceeds this percentage.
+# Recommended: 3-5% for hobby trading, 5-10% for active trading
+daily_loss_limit_pct = 5.0
+
+# Maximum seconds of data staleness before freezing new risk
+# Prevents trading on stale data when API is slow or unresponsive.
+# Recommended: 300-600 seconds (5-10 minutes)
+max_data_staleness_seconds = 300
+
+# Maximum consecutive API failures before triggering operational tripwire
+# Freezes new risk when API becomes unreliable.
+# Recommended: 3-5 failures for conservative, 5-10 for aggressive
+max_api_failure_count = 3

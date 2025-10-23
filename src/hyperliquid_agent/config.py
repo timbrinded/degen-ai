@@ -21,7 +21,7 @@ class LLMConfig:
     model: str
     api_key: str
     temperature: float = 0.7
-    max_tokens: int = 1000
+    max_tokens: int = 10000
 
 
 @dataclass
@@ -36,12 +36,25 @@ class AgentConfig:
 
 
 @dataclass
+class GovernanceConfig:
+    """Governance system configuration."""
+
+    governor: dict
+    regime_detector: dict
+    tripwire: dict
+    fast_loop_interval_seconds: int = 10
+    medium_loop_interval_minutes: int = 30
+    slow_loop_interval_hours: int = 24
+
+
+@dataclass
 class Config:
     """Complete application configuration."""
 
     hyperliquid: HyperliquidConfig
     llm: LLMConfig
     agent: AgentConfig
+    governance: GovernanceConfig | None = None
 
 
 def load_config(config_path: str = "config.toml") -> Config:
@@ -104,7 +117,7 @@ def load_config(config_path: str = "config.toml") -> Config:
         model=llm_data["model"],
         api_key=llm_data["api_key"],
         temperature=llm_data.get("temperature", 0.7),
-        max_tokens=llm_data.get("max_tokens", 1000),
+        max_tokens=llm_data.get("max_tokens", 10000),
     )
 
     # Parse Agent config with defaults
@@ -121,4 +134,24 @@ def load_config(config_path: str = "config.toml") -> Config:
         prompt_template_path=agent_data.get("prompt_template_path", "prompts/default.txt"),
     )
 
-    return Config(hyperliquid=hyperliquid_config, llm=llm_config, agent=agent_config)
+    # Parse Governance config (optional)
+    governance_config = None
+    if "governance" in data:
+        gov_data = data["governance"]
+
+        # Store raw config dicts - will be converted to proper types in CLI
+        governance_config = GovernanceConfig(
+            governor=gov_data.get("governor", {}),
+            regime_detector=gov_data.get("regime_detector", {}),
+            tripwire=gov_data.get("tripwire", {}),
+            fast_loop_interval_seconds=gov_data.get("fast_loop_interval_seconds", 10),
+            medium_loop_interval_minutes=gov_data.get("medium_loop_interval_minutes", 30),
+            slow_loop_interval_hours=gov_data.get("slow_loop_interval_hours", 24),
+        )
+
+    return Config(
+        hyperliquid=hyperliquid_config,
+        llm=llm_config,
+        agent=agent_config,
+        governance=governance_config,
+    )

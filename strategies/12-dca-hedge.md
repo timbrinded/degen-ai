@@ -1,23 +1,22 @@
 ---
 title: "DCA Hedge"
 id: dca-hedge
-version: "1.1"
-date: "2025-10-21"
-markets: ["spot","perps"]
-directionality: "accumulation with hedge"
+markets: ["spot", "perps"]
+directionality: "accumulation"
 risk_profile: "conservative"
-leverage: "≤1x (hedge small perp)"
-latency_tolerance: "very high"
-llm_compatibility: "very high"
-execution_style: "scheduled + small hedges"
-capital_floor: 200
-expected_trades_per_week: 3-10 (small)
-fees_sensitivity: "low–medium"
-profitability_likelihood: "medium (goal: smoother equity curve)"
-hyperliquid_fit: "Spot available; use small perp overlay"
-data_inputs: ["DCA schedule","funding","ATR","vol caps"]
-tags: ["spot","hedged","portfolio"]
-status: "draft"
+tags: ["spot", "hedged", "portfolio"]
+intended_horizon: "days"
+minimum_dwell_minutes: 1440
+compatible_regimes: ["range-bound", "carry-friendly", "trending"]
+avoid_regimes: []
+invalidation_triggers:
+  - "Spot depth unavailable: unable to source spot liquidity for scheduled buy"
+  - "Funding costs erratic: funding rate volatility exceeds 3x normal"
+  - "Net position flips short: hedge exceeds 50% of spot position"
+  - "Accumulation target reached: portfolio allocation hits predefined ceiling"
+max_position_pct: 60.0
+max_leverage: 1.0
+expected_switching_cost_bps: 5.0
 ---
 
 ## Quick Read — Preconditions

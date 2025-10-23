@@ -1,23 +1,22 @@
 ---
 title: "OI Drift Divergence"
 id: oi-drift-divergence
-version: "1.1"
-date: "2025-10-21"
 markets: ["perps"]
-directionality: "directional or hedged"
+directionality: "directional"
 risk_profile: "moderate"
-leverage: "1x–3x"
-latency_tolerance: "minutes-hours"
-llm_compatibility: "high"
-execution_style: "mixed (maker entries, taker exits)"
-capital_floor: 300
-expected_trades_per_week: 2-6
-fees_sensitivity: "medium"
-profitability_likelihood: "medium"
-hyperliquid_fit: "Good where OI feed is reliable"
-data_inputs: ["open_interest MAs","price trend","funding skew"]
-tags: ["positioning","regime-shift"]
-status: "draft"
+tags: ["positioning", "regime-shift"]
+intended_horizon: "hours"
+minimum_dwell_minutes: 90
+compatible_regimes: ["trending", "range-bound"]
+avoid_regimes: ["event-risk"]
+invalidation_triggers:
+  - "OI trend reverses and aligns with price direction for 5 consecutive bars"
+  - "OI data feed becomes unreliable or stale for more than 10 minutes"
+  - "ATR stop hit: price moves 1.5*ATR against position"
+  - "Divergence resolves: price breaks structure in direction of OI trend"
+max_position_pct: 35.0
+max_leverage: 3.0
+expected_switching_cost_bps: 14.0
 ---
 
 ## Quick Read — Preconditions
