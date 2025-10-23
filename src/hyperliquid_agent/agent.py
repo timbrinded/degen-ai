@@ -5,6 +5,7 @@ import logging
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, NoReturn, TypeVar
 
@@ -396,7 +397,7 @@ class TradingAgent:
 
             try:
                 result = retry_with_backoff(
-                    lambda a=action: self.executor.execute_action(a),
+                    partial(self.executor.execute_action, action),
                     self.config.agent.max_retries,
                     self.config.agent.retry_backoff_base,
                 )

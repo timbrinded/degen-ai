@@ -44,6 +44,7 @@ class EnhancedPositionMonitor(PositionMonitor):
             portfolio_value=base_state.portfolio_value,
             available_balance=base_state.available_balance,
             positions=base_state.positions,
+            spot_balances=base_state.spot_balances,
             timestamp=base_state.timestamp,
             is_stale=base_state.is_stale,
         )
