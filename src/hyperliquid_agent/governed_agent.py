@@ -483,65 +483,91 @@ class GovernedTradingAgent:
             )
             return
 
-        # Plan review is permitted - query LLM for decision
+        # Plan review is permitted - query LLM for governance decision
         self.logger.info(
-            "Plan review permitted - querying LLM for decision",
+            "Plan review permitted - querying LLM for governance decision",
             extra={"tick": self.tick_count, "review_reason": review_msg},
         )
 
-        # Get decision from LLM (using base agent's decision engine)
-        # Note: This uses the standard decision engine for now
-        # In a full implementation, we would extend DecisionEngine with governance support
-        decision = self.base_agent.decision_engine.get_decision(account_state)
+        # Get governance-aware decision from LLM
+        decision = self.base_agent.decision_engine.get_decision_with_governance(
+            account_state=account_state,
+            active_plan=self.governor.active_plan,
+            current_regime=self.regime_detector.current_regime,
+            can_review=can_review,
+        )
 
         if not decision.success:
             self.logger.error(
-                f"Decision engine failed: {decision.error}",
+                f"Governance decision engine failed: {decision.error}",
                 extra={"tick": self.tick_count, "error": decision.error},
             )
             return
 
         # Log LLM response
         self.logger.info(
-            f"LLM decision received: {len(decision.actions)} actions, strategy: {decision.selected_strategy}",
+            f"Governance decision received: maintain_plan={decision.maintain_plan}",
             extra={
                 "tick": self.tick_count,
-                "num_actions": len(decision.actions),
-                "selected_strategy": decision.selected_strategy,
+                "maintain_plan": decision.maintain_plan,
+                "has_proposed_plan": decision.proposed_plan is not None,
+                "has_micro_adjustments": decision.micro_adjustments is not None,
                 "llm_cost_usd": decision.cost_usd,
             },
         )
 
-        # Check if LLM is proposing a strategy change
-        # If selected_strategy differs from active plan, treat as plan change proposal
-        if decision.selected_strategy and self.governor.active_plan:
-            if decision.selected_strategy != self.governor.active_plan.strategy_name:
+        # Handle governance decision
+        if decision.maintain_plan:
+            self.logger.info(
+                f"LLM maintaining current plan: {decision.reasoning}",
+                extra={"tick": self.tick_count, "reasoning": decision.reasoning},
+            )
+
+            # Execute micro-adjustments if provided
+            if decision.micro_adjustments:
                 self.logger.info(
-                    f"LLM proposing strategy change: {self.governor.active_plan.strategy_name} -> {decision.selected_strategy}",
+                    f"Executing {len(decision.micro_adjustments)} micro-adjustments",
+                    extra={"tick": self.tick_count, "num_adjustments": len(decision.micro_adjustments)},
+                )
+
+                for action in decision.micro_adjustments:
+                    try:
+                        result = self.base_agent.executor.execute_action(action)
+                        log_level = logging.INFO if result.success else logging.ERROR
+                        self.logger.log(
+                            log_level,
+                            f"Micro-adjustment: {action.action_type} {action.coin} - {'success' if result.success else 'failed'}",
+                            extra={
+                                "tick": self.tick_count,
+                                "action_type": action.action_type,
+                                "coin": action.coin,
+                                "success": result.success,
+                                "error": result.error,
+                            },
+                        )
+                    except Exception as e:
+                        self.logger.error(
+                            f"Failed to execute micro-adjustment: {action.action_type} {action.coin}",
+                            exc_info=e,
+                            extra={"tick": self.tick_count, "coin": action.coin},
+                        )
+        else:
+            # LLM proposing a plan change
+            if decision.proposed_plan:
+                self.logger.info(
+                    f"LLM proposing plan change: {decision.reasoning}",
                     extra={
                         "tick": self.tick_count,
-                        "old_strategy": self.governor.active_plan.strategy_name,
-                        "new_strategy": decision.selected_strategy,
+                        "proposed_strategy": decision.proposed_plan.strategy_name,
+                        "reasoning": decision.reasoning,
                     },
                 )
-                # Would create a new StrategyPlanCard from the LLM decision
-                # For now, log that a change was proposed but don't implement
-                self.logger.info(
-                    "Plan change proposal detected but not implemented (requires full LLM governance integration)",
+                self._handle_plan_change_proposal(decision.proposed_plan, current_time)
+            else:
+                self.logger.warning(
+                    "LLM indicated plan change but no proposed plan provided",
                     extra={"tick": self.tick_count},
                 )
-        elif decision.selected_strategy and not self.governor.active_plan:
-            self.logger.info(
-                f"LLM selected initial strategy: {decision.selected_strategy}",
-                extra={"tick": self.tick_count, "strategy": decision.selected_strategy},
-            )
-            # Would create initial StrategyPlanCard
-            # For now, just log
-        else:
-            self.logger.info(
-                "LLM maintaining current plan or no strategy selected",
-                extra={"tick": self.tick_count},
-            )
 
     def _execute_slow_loop(self, current_time: datetime):
         """Execute slow loop: regime detection and macro analysis.
