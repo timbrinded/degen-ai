@@ -2,15 +2,10 @@
 
 import os
 import tempfile
-from pathlib import Path
 
 import pytest
 
 from hyperliquid_agent.config import (
-    AgentConfig,
-    Config,
-    HyperliquidConfig,
-    LLMConfig,
     load_config,
 )
 
@@ -232,7 +227,9 @@ api_key = "sk-test"
         config_path = f.name
 
     try:
-        with pytest.raises(ValueError, match="Invalid LLM provider.*Must be 'openai' or 'anthropic'"):
+        with pytest.raises(
+            ValueError, match="Invalid LLM provider.*Must be 'openai' or 'anthropic'"
+        ):
             load_config(config_path)
     finally:
         os.unlink(config_path)

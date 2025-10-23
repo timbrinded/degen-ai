@@ -20,10 +20,10 @@ def _create_governed_agent(config_path: str):
         typer.Exit: If governance config is missing
     """
     from hyperliquid_agent.config import load_config
-    from hyperliquid_agent.governed_agent import GovernedAgentConfig, GovernedTradingAgent
     from hyperliquid_agent.governance.governor import GovernorConfig
     from hyperliquid_agent.governance.regime import RegimeDetectorConfig
     from hyperliquid_agent.governance.tripwire import TripwireConfig
+    from hyperliquid_agent.governed_agent import GovernedAgentConfig, GovernedTradingAgent
 
     cfg = load_config(config_path)
 
@@ -262,7 +262,7 @@ def gov_regime(
     typer.echo(f"History Length:   {status['history_length']} classifications")
 
     if status["in_event_lock"]:
-        typer.echo(f"\n⚠️  EVENT LOCK ACTIVE")
+        typer.echo("\n⚠️  EVENT LOCK ACTIVE")
         typer.echo(f"    {status['event_lock_reason']}")
 
     typer.echo(f"\n{'-' * 70}")
@@ -308,7 +308,7 @@ def gov_tripwire(
     typer.echo(f"\nActive Tripwires: {status['active_tripwires']}")
 
     if status["active_tripwires"] > 0:
-        typer.echo(f"\n⚠️  ALERTS ACTIVE")
+        typer.echo("\n⚠️  ALERTS ACTIVE")
         typer.echo(f"\n{'-' * 70}")
         typer.echo("TRIGGERED EVENTS")
         typer.echo(f"{'-' * 70}")

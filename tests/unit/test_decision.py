@@ -3,16 +3,14 @@
 import json
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from hyperliquid_agent.config import LLMConfig
 from hyperliquid_agent.decision import (
     DecisionEngine,
-    DecisionResult,
     PromptTemplate,
-    TradeAction,
 )
 from hyperliquid_agent.monitor import AccountState, Position
 
@@ -86,6 +84,7 @@ def sample_account_state():
             ),
         ],
         timestamp=1234567890.0,
+        spot_balances={},
         is_stale=False,
     )
 
@@ -98,6 +97,7 @@ def empty_account_state():
         available_balance=1000.0,
         positions=[],
         timestamp=1234567890.0,
+        spot_balances={},
         is_stale=False,
     )
 
@@ -173,7 +173,9 @@ def test_decision_engine_init_openai(mock_openai_class, llm_config_openai, sampl
 
 
 @patch("anthropic.Anthropic")
-def test_decision_engine_init_anthropic(mock_anthropic_class, llm_config_anthropic, sample_prompt_template):
+def test_decision_engine_init_anthropic(
+    mock_anthropic_class, llm_config_anthropic, sample_prompt_template
+):
     """Test DecisionEngine initializes with Anthropic provider."""
     mock_client = MagicMock()
     mock_anthropic_class.return_value = mock_client
@@ -202,25 +204,27 @@ def test_decision_engine_init_invalid_provider(sample_prompt_template):
 
 def test_parse_response_valid_json():
     """Test parsing valid JSON response."""
-    response = json.dumps({
-        "selected_strategy": "funding-harvest",
-        "actions": [
-            {
-                "action_type": "buy",
-                "coin": "BTC",
-                "market_type": "perp",
-                "size": 0.1,
-                "price": 50000.0,
-                "reasoning": "Good entry point"
-            }
-        ]
-    })
-
-    template = PromptTemplate(Path(__file__).parent.parent.parent / "prompts" / "default.txt", strategies_dir="nonexistent")
-    engine = DecisionEngine(
-        LLMConfig(provider="openai", model="gpt-4", api_key="test"),
-        template
+    response = json.dumps(
+        {
+            "selected_strategy": "funding-harvest",
+            "actions": [
+                {
+                    "action_type": "buy",
+                    "coin": "BTC",
+                    "market_type": "perp",
+                    "size": 0.1,
+                    "price": 50000.0,
+                    "reasoning": "Good entry point",
+                }
+            ],
+        }
     )
+
+    template = PromptTemplate(
+        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        strategies_dir="nonexistent",
+    )
+    engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
 
     actions, strategy, allocation = engine._parse_response(response)
 
@@ -254,11 +258,11 @@ def test_parse_response_with_markdown_code_block():
 }
 ```"""
 
-    template = PromptTemplate(Path(__file__).parent.parent.parent / "prompts" / "default.txt", strategies_dir="nonexistent")
-    engine = DecisionEngine(
-        LLMConfig(provider="openai", model="gpt-4", api_key="test"),
-        template
+    template = PromptTemplate(
+        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        strategies_dir="nonexistent",
     )
+    engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
 
     actions, strategy, allocation = engine._parse_response(response)
 
@@ -270,21 +274,19 @@ def test_parse_response_with_markdown_code_block():
 
 def test_parse_response_with_target_allocation():
     """Test parsing response with target allocation."""
-    response = json.dumps({
-        "selected_strategy": "portfolio-rebalance",
-        "target_allocation": {
-            "BTC": 0.5,
-            "ETH": 0.3,
-            "SOL": 0.2
-        },
-        "actions": []
-    })
-
-    template = PromptTemplate(Path(__file__).parent.parent.parent / "prompts" / "default.txt", strategies_dir="nonexistent")
-    engine = DecisionEngine(
-        LLMConfig(provider="openai", model="gpt-4", api_key="test"),
-        template
+    response = json.dumps(
+        {
+            "selected_strategy": "portfolio-rebalance",
+            "target_allocation": {"BTC": 0.5, "ETH": 0.3, "SOL": 0.2},
+            "actions": [],
+        }
     )
+
+    template = PromptTemplate(
+        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        strategies_dir="nonexistent",
+    )
+    engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
 
     actions, strategy, allocation = engine._parse_response(response)
 
@@ -298,22 +300,24 @@ def test_parse_response_with_target_allocation():
 
 def test_parse_response_hold_action():
     """Test parsing hold action."""
-    response = json.dumps({
-        "actions": [
-            {
-                "action_type": "hold",
-                "coin": "BTC",
-                "market_type": "perp",
-                "reasoning": "Wait for better entry"
-            }
-        ]
-    })
-
-    template = PromptTemplate(Path(__file__).parent.parent.parent / "prompts" / "default.txt", strategies_dir="nonexistent")
-    engine = DecisionEngine(
-        LLMConfig(provider="openai", model="gpt-4", api_key="test"),
-        template
+    response = json.dumps(
+        {
+            "actions": [
+                {
+                    "action_type": "hold",
+                    "coin": "BTC",
+                    "market_type": "perp",
+                    "reasoning": "Wait for better entry",
+                }
+            ]
+        }
     )
+
+    template = PromptTemplate(
+        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        strategies_dir="nonexistent",
+    )
+    engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
 
     actions, strategy, allocation = engine._parse_response(response)
 
@@ -327,11 +331,11 @@ def test_parse_response_invalid_json():
     """Test parsing invalid JSON raises ValueError."""
     response = "This is not valid JSON"
 
-    template = PromptTemplate(Path(__file__).parent.parent.parent / "prompts" / "default.txt", strategies_dir="nonexistent")
-    engine = DecisionEngine(
-        LLMConfig(provider="openai", model="gpt-4", api_key="test"),
-        template
+    template = PromptTemplate(
+        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        strategies_dir="nonexistent",
     )
+    engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
 
     with pytest.raises(ValueError, match="No JSON object found in response"):
         engine._parse_response(response)
@@ -341,11 +345,11 @@ def test_parse_response_no_json_object():
     """Test parsing response without JSON object."""
     response = "Some text without any JSON"
 
-    template = PromptTemplate(Path(__file__).parent.parent.parent / "prompts" / "default.txt", strategies_dir="nonexistent")
-    engine = DecisionEngine(
-        LLMConfig(provider="openai", model="gpt-4", api_key="test"),
-        template
+    template = PromptTemplate(
+        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        strategies_dir="nonexistent",
     )
+    engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
 
     with pytest.raises(ValueError, match="No JSON object found in response"):
         engine._parse_response(response)
@@ -353,13 +357,12 @@ def test_parse_response_no_json_object():
 
 def test_parse_response_malformed_json():
     """Test parsing malformed JSON raises ValueError."""
-    response = '{"actions": [{"action_type": "buy", "coin": "BTC"}]}'  # Valid JSON with closing brace
 
-    template = PromptTemplate(Path(__file__).parent.parent.parent / "prompts" / "default.txt", strategies_dir="nonexistent")
-    engine = DecisionEngine(
-        LLMConfig(provider="openai", model="gpt-4", api_key="test"),
-        template
+    template = PromptTemplate(
+        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        strategies_dir="nonexistent",
     )
+    engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
 
     # Test with actual malformed JSON that has closing brace but invalid structure
     malformed = '{"actions": [{"action_type": "buy", "coin": "BTC",}]}'  # Trailing comma
@@ -369,16 +372,13 @@ def test_parse_response_malformed_json():
 
 def test_parse_response_llm_error_state():
     """Test parsing response with LLM error state."""
-    response = json.dumps({
-        "error": True,
-        "error_reason": "Insufficient data to make decision"
-    })
+    response = json.dumps({"error": True, "error_reason": "Insufficient data to make decision"})
 
-    template = PromptTemplate(Path(__file__).parent.parent.parent / "prompts" / "default.txt", strategies_dir="nonexistent")
-    engine = DecisionEngine(
-        LLMConfig(provider="openai", model="gpt-4", api_key="test"),
-        template
+    template = PromptTemplate(
+        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        strategies_dir="nonexistent",
     )
+    engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
 
     with pytest.raises(ValueError, match="LLM decision error: Insufficient data to make decision"):
         engine._parse_response(response)
@@ -386,27 +386,20 @@ def test_parse_response_llm_error_state():
 
 def test_parse_response_invalid_action_type():
     """Test parsing skips actions with invalid action_type."""
-    response = json.dumps({
-        "actions": [
-            {
-                "action_type": "invalid_action",
-                "coin": "BTC",
-                "market_type": "perp"
-            },
-            {
-                "action_type": "buy",
-                "coin": "ETH",
-                "market_type": "spot",
-                "size": 1.0
-            }
-        ]
-    })
-
-    template = PromptTemplate(Path(__file__).parent.parent.parent / "prompts" / "default.txt", strategies_dir="nonexistent")
-    engine = DecisionEngine(
-        LLMConfig(provider="openai", model="gpt-4", api_key="test"),
-        template
+    response = json.dumps(
+        {
+            "actions": [
+                {"action_type": "invalid_action", "coin": "BTC", "market_type": "perp"},
+                {"action_type": "buy", "coin": "ETH", "market_type": "spot", "size": 1.0},
+            ]
+        }
     )
+
+    template = PromptTemplate(
+        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        strategies_dir="nonexistent",
+    )
+    engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
 
     actions, _, _ = engine._parse_response(response)
 
@@ -418,21 +411,13 @@ def test_parse_response_invalid_action_type():
 
 def test_parse_response_missing_coin():
     """Test parsing skips actions without coin."""
-    response = json.dumps({
-        "actions": [
-            {
-                "action_type": "buy",
-                "market_type": "perp",
-                "size": 0.1
-            }
-        ]
-    })
+    response = json.dumps({"actions": [{"action_type": "buy", "market_type": "perp", "size": 0.1}]})
 
-    template = PromptTemplate(Path(__file__).parent.parent.parent / "prompts" / "default.txt", strategies_dir="nonexistent")
-    engine = DecisionEngine(
-        LLMConfig(provider="openai", model="gpt-4", api_key="test"),
-        template
+    template = PromptTemplate(
+        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        strategies_dir="nonexistent",
     )
+    engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
 
     actions, _, _ = engine._parse_response(response)
 
@@ -442,22 +427,19 @@ def test_parse_response_missing_coin():
 
 def test_parse_response_invalid_market_type():
     """Test parsing defaults invalid market_type to perp."""
-    response = json.dumps({
-        "actions": [
-            {
-                "action_type": "buy",
-                "coin": "BTC",
-                "market_type": "invalid_market",
-                "size": 0.1
-            }
-        ]
-    })
-
-    template = PromptTemplate(Path(__file__).parent.parent.parent / "prompts" / "default.txt", strategies_dir="nonexistent")
-    engine = DecisionEngine(
-        LLMConfig(provider="openai", model="gpt-4", api_key="test"),
-        template
+    response = json.dumps(
+        {
+            "actions": [
+                {"action_type": "buy", "coin": "BTC", "market_type": "invalid_market", "size": 0.1}
+            ]
+        }
     )
+
+    template = PromptTemplate(
+        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        strategies_dir="nonexistent",
+    )
+    engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
 
     actions, _, _ = engine._parse_response(response)
 
@@ -467,39 +449,41 @@ def test_parse_response_invalid_market_type():
 
 def test_parse_response_actions_not_list():
     """Test parsing raises error when actions is not a list."""
-    response = json.dumps({
-        "actions": "not a list"
-    })
+    response = json.dumps({"actions": "not a list"})
 
-    template = PromptTemplate(Path(__file__).parent.parent.parent / "prompts" / "default.txt", strategies_dir="nonexistent")
-    engine = DecisionEngine(
-        LLMConfig(provider="openai", model="gpt-4", api_key="test"),
-        template
+    template = PromptTemplate(
+        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        strategies_dir="nonexistent",
     )
+    engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
 
     with pytest.raises(ValueError, match="'actions' field must be a list"):
         engine._parse_response(response)
 
 
 @patch("openai.OpenAI")
-def test_get_decision_success(mock_openai_class, llm_config_openai, sample_prompt_template, sample_account_state):
+def test_get_decision_success(
+    mock_openai_class, llm_config_openai, sample_prompt_template, sample_account_state
+):
     """Test successful decision retrieval."""
     # Setup mock
     mock_client = MagicMock()
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = json.dumps({
-        "selected_strategy": "test-strategy",
-        "actions": [
-            {
-                "action_type": "buy",
-                "coin": "BTC",
-                "market_type": "perp",
-                "size": 0.1,
-                "reasoning": "Test"
-            }
-        ]
-    })
+    mock_response.choices[0].message.content = json.dumps(
+        {
+            "selected_strategy": "test-strategy",
+            "actions": [
+                {
+                    "action_type": "buy",
+                    "coin": "BTC",
+                    "market_type": "perp",
+                    "size": 0.1,
+                    "reasoning": "Test",
+                }
+            ],
+        }
+    )
     mock_response.usage = MagicMock()
     mock_response.usage.prompt_tokens = 100
     mock_response.usage.completion_tokens = 50
@@ -521,7 +505,9 @@ def test_get_decision_success(mock_openai_class, llm_config_openai, sample_promp
 
 
 @patch("openai.OpenAI")
-def test_get_decision_llm_failure(mock_openai_class, llm_config_openai, sample_prompt_template, sample_account_state):
+def test_get_decision_llm_failure(
+    mock_openai_class, llm_config_openai, sample_prompt_template, sample_account_state
+):
     """Test decision retrieval handles LLM failures."""
     mock_client = MagicMock()
     mock_client.chat.completions.create.side_effect = Exception("API error")
@@ -539,7 +525,9 @@ def test_get_decision_llm_failure(mock_openai_class, llm_config_openai, sample_p
 
 
 @patch("openai.OpenAI")
-def test_get_decision_parsing_failure(mock_openai_class, llm_config_openai, sample_prompt_template, sample_account_state):
+def test_get_decision_parsing_failure(
+    mock_openai_class, llm_config_openai, sample_prompt_template, sample_account_state
+):
     """Test decision retrieval handles parsing failures."""
     mock_client = MagicMock()
     mock_response = MagicMock()

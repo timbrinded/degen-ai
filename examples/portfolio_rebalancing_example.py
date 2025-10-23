@@ -37,10 +37,10 @@ def main():
     # Convert to portfolio state
     portfolio_state = PortfolioState.from_account_state(account_state)
 
-    print(f"\nCurrent Portfolio:")
+    print("\nCurrent Portfolio:")
     print(f"  Total Value: ${portfolio_state.total_value:,.2f}")
     print(f"  Available Cash: ${portfolio_state.available_balance:,.2f}")
-    print(f"  Allocations:")
+    print("  Allocations:")
     for coin, pct in sorted(portfolio_state.allocations.items()):
         print(f"    {coin}: {pct * 100:.1f}%")
 
@@ -54,7 +54,7 @@ def main():
         strategy_id="balanced-growth",
     )
 
-    print(f"\nTarget Allocation:")
+    print("\nTarget Allocation:")
     for coin, pct in sorted(target.allocations.items()):
         print(f"  {coin}: {pct * 100:.1f}%")
 
@@ -66,12 +66,12 @@ def main():
 
     plan = rebalancer.create_rebalancing_plan(portfolio_state, target)
 
-    print(f"\nRebalancing Plan:")
+    print("\nRebalancing Plan:")
     print(f"  Actions: {len(plan.actions)}")
     print(f"  Estimated Cost: ${plan.estimated_cost:.2f}")
     print(f"  Reasoning: {plan.reasoning}")
 
-    print(f"\nActions to Execute:")
+    print("\nActions to Execute:")
     for i, action in enumerate(plan.actions, 1):
         print(f"  {i}. {action.action_type.upper()} {action.size:.4f} {action.coin}")
         print(f"     Market: {action.market_type}")
@@ -110,9 +110,9 @@ def main():
 
     portfolio_state_2 = PortfolioState.from_account_state(account_state_2)
 
-    print(f"\nCurrent Portfolio:")
+    print("\nCurrent Portfolio:")
     print(f"  Total Value: ${portfolio_state_2.total_value:,.2f}")
-    print(f"  Allocations:")
+    print("  Allocations:")
     for coin, pct in sorted(portfolio_state_2.allocations.items()):
         print(f"    {coin}: {pct * 100:.1f}%")
 
@@ -126,13 +126,13 @@ def main():
         strategy_id="balanced-growth",
     )
 
-    print(f"\nTarget Allocation:")
+    print("\nTarget Allocation:")
     for coin, pct in sorted(target_2.allocations.items()):
         print(f"  {coin}: {pct * 100:.1f}%")
 
     plan_2 = rebalancer.create_rebalancing_plan(portfolio_state_2, target_2)
 
-    print(f"\nRebalancing Plan:")
+    print("\nRebalancing Plan:")
     print(f"  Actions: {len(plan_2.actions)}")
     print(f"  Reasoning: {plan_2.reasoning}")
 
@@ -148,17 +148,17 @@ def main():
         strategy_id="risk-off",
     )
 
-    print(f"\nTarget Allocation:")
+    print("\nTarget Allocation:")
     for coin, pct in sorted(target_3.allocations.items()):
         print(f"  {coin}: {pct * 100:.1f}%")
 
     plan_3 = rebalancer.create_rebalancing_plan(portfolio_state_2, target_3)
 
-    print(f"\nRebalancing Plan:")
+    print("\nRebalancing Plan:")
     print(f"  Actions: {len(plan_3.actions)}")
     print(f"  Reasoning: {plan_3.reasoning}")
 
-    print(f"\nActions to Execute:")
+    print("\nActions to Execute:")
     for i, action in enumerate(plan_3.actions, 1):
         print(f"  {i}. {action.action_type.upper()} {action.size:.4f} {action.coin}")
         print(f"     Reasoning: {action.reasoning}")

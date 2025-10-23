@@ -89,6 +89,7 @@ def account_state_with_positions():
             ),
         ],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
 
@@ -137,6 +138,7 @@ def test_update_metrics_tracks_peak_value(sample_plan):
         available_balance=5000.0,
         positions=[],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
     scorekeeper.update_metrics(account_state1, sample_plan)
@@ -148,6 +150,7 @@ def test_update_metrics_tracks_peak_value(sample_plan):
         available_balance=5000.0,
         positions=[],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
     scorekeeper.update_metrics(account_state2, sample_plan)
@@ -165,6 +168,7 @@ def test_update_metrics_calculates_max_drawdown(sample_plan):
         available_balance=6000.0,
         positions=[],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
     scorekeeper.update_metrics(account_state1, sample_plan)
@@ -175,6 +179,7 @@ def test_update_metrics_calculates_max_drawdown(sample_plan):
         available_balance=5400.0,
         positions=[],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
     scorekeeper.update_metrics(account_state2, sample_plan)
@@ -193,6 +198,7 @@ def test_update_metrics_calculates_pnl_per_unit_risk(sample_plan):
         available_balance=5500.0,
         positions=[],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
     scorekeeper.update_metrics(account_state1, sample_plan)
@@ -202,6 +208,7 @@ def test_update_metrics_calculates_pnl_per_unit_risk(sample_plan):
         available_balance=5250.0,
         positions=[],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
     scorekeeper.update_metrics(account_state2, sample_plan)
@@ -366,6 +373,7 @@ def test_update_shadow_portfolios():
             ),
         ],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
 
@@ -553,6 +561,7 @@ def test_drift_calculation_with_missing_positions(sample_plan):
             ),
         ],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
 

@@ -103,7 +103,9 @@ def test_position_monitor_initialization(hyperliquid_config):
 
 
 @patch("hyperliquid_agent.monitor.Info")
-def test_get_current_state_success(mock_info_class, hyperliquid_config, mock_user_state_with_positions):
+def test_get_current_state_success(
+    mock_info_class, hyperliquid_config, mock_user_state_with_positions
+):
     """Test successful retrieval of current state."""
     # Setup mock
     mock_info_instance = MagicMock()
@@ -146,7 +148,9 @@ def test_get_current_state_success(mock_info_class, hyperliquid_config, mock_use
 
 
 @patch("hyperliquid_agent.monitor.Info")
-def test_get_current_state_empty_positions(mock_info_class, hyperliquid_config, mock_user_state_empty):
+def test_get_current_state_empty_positions(
+    mock_info_class, hyperliquid_config, mock_user_state_empty
+):
     """Test retrieval with no positions."""
     mock_info_instance = MagicMock()
     mock_info_instance.user_state.return_value = mock_user_state_empty
@@ -211,7 +215,9 @@ def test_get_current_state_api_error_no_cache(mock_info_class, hyperliquid_confi
 
     monitor = PositionMonitor(hyperliquid_config)
 
-    with pytest.raises(Exception, match="Failed to retrieve account state and no cached state available"):
+    with pytest.raises(
+        Exception, match="Failed to retrieve account state and no cached state available"
+    ):
         monitor.get_current_state()
 
 
@@ -272,7 +278,8 @@ def test_get_current_state_multiple_calls_updates_cache(
 def test_parse_user_state_directly(hyperliquid_config, mock_user_state_with_positions):
     """Test _parse_user_state method directly."""
     monitor = PositionMonitor(hyperliquid_config)
-    state = monitor._parse_user_state(mock_user_state_with_positions)
+    mock_spot_state = {"balances": []}
+    state = monitor._parse_user_state(mock_user_state_with_positions, mock_spot_state)
 
     assert isinstance(state, AccountState)
     assert state.portfolio_value == 10000.50

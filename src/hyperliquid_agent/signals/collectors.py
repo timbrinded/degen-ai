@@ -137,9 +137,7 @@ class FastSignalCollector(SignalCollectorBase):
         try:
             # Get recent 1-minute candles for volatility (last 15 minutes)
             start_time, end_time = self._get_timestamp_range(hours_back=0.25)
-            candles = self.info.candles_snapshot(
-                largest_position.coin, "1m", start_time, end_time
-            )
+            candles = self.info.candles_snapshot(largest_position.coin, "1m", start_time, end_time)
             if candles and len(candles) > 1:
                 return calculate_realized_volatility(candles)
         except Exception:
@@ -190,9 +188,7 @@ class MediumSignalCollector(SignalCollectorBase):
 
             # Calculate concentration
             position_value = abs(position.size * position.current_price)
-            concentration_ratios[coin] = (
-                position_value / total_value if total_value > 0 else 0.0
-            )
+            concentration_ratios[coin] = position_value / total_value if total_value > 0 else 0.0
 
             # Drift from targets (would need target allocations from active plan)
             drift_from_targets[coin] = 0.0

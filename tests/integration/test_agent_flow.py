@@ -11,14 +11,12 @@ to Hyperliquid testnet. They test the integration of all components:
 import json
 import os
 import tempfile
-import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from hyperliquid_agent.agent import TradingAgent
-from hyperliquid_agent.config import Config, load_config
+from hyperliquid_agent.config import load_config
 
 
 @pytest.fixture
@@ -91,17 +89,19 @@ def mock_hyperliquid_responses():
 @pytest.fixture
 def mock_llm_response():
     """Mock LLM response with trading decision."""
-    return json.dumps({
-        "selected_strategy": "test-strategy",
-        "actions": [
-            {
-                "action_type": "hold",
-                "coin": "BTC",
-                "market_type": "perp",
-                "reasoning": "Market conditions unclear, holding position"
-            }
-        ]
-    })
+    return json.dumps(
+        {
+            "selected_strategy": "test-strategy",
+            "actions": [
+                {
+                    "action_type": "hold",
+                    "coin": "BTC",
+                    "market_type": "perp",
+                    "reasoning": "Market conditions unclear, holding position",
+                }
+            ],
+        }
+    )
 
 
 def test_agent_initialization(testnet_config):
@@ -205,28 +205,28 @@ def test_execute_tick_with_trade_execution(
     mock_executor_info.return_value = mock_executor_info_instance
 
     mock_exchange_instance = MagicMock()
-    mock_exchange_instance.order.return_value = {
-        "status": {"resting": {"oid": "0xorder123"}}
-    }
+    mock_exchange_instance.order.return_value = {"status": {"resting": {"oid": "0xorder123"}}}
     mock_executor_exchange.return_value = mock_exchange_instance
 
     # Setup LLM mock with buy action
     mock_llm_client = MagicMock()
     mock_llm_response_obj = MagicMock()
     mock_llm_response_obj.choices = [MagicMock()]
-    mock_llm_response_obj.choices[0].message.content = json.dumps({
-        "selected_strategy": "test-buy-strategy",
-        "actions": [
-            {
-                "action_type": "buy",
-                "coin": "ETH",
-                "market_type": "perp",
-                "size": 0.5,
-                "price": 3000.0,
-                "reasoning": "Good entry point"
-            }
-        ]
-    })
+    mock_llm_response_obj.choices[0].message.content = json.dumps(
+        {
+            "selected_strategy": "test-buy-strategy",
+            "actions": [
+                {
+                    "action_type": "buy",
+                    "coin": "ETH",
+                    "market_type": "perp",
+                    "size": 0.5,
+                    "price": 3000.0,
+                    "reasoning": "Good entry point",
+                }
+            ],
+        }
+    )
     mock_llm_response_obj.usage = MagicMock()
     mock_llm_response_obj.usage.prompt_tokens = 100
     mock_llm_response_obj.usage.completion_tokens = 50
@@ -277,9 +277,9 @@ def test_execute_tick_monitor_error_recovery(
     mock_llm_client = MagicMock()
     mock_llm_response_obj = MagicMock()
     mock_llm_response_obj.choices = [MagicMock()]
-    mock_llm_response_obj.choices[0].message.content = json.dumps({
-        "actions": [{"action_type": "hold", "coin": "BTC", "market_type": "perp"}]
-    })
+    mock_llm_response_obj.choices[0].message.content = json.dumps(
+        {"actions": [{"action_type": "hold", "coin": "BTC", "market_type": "perp"}]}
+    )
     mock_llm_response_obj.usage = MagicMock()
     mock_llm_response_obj.usage.prompt_tokens = 100
     mock_llm_response_obj.usage.completion_tokens = 50
@@ -375,17 +375,19 @@ def test_execute_tick_executor_error_recovery(
     mock_llm_client = MagicMock()
     mock_llm_response_obj = MagicMock()
     mock_llm_response_obj.choices = [MagicMock()]
-    mock_llm_response_obj.choices[0].message.content = json.dumps({
-        "actions": [
-            {
-                "action_type": "buy",
-                "coin": "BTC",
-                "market_type": "perp",
-                "size": 0.1,
-                "price": 50000.0
-            }
-        ]
-    })
+    mock_llm_response_obj.choices[0].message.content = json.dumps(
+        {
+            "actions": [
+                {
+                    "action_type": "buy",
+                    "coin": "BTC",
+                    "market_type": "perp",
+                    "size": 0.1,
+                    "price": 50000.0,
+                }
+            ]
+        }
+    )
     mock_llm_response_obj.usage = MagicMock()
     mock_llm_response_obj.usage.prompt_tokens = 100
     mock_llm_response_obj.usage.completion_tokens = 50
@@ -447,7 +449,7 @@ def test_execute_tick_logs_portfolio_value(
 
     # Verify tick completed successfully
     assert agent.tick_count == 1
-    
+
     # Verify portfolio value tracking is working
     assert agent.last_portfolio_value is not None
 
@@ -476,36 +478,36 @@ def test_execute_tick_multiple_actions(
     mock_executor_info.return_value = mock_executor_info_instance
 
     mock_exchange_instance = MagicMock()
-    mock_exchange_instance.order.return_value = {
-        "status": {"resting": {"oid": "0xorder123"}}
-    }
+    mock_exchange_instance.order.return_value = {"status": {"resting": {"oid": "0xorder123"}}}
     mock_executor_exchange.return_value = mock_exchange_instance
 
     # Setup LLM mock with multiple actions
     mock_llm_client = MagicMock()
     mock_llm_response_obj = MagicMock()
     mock_llm_response_obj.choices = [MagicMock()]
-    mock_llm_response_obj.choices[0].message.content = json.dumps({
-        "selected_strategy": "multi-action-strategy",
-        "actions": [
-            {
-                "action_type": "buy",
-                "coin": "BTC",
-                "market_type": "perp",
-                "size": 0.1,
-                "price": 50000.0,
-                "reasoning": "Buy BTC"
-            },
-            {
-                "action_type": "sell",
-                "coin": "ETH",
-                "market_type": "spot",
-                "size": 1.0,
-                "price": 3000.0,
-                "reasoning": "Sell ETH"
-            }
-        ]
-    })
+    mock_llm_response_obj.choices[0].message.content = json.dumps(
+        {
+            "selected_strategy": "multi-action-strategy",
+            "actions": [
+                {
+                    "action_type": "buy",
+                    "coin": "BTC",
+                    "market_type": "perp",
+                    "size": 0.1,
+                    "price": 50000.0,
+                    "reasoning": "Buy BTC",
+                },
+                {
+                    "action_type": "sell",
+                    "coin": "ETH",
+                    "market_type": "spot",
+                    "size": 1.0,
+                    "price": 3000.0,
+                    "reasoning": "Sell ETH",
+                },
+            ],
+        }
+    )
     mock_llm_response_obj.usage = MagicMock()
     mock_llm_response_obj.usage.prompt_tokens = 100
     mock_llm_response_obj.usage.completion_tokens = 50
@@ -536,7 +538,6 @@ def test_execute_tick_stale_state_handling(
     """Test tick execution handles stale state indicator."""
     # Setup monitor mock to return stale state
     mock_monitor_instance = MagicMock()
-    stale_response = mock_hyperliquid_responses["user_state"].copy()
     mock_monitor_instance.user_state.side_effect = [
         mock_hyperliquid_responses["user_state"],  # First call fresh
         Exception("API error"),  # Second call fails, returns stale
@@ -570,7 +571,7 @@ def test_execute_tick_stale_state_handling(
     # Second tick with stale state - should still complete successfully
     agent._execute_tick()
     assert agent.tick_count == 2
-    
+
     # Verify the agent continued operating despite the API error
     # The monitor should have returned cached state with is_stale=True
 
@@ -581,7 +582,7 @@ def test_agent_configuration_logging(testnet_config):
 
     # Verify logger was configured with correct name
     assert agent.logger.name == "hyperliquid_agent"
-    
+
     # Verify configuration was stored
     assert agent.config == testnet_config
 

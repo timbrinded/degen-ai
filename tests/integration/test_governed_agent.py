@@ -17,7 +17,6 @@ from hyperliquid_agent.governance.plan_card import (
     TargetAllocation,
 )
 from hyperliquid_agent.governance.regime import (
-    RegimeClassification,
     RegimeDetector,
     RegimeDetectorConfig,
     RegimeSignals,
@@ -78,6 +77,7 @@ def sample_account_state():
             ),
         ],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
 
@@ -175,9 +175,7 @@ def test_full_governance_workflow(
     assert regime_detector.current_regime == "trending"
 
 
-def test_regime_change_triggers_plan_review(
-    governor_config, regime_config, sample_plan
-):
+def test_regime_change_triggers_plan_review(governor_config, regime_config, sample_plan):
     """Test regime change overrides dwell time restrictions."""
     governor = StrategyGovernor(governor_config)
     regime_detector = RegimeDetector(regime_config)
@@ -215,9 +213,7 @@ def test_regime_change_triggers_plan_review(
     assert regime_detector.current_regime == "trending"
 
 
-def test_tripwire_invalidates_plan(
-    governor_config, tripwire_config, sample_plan
-):
+def test_tripwire_invalidates_plan(governor_config, tripwire_config, sample_plan):
     """Test tripwire can invalidate active plan."""
     governor = StrategyGovernor(governor_config)
     tripwire_service = TripwireService(tripwire_config)
@@ -245,6 +241,7 @@ def test_tripwire_invalidates_plan(
             ),
         ],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
 
@@ -260,9 +257,7 @@ def test_tripwire_invalidates_plan(
     assert governor.active_plan.status == "invalidated"
 
 
-def test_plan_change_with_cost_benefit_analysis(
-    governor_config, sample_plan
-):
+def test_plan_change_with_cost_benefit_analysis(governor_config, sample_plan):
     """Test plan change requires sufficient advantage over cost."""
     governor = StrategyGovernor(governor_config)
 
@@ -340,9 +335,7 @@ def test_plan_change_with_cost_benefit_analysis(
     assert "Approved" in reason
 
 
-def test_scorekeeper_tracks_plan_performance(
-    sample_plan, sample_account_state
-):
+def test_scorekeeper_tracks_plan_performance(sample_plan, sample_account_state):
     """Test scorekeeper tracks plan metrics throughout lifecycle."""
     scorekeeper = PlanScorekeeper()
 
@@ -368,9 +361,7 @@ def test_scorekeeper_tracks_plan_performance(
     assert len(scorekeeper.completed_plans) == 1
 
 
-def test_state_persistence_across_restarts(
-    governor_config, sample_plan
-):
+def test_state_persistence_across_restarts(governor_config, sample_plan):
     """Test governance state persists and recovers."""
     # Create first governor instance
     governor1 = StrategyGovernor(governor_config)

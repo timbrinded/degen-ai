@@ -284,15 +284,21 @@ class GovernedTradingAgent:
                 value_gap = target_value - current_value
 
                 # Find current price
-                matching_pos = next((p for p in account_state.positions if p.coin == coin), None)
-                if matching_pos:
-                    current_price = matching_pos.current_price
+                if coin == "USDC":
+                    # USDC is the margin/collateral, not a position - price is always 1.0
+                    current_price = 1.0
                 else:
-                    self.logger.warning(
-                        f"Cannot determine price for {coin} - no existing position",
-                        extra={"tick": self.tick_count, "coin": coin},
+                    matching_pos = next(
+                        (p for p in account_state.positions if p.coin == coin), None
                     )
-                    continue
+                    if matching_pos:
+                        current_price = matching_pos.current_price
+                    else:
+                        self.logger.warning(
+                            f"Cannot determine price for {coin} - no existing position",
+                            extra={"tick": self.tick_count, "coin": coin},
+                        )
+                        continue
 
                 # Calculate size to trade
                 size = abs(value_gap / current_price) if current_price > 0 else 0.0
@@ -527,7 +533,10 @@ class GovernedTradingAgent:
             if decision.micro_adjustments:
                 self.logger.info(
                     f"Executing {len(decision.micro_adjustments)} micro-adjustments",
-                    extra={"tick": self.tick_count, "num_adjustments": len(decision.micro_adjustments)},
+                    extra={
+                        "tick": self.tick_count,
+                        "num_adjustments": len(decision.micro_adjustments),
+                    },
                 )
 
                 for action in decision.micro_adjustments:

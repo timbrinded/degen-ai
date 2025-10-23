@@ -66,6 +66,14 @@ class TradeExecutor:
                 self.logger.info(f"Hold action for {action.coin}, no order submitted")
                 return ExecutionResult(action=action, success=True)
 
+            # Handle transfer action
+            if action.action_type == "transfer":
+                result = self._submit_transfer(action)
+                self.logger.info(
+                    f"Transfer executed: {action.size} {action.coin} to {action.market_type}"
+                )
+                return ExecutionResult(action=action, success=True)
+
             # Submit order to Hyperliquid
             result = self._submit_order(action)
 
@@ -165,7 +173,7 @@ class TradeExecutor:
             True if action is valid, False otherwise
         """
         # Check action type
-        if action.action_type not in ["buy", "sell", "hold", "close"]:
+        if action.action_type not in ["buy", "sell", "hold", "close", "transfer"]:
             self.logger.error(f"Invalid action type: {action.action_type}")
             return False
 
@@ -182,6 +190,11 @@ class TradeExecutor:
         # For buy/sell actions, size must be specified and positive
         if action.action_type in ["buy", "sell"] and (action.size is None or action.size <= 0):
             self.logger.error(f"Invalid size for {action.action_type}: {action.size}")
+            return False
+
+        # For transfer actions, size must be specified and positive
+        if action.action_type == "transfer" and (action.size is None or action.size <= 0):
+            self.logger.error(f"Invalid size for transfer: {action.size}")
             return False
 
         # For close actions, size is optional (will close entire position)
@@ -245,4 +258,31 @@ class TradeExecutor:
             sz=rounded_size,
             limit_px=action.price,
             order_type={"limit": {"tif": "Gtc"}},  # Good-til-cancel
+        )
+
+    def _submit_transfer(self, action: TradeAction) -> dict:
+        """Submit transfer between spot and perp wallets.
+
+        Args:
+            action: Transfer action (market_type indicates destination)
+
+        Returns:
+            API response dictionary
+
+        Raises:
+            Exception: If transfer submission fails
+        """
+        if action.size is None:
+            raise ValueError("Size must be specified for transfer action")
+
+        # Determine transfer direction based on market_type
+        # market_type "spot" means transfer TO spot (from perp)
+        # market_type "perp" means transfer TO perp (from spot)
+        to_perp = action.market_type == "perp"
+
+        # Submit transfer using usd_class_transfer
+        # This transfers USDC between spot and perp wallets
+        return self.exchange.usd_class_transfer(
+            amount=action.size,
+            to_perp=to_perp,
         )

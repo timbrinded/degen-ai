@@ -1,12 +1,10 @@
 """Unit tests for Regime Detector module."""
 
-from collections import deque
 from datetime import datetime, timedelta
 
 import pytest
 
 from hyperliquid_agent.governance.regime import (
-    RegimeClassification,
     RegimeDetector,
     RegimeDetectorConfig,
     RegimeSignals,
@@ -223,7 +221,9 @@ def test_update_and_confirm_regime_change_not_confirmed(
     assert detector.current_regime == "range-bound"
 
 
-def test_hysteresis_threshold_prevents_ping_pong(regime_config, trending_signals, range_bound_signals):
+def test_hysteresis_threshold_prevents_ping_pong(
+    regime_config, trending_signals, range_bound_signals
+):
     """Test hysteresis prevents rapid regime switching."""
     detector = RegimeDetector(regime_config)
     detector.current_regime = "range-bound"
@@ -472,6 +472,7 @@ def test_regime_classification_priority_order(regime_config):
 
 def test_regime_detector_with_external_data_provider(regime_config):
     """Test regime detector accepts external data provider."""
+
     # Mock external data provider
     class MockExternalData:
         def get_cross_asset_correlation(self, asset1: str, asset2: str) -> float:

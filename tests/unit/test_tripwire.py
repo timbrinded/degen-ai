@@ -50,6 +50,7 @@ def healthy_account_state():
             ),
         ],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
 
@@ -131,6 +132,7 @@ def test_check_account_safety_daily_loss_limit_exceeded(tripwire_config):
         available_balance=4000.0,
         positions=[],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
 
@@ -164,6 +166,7 @@ def test_check_account_safety_low_margin_ratio(tripwire_config):
             ),
         ],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
 
@@ -212,6 +215,7 @@ def test_check_account_safety_liquidation_proximity(tripwire_config):
             ),
         ],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
 
@@ -261,6 +265,7 @@ def test_check_plan_invalidation_trigger_fired(tripwire_config, sample_plan):
             ),
         ],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
 
@@ -283,6 +288,7 @@ def test_check_operational_health_stale_data(tripwire_config):
         portfolio_value=10000.0,
         available_balance=5000.0,
         positions=[],
+        spot_balances={},
         timestamp=datetime.now().timestamp() - 400,  # 400 seconds old
         is_stale=True,
     )
@@ -343,6 +349,7 @@ def test_check_all_tripwires_multiple_events(tripwire_config, sample_plan):
                 market_type="perp",
             ),
         ],
+        spot_balances={},
         timestamp=datetime.now().timestamp() - 400,  # Stale data
         is_stale=True,
     )
@@ -392,7 +399,9 @@ def test_reset_daily_tracking(tripwire_config):
     assert service.daily_loss_pct == 0.0
 
 
-def test_evaluate_trigger_funding_rate_negative(tripwire_config, healthy_account_state, sample_plan):
+def test_evaluate_trigger_funding_rate_negative(
+    tripwire_config, healthy_account_state, sample_plan
+):
     """Test trigger evaluation for negative funding rate."""
     service = TripwireService(tripwire_config)
 
@@ -433,6 +442,7 @@ def test_evaluate_trigger_position_size_exceeded(tripwire_config, sample_plan):
             ),
         ],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
 
@@ -462,6 +472,7 @@ def test_evaluate_trigger_pnl_drawdown(tripwire_config, sample_plan):
             ),
         ],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
 
@@ -533,6 +544,7 @@ def test_daily_loss_calculation_updates(tripwire_config):
         available_balance=5000.0,
         positions=[],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
     service._check_account_safety(account_state1)
@@ -545,6 +557,7 @@ def test_daily_loss_calculation_updates(tripwire_config):
         available_balance=4700.0,
         positions=[],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
     service._check_account_safety(account_state2)
@@ -578,6 +591,7 @@ def test_multiple_position_size_triggers(tripwire_config, sample_plan):
             ),
         ],
         timestamp=datetime.now().timestamp(),
+        spot_balances={},
         is_stale=False,
     )
 

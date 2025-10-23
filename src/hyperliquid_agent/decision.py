@@ -20,12 +20,13 @@ if TYPE_CHECKING:
 class TradeAction:
     """Represents a single trading action."""
 
-    action_type: Literal["buy", "sell", "hold", "close"]
+    action_type: Literal["buy", "sell", "hold", "close", "transfer"]
     coin: str
     market_type: Literal["spot", "perp"]
     size: float | None = None
     price: float | None = None  # None for market orders
     reasoning: str = ""
+    # For transfer actions: "spot" means transfer TO spot, "perp" means transfer TO perp
 
 
 @dataclass
@@ -466,7 +467,7 @@ class DecisionEngine:
 
             # Validate required fields
             action_type = action_data.get("action_type")
-            if action_type not in ["buy", "sell", "hold", "close"]:
+            if action_type not in ["buy", "sell", "hold", "close", "transfer"]:
                 continue
 
             coin = action_data.get("coin", "")
@@ -638,8 +639,8 @@ Key Thesis: {active_plan.key_thesis}
 Target Allocations: {allocations}
 Expected Edge: {active_plan.expected_edge_bps:.0f} bps
 Minimum Dwell: {active_plan.minimum_dwell_minutes} minutes
-Compatible Regimes: {', '.join(active_plan.compatible_regimes)}
-Avoid Regimes: {', '.join(active_plan.avoid_regimes)}
+Compatible Regimes: {", ".join(active_plan.compatible_regimes)}
+Avoid Regimes: {", ".join(active_plan.avoid_regimes)}
 Status: {active_plan.status}
 """
 
@@ -751,7 +752,7 @@ Status: {active_plan.status}
                     continue
 
                 action_type = action_data.get("action_type")
-                if action_type not in ["buy", "sell", "hold", "close"]:
+                if action_type not in ["buy", "sell", "hold", "close", "transfer"]:
                     continue
 
                 coin = action_data.get("coin", "")

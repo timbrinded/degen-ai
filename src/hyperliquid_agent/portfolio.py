@@ -55,9 +55,12 @@ class PortfolioState:
         # Calculate current allocations
         allocations: dict[str, float] = {}
 
-        # Add cash allocation
+        # Add USDC allocation (perp margin + spot balance)
         if total_value > 0:
-            allocations["USDC"] = account_state.available_balance / total_value
+            perp_usdc = account_state.available_balance
+            spot_usdc = account_state.spot_balances.get("USDC", 0.0)
+            total_usdc = perp_usdc + spot_usdc
+            allocations["USDC"] = total_usdc / total_value
 
         # Add position allocations
         for pos in account_state.positions:
