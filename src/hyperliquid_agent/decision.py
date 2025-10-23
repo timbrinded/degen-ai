@@ -82,7 +82,7 @@ class PromptTemplate:
         self.strategies = self._load_strategies()
 
     def _load_strategies(self) -> list[dict]:
-        """Load all active strategy markdown files.
+        """Load all strategy markdown files from the strategies directory.
 
         Returns:
             List of strategy dictionaries with metadata and content
@@ -97,10 +97,8 @@ class PromptTemplate:
             try:
                 with open(md_file) as f:
                     post = frontmatter.load(f)
-                    # Only include active or draft strategies
-                    status = str(post.get("status", "")).lower()
-                    if status in ["active", "draft"]:
-                        strategies.append({"metadata": post.metadata, "content": post.content})
+                    # Include all strategies found in the directory
+                    strategies.append({"metadata": post.metadata, "content": post.content})
             except Exception:
                 # Skip files that can't be parsed
                 continue
