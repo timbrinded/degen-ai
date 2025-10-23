@@ -20,7 +20,7 @@ jobs:
         run: uv python install 3.11
       
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --extra dev
       
       - name: Run ruff check
         run: uv run ruff check
@@ -42,7 +42,7 @@ jobs:
         run: uv python install 3.11
       
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --extra dev
       
       - name: Run pyrefly
         run: uv run pyrefly check src/
@@ -61,7 +61,7 @@ jobs:
         run: uv python install 3.11
       
       - name: Install dependencies
-        run: uv sync --dev
+        run: uv sync --extra dev
       
       - name: Run tests
         run: uv run pytest -v
