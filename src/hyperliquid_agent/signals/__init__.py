@@ -12,6 +12,13 @@ from hyperliquid_agent.signals.collectors import (
     MediumSignalCollector,
     SlowSignalCollector,
 )
+from hyperliquid_agent.signals.hyperliquid_provider import (
+    Candle,
+    FundingRate,
+    HyperliquidProvider,
+    OpenInterestData,
+    OrderBookData,
+)
 from hyperliquid_agent.signals.models import (
     EnhancedAccountState,
     FastLoopSignals,
@@ -55,6 +62,12 @@ __all__ = [
     "CircuitBreaker",
     "CircuitState",
     "fetch_with_retry",
+    # Hyperliquid Provider
+    "HyperliquidProvider",
+    "OrderBookData",
+    "FundingRate",
+    "Candle",
+    "OpenInterestData",
     # Service
     "SignalService",
     "SignalRequest",
