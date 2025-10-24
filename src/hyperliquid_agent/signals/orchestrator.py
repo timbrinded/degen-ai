@@ -66,8 +66,8 @@ class SignalOrchestrator:
         self.hl_provider = HyperliquidProvider(info, self.cache)
         self.computed_processor = ComputedSignalProcessor(self.cache)
 
-        # Initialize collectors (currently sync, will be refactored in later tasks)
-        self.fast_collector = FastSignalCollector(info)
+        # Initialize collectors
+        self.fast_collector = FastSignalCollector(info, self.hl_provider, self.computed_processor)
         self.medium_collector = MediumSignalCollector(info)
         self.slow_collector = SlowSignalCollector(info)
 
@@ -162,12 +162,8 @@ class SignalOrchestrator:
             Collected signals (type depends on request.signal_type)
         """
         if request.signal_type == "fast":
-            # Fast signals - currently sync, will be async in task 7
-            # For now, run in executor to avoid blocking
-            loop = asyncio.get_event_loop()
-            signals = await loop.run_in_executor(
-                None, self.fast_collector.collect, request.account_state
-            )
+            # Fast signals - now async with concurrent order book fetching
+            signals = await self.fast_collector.collect(request.account_state)
             return signals
 
         elif request.signal_type == "medium":
@@ -251,6 +247,7 @@ class SignalOrchestrator:
         from hyperliquid_agent.signals.models import (
             FastLoopSignals,
             MediumLoopSignals,
+            SignalQualityMetadata,
             SlowLoopSignals,
         )
 
@@ -261,6 +258,9 @@ class SignalOrchestrator:
                 short_term_volatility=0.0,
                 micro_pnl=0.0,
                 partial_fill_rates={},
+                order_book_depth={},
+                api_latency_ms=0.0,
+                metadata=SignalQualityMetadata.create_fallback(),
             )
         elif signal_type == "medium":
             return MediumLoopSignals(

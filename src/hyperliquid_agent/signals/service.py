@@ -186,6 +186,8 @@ class SignalService:
         Returns:
             Default/fallback signals
         """
+        from hyperliquid_agent.signals.models import SignalQualityMetadata
+
         if signal_type == "fast":
             return FastLoopSignals(
                 spreads={},
@@ -193,6 +195,9 @@ class SignalService:
                 short_term_volatility=0.0,
                 micro_pnl=0.0,
                 partial_fill_rates={},
+                order_book_depth={},
+                api_latency_ms=0.0,
+                metadata=SignalQualityMetadata.create_fallback(),
             )
         elif signal_type == "medium":
             return MediumLoopSignals(

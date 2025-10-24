@@ -150,6 +150,11 @@ class FastLoopSignals:
     micro_pnl: float  # Very short-term PnL change
     partial_fill_rates: dict[str, float]  # Coin -> fill rate (0.0 to 1.0)
 
+    # Enhanced fields from task 7
+    order_book_depth: dict[str, float]  # Coin -> depth within 1% of mid-price
+    api_latency_ms: float  # API response time in milliseconds
+    metadata: SignalQualityMetadata  # Signal quality and freshness metadata
+
 
 @dataclass
 class MediumLoopSignals:

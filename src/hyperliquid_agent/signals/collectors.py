@@ -1,6 +1,8 @@
 """Signal collectors for different time scales."""
 
+import asyncio
 import time
+from datetime import datetime
 from typing import Literal
 
 from hyperliquid.info import Info
@@ -12,11 +14,14 @@ from hyperliquid_agent.signals.calculations import (
     calculate_spread_bps,
     calculate_trend_score,
 )
+from hyperliquid_agent.signals.hyperliquid_provider import HyperliquidProvider
 from hyperliquid_agent.signals.models import (
     FastLoopSignals,
     MediumLoopSignals,
+    SignalQualityMetadata,
     SlowLoopSignals,
 )
+from hyperliquid_agent.signals.processor import ComputedSignalProcessor
 
 
 class SignalCollectorBase:
@@ -45,64 +50,126 @@ class SignalCollectorBase:
 
 
 class FastSignalCollector(SignalCollectorBase):
-    """Collects fast-loop signals for execution-level decisions."""
+    """Collects fast-loop signals for execution-level decisions using async providers."""
 
-    def collect(self, account_state: AccountState) -> FastLoopSignals:
-        """Collect fast-loop signals.
+    def __init__(
+        self,
+        info: Info,
+        hyperliquid_provider: HyperliquidProvider,
+        computed_processor: ComputedSignalProcessor,
+    ):
+        """Initialize fast signal collector with async providers.
+
+        Args:
+            info: Hyperliquid Info API client (for backward compatibility)
+            hyperliquid_provider: Async Hyperliquid data provider
+            computed_processor: Computed signal processor
+        """
+        super().__init__(info)
+        self.hyperliquid_provider = hyperliquid_provider
+        self.computed_processor = computed_processor
+
+    async def collect(self, account_state: AccountState) -> FastLoopSignals:
+        """Collect fast-loop signals asynchronously with concurrent order book fetching.
 
         Args:
             account_state: Current account state
 
         Returns:
-            FastLoopSignals with current execution-level market data
+            FastLoopSignals with current execution-level market data and quality metadata
         """
         spreads = {}
         slippage_estimates = {}
         partial_fill_rates = {}
+        order_book_depth = {}
         micro_pnl = sum(p.unrealized_pnl for p in account_state.positions)
 
-        # Collect per-position metrics
-        for position in account_state.positions:
-            coin = position.coin
+        # Track API latency
+        api_start_time = time.time()
 
-            # Get L2 order book snapshot for spread calculation
-            try:
-                l2_data = self.info.l2_snapshot(coin)
-                levels = l2_data.get("levels", [[[], []]])
+        # Collect order books for all positions concurrently
+        tasks = [
+            self.hyperliquid_provider.fetch_order_book(pos.coin) for pos in account_state.positions
+        ]
 
-                if levels and len(levels[0]) == 2:
-                    bids = levels[0][0]  # [[price, size], ...]
-                    asks = levels[0][1]  # [[price, size], ...]
+        order_book_responses = await asyncio.gather(*tasks, return_exceptions=True)
 
-                    if bids and asks:
-                        best_bid = float(bids[0][0])
-                        best_ask = float(asks[0][0])
+        # Measure API latency
+        api_latency_ms = (time.time() - api_start_time) * 1000
 
-                        # Calculate spread in bps
-                        spread_bps = calculate_spread_bps(best_bid, best_ask)
-                        spreads[coin] = spread_bps
+        # Process order book data
+        successful_fetches = 0
+        total_confidence = 0.0
 
-                        # Estimate slippage based on order book depth
-                        # Simple heuristic: slippage ~= spread/2 for small orders
-                        slippage_estimates[coin] = spread_bps / 2
-                    else:
-                        spreads[coin] = 10.0  # Default wide spread
-                        slippage_estimates[coin] = 5.0
-                else:
-                    spreads[coin] = 10.0
-                    slippage_estimates[coin] = 5.0
+        for pos, ob_response in zip(account_state.positions, order_book_responses, strict=True):
+            coin = pos.coin
 
-            except Exception:
+            if isinstance(ob_response, BaseException):
                 # Fallback to conservative estimates on API failure
                 spreads[coin] = 15.0
                 slippage_estimates[coin] = 7.5
+                order_book_depth[coin] = 0.0
+                partial_fill_rates[coin] = 0.95
+                continue
 
-            # Partial fill rates - would need historical fill data
-            # For now, assume high fill rate for liquid markets
+            # Extract order book data (ob_response is ProviderResponse here)
+            ob_data = ob_response.data
+            successful_fetches += 1
+            total_confidence += ob_response.confidence
+
+            # Calculate spread in bps
+            if ob_data.bids and ob_data.asks:
+                best_bid = ob_data.bids[0][0]
+                best_ask = ob_data.asks[0][0]
+                mid_price = (best_bid + best_ask) / 2
+
+                spread_bps = calculate_spread_bps(best_bid, best_ask)
+                spreads[coin] = spread_bps
+
+                # Calculate order book depth within 1% of mid-price
+                threshold = mid_price * 0.01
+                bid_depth = sum(
+                    size for price, size in ob_data.bids if abs(price - mid_price) <= threshold
+                )
+                ask_depth = sum(
+                    size for price, size in ob_data.asks if abs(price - mid_price) <= threshold
+                )
+                total_depth = bid_depth + ask_depth
+                order_book_depth[coin] = total_depth
+
+                # Estimate slippage based on order book depth analysis
+                # More sophisticated: consider depth relative to typical order size
+                if total_depth > 100:
+                    # High liquidity - low slippage
+                    slippage_estimates[coin] = spread_bps * 0.3
+                elif total_depth > 20:
+                    # Medium liquidity
+                    slippage_estimates[coin] = spread_bps * 0.5
+                else:
+                    # Low liquidity - higher slippage
+                    slippage_estimates[coin] = spread_bps * 0.8
+            else:
+                spreads[coin] = 10.0
+                slippage_estimates[coin] = 5.0
+                order_book_depth[coin] = 0.0
+
+            # Partial fill rates - assume high fill rate for liquid markets
             partial_fill_rates[coin] = 0.95
 
         # Calculate short-term volatility from recent price changes
-        short_term_vol = self._calculate_short_term_volatility(account_state.positions)
+        short_term_vol = await self._calculate_short_term_volatility(account_state.positions)
+
+        # Build quality metadata
+        avg_confidence = total_confidence / successful_fetches if successful_fetches > 0 else 0.0
+        metadata = SignalQualityMetadata(
+            timestamp=datetime.now(),
+            confidence=avg_confidence,
+            staleness_seconds=0.0,
+            sources=["hyperliquid"],
+            is_cached=any(
+                not isinstance(r, BaseException) and r.is_cached for r in order_book_responses
+            ),
+        )
 
         return FastLoopSignals(
             spreads=spreads,
@@ -110,10 +177,13 @@ class FastSignalCollector(SignalCollectorBase):
             short_term_volatility=short_term_vol,
             micro_pnl=micro_pnl,
             partial_fill_rates=partial_fill_rates,
+            order_book_depth=order_book_depth,
+            api_latency_ms=api_latency_ms,
+            metadata=metadata,
         )
 
-    def _calculate_short_term_volatility(self, positions: list[Position]) -> float:
-        """Calculate short-term volatility from largest position.
+    async def _calculate_short_term_volatility(self, positions: list[Position]) -> float:
+        """Calculate short-term volatility from largest position using async provider.
 
         Args:
             positions: List of current positions
@@ -137,9 +207,25 @@ class FastSignalCollector(SignalCollectorBase):
         try:
             # Get recent 1-minute candles for volatility (last 15 minutes)
             start_time, end_time = self._get_timestamp_range(hours_back=0.25)
-            candles = self.info.candles_snapshot(largest_position.coin, "1m", start_time, end_time)
+            candles_response = await self.hyperliquid_provider.fetch_candles(
+                largest_position.coin, "1m", start_time, end_time
+            )
+
+            candles = candles_response.data
             if candles and len(candles) > 1:
-                return calculate_realized_volatility(candles)
+                # Convert to dict format expected by calculate_realized_volatility
+                candles_dict = [
+                    {
+                        "t": int(c.timestamp.timestamp() * 1000),
+                        "o": c.open,
+                        "h": c.high,
+                        "l": c.low,
+                        "c": c.close,
+                        "v": c.volume,
+                    }
+                    for c in candles
+                ]
+                return calculate_realized_volatility(candles_dict)
         except Exception:
             pass
 
