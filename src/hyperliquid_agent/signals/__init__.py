@@ -40,6 +40,7 @@ from hyperliquid_agent.signals.providers import (
     RetryConfig,
     fetch_with_retry,
 )
+from hyperliquid_agent.signals.sentiment_provider import SentimentProvider
 from hyperliquid_agent.signals.service import SignalRequest, SignalResponse, SignalService
 
 __all__ = [
@@ -74,6 +75,8 @@ __all__ = [
     "FundingRate",
     "Candle",
     "OpenInterestData",
+    # Sentiment Provider
+    "SentimentProvider",
     # Service
     "SignalService",
     "SignalRequest",
