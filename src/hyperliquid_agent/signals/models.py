@@ -198,6 +198,14 @@ class SlowLoopSignals:
     venue_health_score: float  # Exchange health indicator (0 to 1)
     liquidity_regime: Literal["high", "medium", "low"]  # Overall liquidity assessment
 
+    # Enhanced fields from task 12
+    btc_eth_correlation: float  # BTC-ETH correlation coefficient (-1 to 1)
+    btc_spx_correlation: float | None  # BTC-SPX correlation (optional, None if unavailable)
+    fear_greed_index: float  # Normalized sentiment score (-1 to 1)
+    token_unlocks_7d: list[UnlockEvent]  # Upcoming token unlocks within 7 days
+    whale_flow_24h: dict[str, float]  # Net whale flow per asset (24h)
+    metadata: SignalQualityMetadata  # Signal quality and freshness metadata
+
 
 @dataclass
 class UnlockEvent:

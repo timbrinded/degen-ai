@@ -570,66 +570,312 @@ class MediumSignalCollector(SignalCollectorBase):
 
 
 class SlowSignalCollector(SignalCollectorBase):
-    """Collects slow-loop signals for regime detection and macro analysis."""
+    """Collects slow-loop signals for regime detection and macro analysis using async providers."""
 
-    def collect(self, account_state: AccountState) -> SlowLoopSignals:
-        """Collect slow-loop signals.
+    def __init__(
+        self,
+        info: Info,
+        hyperliquid_provider: HyperliquidProvider,
+        onchain_provider: Any,  # OnChainProvider
+        external_market_provider: Any,  # ExternalMarketProvider
+        sentiment_provider: Any,  # SentimentProvider
+        computed_processor: ComputedSignalProcessor,
+    ):
+        """Initialize slow signal collector with async providers.
+
+        Args:
+            info: Hyperliquid Info API client (for backward compatibility)
+            hyperliquid_provider: Async Hyperliquid data provider
+            onchain_provider: Async on-chain data provider
+            external_market_provider: Async external market data provider
+            sentiment_provider: Async sentiment data provider
+            computed_processor: Computed signal processor
+        """
+        super().__init__(info)
+        self.hyperliquid_provider = hyperliquid_provider
+        self.onchain_provider = onchain_provider
+        self.external_market_provider = external_market_provider
+        self.sentiment_provider = sentiment_provider
+        self.computed_processor = computed_processor
+
+    async def collect(self, account_state: AccountState) -> SlowLoopSignals:
+        """Collect slow-loop signals asynchronously with concurrent provider calls.
 
         Args:
             account_state: Current account state
 
         Returns:
-            SlowLoopSignals with macro-level market data
+            SlowLoopSignals with macro-level market data and quality metadata
         """
-        macro_events_upcoming = []
-        cross_asset_risk_on_score = self._calculate_risk_on_score()
-        venue_health_score = self._assess_venue_health()
-        liquidity_regime = self._assess_liquidity_regime(account_state.positions)
+        # Track successful fetches for confidence calculation
+        successful_fetches = 0
+        total_confidence = 0.0
+        sources = ["hyperliquid"]
 
-        return SlowLoopSignals(
-            macro_events_upcoming=macro_events_upcoming,
-            cross_asset_risk_on_score=cross_asset_risk_on_score,
-            venue_health_score=venue_health_score,
-            liquidity_regime=liquidity_regime,
+        # Fetch macro events
+        macro_events_task = self._fetch_macro_events()
+        btc_eth_corr_task = self._fetch_btc_eth_correlation()
+        btc_spx_corr_task = self._fetch_btc_spx_correlation()
+        fear_greed_task = self._fetch_fear_greed_index()
+        token_unlocks_task = self._fetch_token_unlocks(account_state.positions)
+        whale_flows_task = self._fetch_whale_flows(account_state.positions)
+        venue_health_task = self._assess_venue_health_async()
+        liquidity_regime_task = self._assess_liquidity_regime_async(account_state.positions)
+
+        # Execute all tasks concurrently
+        results = await asyncio.gather(  # type: ignore[misc]
+            macro_events_task,
+            btc_eth_corr_task,
+            btc_spx_corr_task,
+            fear_greed_task,
+            token_unlocks_task,
+            whale_flows_task,
+            venue_health_task,
+            liquidity_regime_task,
+            return_exceptions=True,
         )
 
-    def _calculate_risk_on_score(self) -> float:
-        """Calculate cross-asset risk-on score using BTC funding as proxy.
+        # Unpack results with proper type handling
+        macro_events: list[Any] = results[0] if not isinstance(results[0], BaseException) else []
+        btc_eth_corr: float = results[1] if not isinstance(results[1], BaseException) else 0.0
+        btc_spx_corr: float | None = (
+            results[2] if not isinstance(results[2], BaseException) else None
+        )
+        fear_greed: float = results[3] if not isinstance(results[3], BaseException) else 0.0
+        token_unlocks: list[Any] = results[4] if not isinstance(results[4], BaseException) else []
+        whale_flows: dict[str, float] = (
+            results[5] if not isinstance(results[5], BaseException) else {}
+        )
+        venue_health: float = results[6] if not isinstance(results[6], BaseException) else 0.5
+        liquidity_regime: Literal["high", "medium", "low"] = (
+            results[7] if not isinstance(results[7], BaseException) else "medium"
+        )
+
+        # Calculate cross-asset risk-on score using BTC funding as proxy
+        cross_asset_risk_on_score = await self._calculate_risk_on_score()
+
+        # Track sources and confidence
+        if not isinstance(results[0], BaseException):
+            sources.append("external_market")
+            successful_fetches += 1
+            total_confidence += 1.0
+
+        if not isinstance(results[3], BaseException):
+            sources.append("sentiment")
+            successful_fetches += 1
+            total_confidence += 1.0
+
+        if not isinstance(results[4], BaseException) or not isinstance(results[5], BaseException):
+            sources.append("onchain")
+            successful_fetches += 1
+            total_confidence += 1.0
+
+        # Build quality metadata
+        avg_confidence = total_confidence / successful_fetches if successful_fetches > 0 else 0.5
+        metadata = SignalQualityMetadata(
+            timestamp=datetime.now(),
+            confidence=avg_confidence,
+            staleness_seconds=0.0,
+            sources=list(set(sources)),
+            is_cached=False,
+        )
+
+        return SlowLoopSignals(
+            macro_events_upcoming=macro_events,
+            cross_asset_risk_on_score=cross_asset_risk_on_score,
+            venue_health_score=venue_health,
+            liquidity_regime=liquidity_regime,
+            btc_eth_correlation=btc_eth_corr,
+            btc_spx_correlation=btc_spx_corr,
+            fear_greed_index=fear_greed,
+            token_unlocks_7d=token_unlocks,
+            whale_flow_24h=whale_flows,
+            metadata=metadata,
+        )
+
+    async def _fetch_macro_events(self) -> list[Any]:
+        """Fetch upcoming macro economic events.
 
         Returns:
-            Risk-on score from -1 to +1
+            List of MacroEvent objects
         """
         try:
-            start_time, end_time = self._get_timestamp_range(hours_back=168)  # 7 days
-            btc_funding = self.info.funding_history("BTC", start_time, end_time)
-            if btc_funding:
-                rates = [float(f.get("fundingRate", 0)) for f in btc_funding]
-                avg_funding = sum(rates) / len(rates) if rates else 0.0
+            response = await self.external_market_provider.fetch_macro_calendar(days_ahead=7)
+            return response.data
+        except Exception as e:
+            logger.warning(f"Failed to fetch macro events: {e}")
+            return []
 
-                # Positive funding = longs paying shorts = risk-on
-                # Normalize to -1 to +1 scale (typical funding is -0.01% to +0.01%)
-                return max(-1.0, min(1.0, avg_funding * 10000))
-        except Exception:
-            pass
+    async def _fetch_btc_eth_correlation(self) -> float:
+        """Calculate BTC-ETH correlation using ComputedSignalProcessor.
+
+        Returns:
+            Correlation coefficient from -1.0 to 1.0
+        """
+        try:
+            # Fetch 30 days of price data for BTC and ETH
+            response = await self.external_market_provider.fetch_asset_prices(
+                assets=["BTC", "ETH"], days_back=30
+            )
+            price_data = response.data
+
+            if price_data.get("BTC") and price_data.get("ETH"):
+                # Calculate correlation matrix
+                correlations = await self.computed_processor.calculate_correlation_matrix(
+                    price_data
+                )
+                return correlations.get(("BTC", "ETH"), 0.0)
+        except Exception as e:
+            logger.warning(f"Failed to calculate BTC-ETH correlation: {e}")
 
         return 0.0
 
-    def _assess_venue_health(self) -> float:
-        """Assess venue health via API responsiveness.
+    async def _fetch_btc_spx_correlation(self) -> float | None:
+        """Calculate BTC-SPX correlation with optional external data.
 
         Returns:
-            Health score from 0 to 1
+            Correlation coefficient from -1.0 to 1.0, or None if data unavailable
         """
         try:
-            meta = self.info.meta()
-            return 1.0 if meta and "universe" in meta else 0.5
-        except Exception:
-            return 0.3  # Degraded health
+            # Fetch 30 days of price data for BTC and SPX
+            response = await self.external_market_provider.fetch_asset_prices(
+                assets=["BTC", "SPX"], days_back=30
+            )
+            price_data = response.data
 
-    def _assess_liquidity_regime(
+            if price_data.get("BTC") and price_data.get("SPX"):
+                # Calculate correlation matrix
+                correlations = await self.computed_processor.calculate_correlation_matrix(
+                    price_data
+                )
+                return correlations.get(("BTC", "SPX"), 0.0)
+        except Exception as e:
+            logger.warning(f"Failed to calculate BTC-SPX correlation: {e}")
+
+        return None
+
+    async def _fetch_fear_greed_index(self) -> float:
+        """Fetch fear & greed index from SentimentProvider.
+
+        Returns:
+            Normalized sentiment score from -1.0 to +1.0
+        """
+        try:
+            response = await self.sentiment_provider.fetch_fear_greed_index()
+            return response.data
+        except Exception as e:
+            logger.warning(f"Failed to fetch fear & greed index: {e}")
+            return 0.0
+
+    async def _fetch_token_unlocks(self, positions: list[Position]) -> list[Any]:
+        """Fetch token unlock data from OnChainProvider.
+
+        Args:
+            positions: List of current positions
+
+        Returns:
+            List of UnlockEvent objects
+        """
+        if not positions:
+            return []
+
+        try:
+            # Get unique assets from positions
+            assets = list({p.coin for p in positions})
+
+            response = await self.onchain_provider.fetch_token_unlocks(assets=assets, days_ahead=7)
+            return response.data
+        except Exception as e:
+            logger.warning(f"Failed to fetch token unlocks: {e}")
+            return []
+
+    async def _fetch_whale_flows(self, positions: list[Position]) -> dict[str, float]:
+        """Fetch whale flow data from OnChainProvider.
+
+        Args:
+            positions: List of current positions
+
+        Returns:
+            Dictionary mapping asset -> net flow (24h)
+        """
+        if not positions:
+            return {}
+
+        whale_flows: dict[str, float] = {}
+
+        try:
+            # Get unique assets from positions
+            assets = list({p.coin for p in positions})
+
+            # Fetch whale flows for each asset concurrently
+            tasks = [
+                self.onchain_provider.fetch_whale_flows(asset=asset, hours_back=24)
+                for asset in assets
+            ]
+
+            responses = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for asset, response in zip(assets, responses, strict=True):
+                if not isinstance(response, BaseException):
+                    whale_flows[asset] = response.data.net_flow
+                else:
+                    whale_flows[asset] = 0.0
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch whale flows: {e}")
+
+        return whale_flows
+
+    async def _assess_venue_health_async(self) -> float:
+        """Assess venue health based on API response times and status.
+
+        Implements requirement 10.1, 10.2, 10.3, 10.4, 10.5.
+
+        Returns:
+            Health score from 0.0 to 1.0
+        """
+        try:
+            # Measure API response time
+            start_time = time.time()
+
+            # Make a lightweight API call to test responsiveness
+            meta = self.info.meta()
+
+            response_time = time.time() - start_time
+            response_time_ms = response_time * 1000
+
+            # Calculate health score based on response time
+            # < 1s = 1.0 (excellent)
+            # 1-2s = 0.8 (good)
+            # 2-5s = 0.5 (degraded)
+            # > 5s = 0.3 (poor) - requirement 10.5
+            if response_time_ms < 1000:
+                health_score = 1.0
+            elif response_time_ms < 2000:
+                health_score = 0.8
+            elif response_time_ms < 5000:
+                health_score = 0.5
+            else:
+                health_score = 0.3
+
+            # Check if meta response is valid
+            if not meta or "universe" not in meta:
+                health_score *= 0.5  # Reduce score if API response is invalid
+
+            logger.debug(
+                f"Venue health: {health_score:.2f} (response time: {response_time_ms:.1f}ms)"
+            )
+
+            return health_score
+
+        except Exception as e:
+            logger.warning(f"Failed to assess venue health: {e}")
+            return 0.3  # Degraded health on error
+
+    async def _assess_liquidity_regime_async(
         self, positions: list[Position]
     ) -> Literal["high", "medium", "low"]:
-        """Assess liquidity regime from order book depth.
+        """Assess liquidity regime from order book depth using async provider.
 
         Args:
             positions: List of current positions
@@ -647,34 +893,59 @@ class SlowSignalCollector(SignalCollectorBase):
                 key=lambda p: abs(p.size * p.current_price),
             )
 
-            l2_data = self.info.l2_snapshot(largest_position.coin)
-            levels = l2_data.get("levels", [[[], []]])
+            # Fetch order book using async provider
+            ob_response = await self.hyperliquid_provider.fetch_order_book(largest_position.coin)
+            ob_data = ob_response.data
 
-            if levels and len(levels[0]) == 2:
-                bids = levels[0][0]
-                asks = levels[0][1]
+            if ob_data.bids and ob_data.asks:
+                best_bid = ob_data.bids[0][0]
+                best_ask = ob_data.asks[0][0]
+                mid_price = (best_bid + best_ask) / 2
+                threshold = mid_price * 0.01
 
                 # Calculate total depth within 1% of mid
-                if bids and asks:
-                    mid_price = (float(bids[0][0]) + float(asks[0][0])) / 2
-                    threshold = mid_price * 0.01
+                bid_depth = sum(
+                    size for price, size in ob_data.bids if abs(price - mid_price) <= threshold
+                )
+                ask_depth = sum(
+                    size for price, size in ob_data.asks if abs(price - mid_price) <= threshold
+                )
+                total_depth = bid_depth + ask_depth
 
-                    bid_depth = sum(
-                        float(b[1]) for b in bids if abs(float(b[0]) - mid_price) <= threshold
-                    )
-                    ask_depth = sum(
-                        float(a[1]) for a in asks if abs(float(a[0]) - mid_price) <= threshold
-                    )
-                    total_depth = bid_depth + ask_depth
+                # Classify liquidity based on depth
+                # These thresholds would be calibrated per asset
+                if total_depth > 100:
+                    return "high"
+                if total_depth > 20:
+                    return "medium"
+                return "low"
 
-                    # Classify liquidity based on depth
-                    # These thresholds would be calibrated per asset
-                    if total_depth > 100:
-                        return "high"
-                    if total_depth > 20:
-                        return "medium"
-                    return "low"
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to assess liquidity regime: {e}")
 
         return "medium"
+
+    async def _calculate_risk_on_score(self) -> float:
+        """Calculate cross-asset risk-on score using BTC funding as proxy.
+
+        Returns:
+            Risk-on score from -1 to +1
+        """
+        try:
+            start_time, end_time = self._get_timestamp_range(hours_back=168)  # 7 days
+            funding_response = await self.hyperliquid_provider.fetch_funding_history(
+                "BTC", start_time, end_time
+            )
+
+            funding_rates = funding_response.data
+            if funding_rates:
+                rates = [fr.rate for fr in funding_rates]
+                avg_funding = sum(rates) / len(rates) if rates else 0.0
+
+                # Positive funding = longs paying shorts = risk-on
+                # Normalize to -1 to +1 scale (typical funding is -0.01% to +0.01%)
+                return max(-1.0, min(1.0, avg_funding * 10000))
+        except Exception as e:
+            logger.warning(f"Failed to calculate risk-on score: {e}")
+
+        return 0.0

@@ -32,10 +32,26 @@ class EnhancedPositionMonitor(PositionMonitor):
         hl_provider = HyperliquidProvider(self.info, cache)
         computed_processor = ComputedSignalProcessor(cache)
 
+        # Initialize external providers (placeholder implementations for now)
+        from hyperliquid_agent.signals.external_market_provider import ExternalMarketProvider
+        from hyperliquid_agent.signals.onchain_provider import OnChainProvider
+        from hyperliquid_agent.signals.sentiment_provider import SentimentProvider
+
+        onchain_provider = OnChainProvider(cache)
+        external_market_provider = ExternalMarketProvider(cache)
+        sentiment_provider = SentimentProvider(cache)
+
         # Initialize collectors with async providers
         self.fast_collector = FastSignalCollector(self.info, hl_provider, computed_processor)
         self.medium_collector = MediumSignalCollector(self.info, hl_provider, computed_processor)
-        self.slow_collector = SlowSignalCollector(self.info)
+        self.slow_collector = SlowSignalCollector(
+            self.info,
+            hl_provider,
+            onchain_provider,
+            external_market_provider,
+            sentiment_provider,
+            computed_processor,
+        )
 
     def get_current_state_with_signals(
         self, loop_type: Literal["fast", "medium", "slow"]
@@ -82,6 +98,6 @@ class EnhancedPositionMonitor(PositionMonitor):
             enhanced.medium_signals = await self.medium_collector.collect(base_state)
 
         if loop_type == "slow":
-            enhanced.slow_signals = self.slow_collector.collect(base_state)
+            enhanced.slow_signals = await self.slow_collector.collect(base_state)
 
         return enhanced

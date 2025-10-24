@@ -220,4 +220,10 @@ class SignalService:
                 cross_asset_risk_on_score=0.0,
                 venue_health_score=0.5,
                 liquidity_regime="medium",
+                btc_eth_correlation=0.0,
+                btc_spx_correlation=None,
+                fear_greed_index=0.0,
+                token_unlocks_7d=[],
+                whale_flow_24h={},
+                metadata=SignalQualityMetadata.create_fallback(),
             )

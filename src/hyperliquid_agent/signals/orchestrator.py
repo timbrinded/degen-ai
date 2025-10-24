@@ -66,12 +66,28 @@ class SignalOrchestrator:
         self.hl_provider = HyperliquidProvider(info, self.cache)
         self.computed_processor = ComputedSignalProcessor(self.cache)
 
+        # Initialize external providers (placeholder implementations for now)
+        from hyperliquid_agent.signals.external_market_provider import ExternalMarketProvider
+        from hyperliquid_agent.signals.onchain_provider import OnChainProvider
+        from hyperliquid_agent.signals.sentiment_provider import SentimentProvider
+
+        self.onchain_provider = OnChainProvider(self.cache)
+        self.external_market_provider = ExternalMarketProvider(self.cache)
+        self.sentiment_provider = SentimentProvider(self.cache)
+
         # Initialize collectors
         self.fast_collector = FastSignalCollector(info, self.hl_provider, self.computed_processor)
         self.medium_collector = MediumSignalCollector(
             info, self.hl_provider, self.computed_processor
         )
-        self.slow_collector = SlowSignalCollector(info)
+        self.slow_collector = SlowSignalCollector(
+            info,
+            self.hl_provider,
+            self.onchain_provider,
+            self.external_market_provider,
+            self.sentiment_provider,
+            self.computed_processor,
+        )
 
         # Get default timeout from config
         self.default_timeout = self.config.get("collection_timeout_seconds", 30.0)
@@ -174,11 +190,8 @@ class SignalOrchestrator:
             return signals
 
         elif request.signal_type == "slow":
-            # Slow signals - currently sync, will be async in task 12
-            loop = asyncio.get_event_loop()
-            signals = await loop.run_in_executor(
-                None, self.slow_collector.collect, request.account_state
-            )
+            # Slow signals - now async with concurrent provider calls (task 12)
+            signals = await self.slow_collector.collect(request.account_state)
             return signals
 
         else:
@@ -282,6 +295,12 @@ class SignalOrchestrator:
                 cross_asset_risk_on_score=0.0,
                 venue_health_score=0.5,
                 liquidity_regime="medium",
+                btc_eth_correlation=0.0,
+                btc_spx_correlation=None,
+                fear_greed_index=0.0,
+                token_unlocks_7d=[],
+                whale_flow_24h={},
+                metadata=SignalQualityMetadata.create_fallback(),
             )
 
     async def shutdown(self):
