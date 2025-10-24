@@ -179,3 +179,11 @@ class SQLiteCacheLayer:
         except Exception as e:
             logger.error(f"Cache metrics error: {e}")
             return CacheMetrics(total_entries=0, total_hits=0, avg_hits_per_entry=0.0)
+
+    def close(self):
+        """Close cache connections and cleanup.
+
+        Note: SQLite connections are managed via context managers,
+        so this is primarily for explicit cleanup signaling.
+        """
+        logger.debug("Cache layer closed")
