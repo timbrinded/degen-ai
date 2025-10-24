@@ -243,6 +243,26 @@ class WhaleFlowData:
 
 
 @dataclass
+class MacroEvent:
+    """Macro economic event data.
+
+    Represents a scheduled economic event that could impact markets.
+    """
+
+    name: str
+    """Event name (e.g., 'FOMC Meeting', 'CPI Release')."""
+
+    datetime: datetime
+    """When the event is scheduled to occur (UTC)."""
+
+    impact: Literal["high", "medium", "low"]
+    """Expected market impact level."""
+
+    category: str
+    """Event category (e.g., 'FOMC', 'CPI', 'NFP', 'GDP')."""
+
+
+@dataclass
 class EnhancedAccountState(AccountState):
     """Extended account state with time-scale-appropriate signals.
 
