@@ -39,4 +39,4 @@ Thumbs.db
 htmlcov/
 
 timbo.toml
-**/*.json
+**/governor_integration.json

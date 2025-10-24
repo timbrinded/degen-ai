@@ -37,13 +37,17 @@ def provider(mock_info, cache):
 @pytest.mark.anyio
 async def test_fetch_order_book_success(provider, mock_info):
     """Test successful order book fetch."""
-    # Mock API response
+    # Mock API response - matches real Hyperliquid API structure
     mock_info.l2_snapshot.return_value = {
         "levels": [
             [
-                [["50000.0", "1.5"], ["49999.0", "2.0"]],  # bids
-                [["50001.0", "1.0"], ["50002.0", "1.5"]],  # asks
-            ]
+                {"px": "50000.0", "sz": "1.5", "n": 1},
+                {"px": "49999.0", "sz": "2.0", "n": 1},
+            ],  # bids
+            [
+                {"px": "50001.0", "sz": "1.0", "n": 1},
+                {"px": "50002.0", "sz": "1.5", "n": 1},
+            ],  # asks
         ]
     }
 
@@ -156,7 +160,12 @@ async def test_fetch_with_retry_on_failure(provider, mock_info):
         call_count += 1
         if call_count < 3:
             raise Exception("API error")
-        return {"levels": [[[[50000.0, 1.0]], [[50001.0, 1.0]]]]}
+        return {
+            "levels": [
+                [{"px": "50000.0", "sz": "1.0", "n": 1}],
+                [{"px": "50001.0", "sz": "1.0", "n": 1}],
+            ]
+        }
 
     mock_info.l2_snapshot = mock_l2_snapshot
 

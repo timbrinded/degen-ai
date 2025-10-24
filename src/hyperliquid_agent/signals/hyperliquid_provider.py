@@ -175,17 +175,24 @@ class HyperliquidProvider(DataProvider):
         # Fetch from API with circuit breaker and retry
         async def _fetch():
             l2_data = self.info.l2_snapshot(coin)
-            levels = l2_data.get("levels", [[[], []]])
+            levels = l2_data.get("levels", [[], []])
 
-            if not levels or len(levels[0]) != 2:
-                raise ValueError(f"Invalid order book data for {coin}")
+            # Validate structure: levels should be [bids_list, asks_list]
+            if not levels or len(levels) != 2:
+                raise ValueError(
+                    f"Invalid order book data for {coin}: expected 2 levels, got {len(levels) if levels else 0}"
+                )
 
-            bids_raw = levels[0][0]
-            asks_raw = levels[0][1]
+            bids_raw = levels[0]
+            asks_raw = levels[1]
+
+            if not bids_raw or not asks_raw:
+                raise ValueError(f"Invalid order book data for {coin}: empty bids or asks")
 
             # Convert to typed tuples
-            bids = [(float(b[0]), float(b[1])) for b in bids_raw]
-            asks = [(float(a[0]), float(a[1])) for a in asks_raw]
+            # API returns list of dicts like [{'px': '50000.0', 'sz': '1.5', 'n': 22}, ...]
+            bids = [(float(b["px"]), float(b["sz"])) for b in bids_raw]
+            asks = [(float(a["px"]), float(a["sz"])) for a in asks_raw]
 
             order_book = OrderBookData(
                 coin=coin,
