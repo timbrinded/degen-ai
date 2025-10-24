@@ -36,6 +36,15 @@ class AgentConfig:
 
 
 @dataclass
+class OnChainConfig:
+    """On-chain data provider configuration."""
+
+    enabled: bool = True
+    api_key: str | None = None
+    provider: str = "placeholder"  # e.g., "token_unlocks", "nansen", "dune"
+
+
+@dataclass
 class GovernanceConfig:
     """Governance system configuration."""
 
@@ -55,6 +64,7 @@ class Config:
     llm: LLMConfig
     agent: AgentConfig
     governance: GovernanceConfig | None = None
+    onchain: OnChainConfig | None = None
 
 
 def load_config(config_path: str = "config.toml") -> Config:
@@ -149,9 +159,24 @@ def load_config(config_path: str = "config.toml") -> Config:
             slow_loop_interval_hours=gov_data.get("slow_loop_interval_hours", 24),
         )
 
+    # Parse On-chain config (optional)
+    onchain_config = None
+    if "signals" in data and "onchain" in data["signals"]:
+        onchain_data = data["signals"]["onchain"]
+
+        # Support API key from config or environment variable
+        api_key = onchain_data.get("api_key") or os.environ.get("ONCHAIN_API_KEY")
+
+        onchain_config = OnChainConfig(
+            enabled=onchain_data.get("enabled", True),
+            api_key=api_key,
+            provider=onchain_data.get("provider", "placeholder"),
+        )
+
     return Config(
         hyperliquid=hyperliquid_config,
         llm=llm_config,
         agent=agent_config,
         governance=governance_config,
+        onchain=onchain_config,
     )

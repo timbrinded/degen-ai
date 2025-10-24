@@ -3,7 +3,7 @@
     "plan_id": "test_plan_001",
     "strategy_name": "funding-harvest",
     "strategy_version": "1.0",
-    "created_at": "2025-10-24T09:12:34.878010",
+    "created_at": "2025-10-24T09:19:58.097409",
     "objective": "Harvest funding rates",
     "target_holding_period_hours": 24,
     "time_horizon": "hours",
@@ -53,10 +53,10 @@
       "event-risk"
     ],
     "status": "active",
-    "activated_at": "2025-10-24T09:12:34.878217",
+    "activated_at": "2025-10-24T09:19:58.097632",
     "last_reviewed_at": null,
     "rebalance_progress_pct": 0.0
   },
-  "last_change_at": "2025-10-24T09:12:34.878217",
+  "last_change_at": "2025-10-24T09:19:58.097632",
   "rebalance_schedule": null
 }

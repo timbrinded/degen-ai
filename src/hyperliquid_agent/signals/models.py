@@ -200,6 +200,49 @@ class SlowLoopSignals:
 
 
 @dataclass
+class UnlockEvent:
+    """Token unlock event data.
+
+    Represents a scheduled token unlock that could impact market liquidity.
+    """
+
+    asset: str
+    """Asset symbol (e.g., 'BTC', 'ETH')."""
+
+    unlock_date: datetime
+    """When the tokens will be unlocked."""
+
+    amount: float
+    """Number of tokens being unlocked."""
+
+    percentage_of_supply: float
+    """Percentage of total supply being unlocked."""
+
+
+@dataclass
+class WhaleFlowData:
+    """Whale transaction flow data.
+
+    Tracks large wallet movements to identify potential market impact.
+    """
+
+    asset: str
+    """Asset symbol (e.g., 'BTC', 'ETH')."""
+
+    inflow: float
+    """Total inflow from large transactions in 24h period."""
+
+    outflow: float
+    """Total outflow from large transactions in 24h period."""
+
+    net_flow: float
+    """Net flow (inflow - outflow) in 24h period."""
+
+    large_tx_count: int
+    """Number of large transactions detected."""
+
+
+@dataclass
 class EnhancedAccountState(AccountState):
     """Extended account state with time-scale-appropriate signals.
 
