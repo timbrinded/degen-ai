@@ -68,7 +68,9 @@ class SignalOrchestrator:
 
         # Initialize collectors
         self.fast_collector = FastSignalCollector(info, self.hl_provider, self.computed_processor)
-        self.medium_collector = MediumSignalCollector(info)
+        self.medium_collector = MediumSignalCollector(
+            info, self.hl_provider, self.computed_processor
+        )
         self.slow_collector = SlowSignalCollector(info)
 
         # Get default timeout from config
@@ -167,11 +169,8 @@ class SignalOrchestrator:
             return signals
 
         elif request.signal_type == "medium":
-            # Medium signals - currently sync, will be async in task 8
-            loop = asyncio.get_event_loop()
-            signals = await loop.run_in_executor(
-                None, self.medium_collector.collect, request.account_state
-            )
+            # Medium signals - now async with concurrent data fetching
+            signals = await self.medium_collector.collect(request.account_state)
             return signals
 
         elif request.signal_type == "slow":
@@ -271,6 +270,11 @@ class SignalOrchestrator:
                 perp_spot_basis={},
                 concentration_ratios={},
                 drift_from_targets={},
+                technical_indicators={},
+                open_interest_change_24h={},
+                oi_to_volume_ratio={},
+                funding_rate_trend={},
+                metadata=SignalQualityMetadata.create_fallback(),
             )
         else:  # slow
             return SlowLoopSignals(

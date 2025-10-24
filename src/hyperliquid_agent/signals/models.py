@@ -1,10 +1,15 @@
 """Signal data models for time-scale-appropriate market signals."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from hyperliquid_agent.monitor import AccountState
+
+if TYPE_CHECKING:
+    from hyperliquid_agent.signals.processor import TechnicalIndicators
 
 
 @dataclass
@@ -73,7 +78,7 @@ class SignalQualityMetadata:
         return max(0.0, min(1.0, confidence))
 
     @classmethod
-    def create_fresh(cls, sources: list[str]) -> "SignalQualityMetadata":
+    def create_fresh(cls, sources: list[str]) -> SignalQualityMetadata:
         """Create metadata for freshly fetched data.
 
         Args:
@@ -93,7 +98,7 @@ class SignalQualityMetadata:
     @classmethod
     def create_cached(
         cls, sources: list[str], cache_age_seconds: float, expected_sources: list[str] | None = None
-    ) -> "SignalQualityMetadata":
+    ) -> SignalQualityMetadata:
         """Create metadata for cached data with automatic confidence calculation.
 
         Args:
@@ -122,7 +127,7 @@ class SignalQualityMetadata:
         return metadata
 
     @classmethod
-    def create_fallback(cls) -> "SignalQualityMetadata":
+    def create_fallback(cls) -> SignalQualityMetadata:
         """Create metadata for fallback/default data with zero confidence.
 
         Returns:
@@ -170,6 +175,15 @@ class MediumLoopSignals:
     perp_spot_basis: dict[str, float]  # Coin -> perp-spot basis in bps
     concentration_ratios: dict[str, float]  # Coin -> position concentration (0.0 to 1.0)
     drift_from_targets: dict[str, float]  # Coin -> drift from target allocation in pct
+
+    # Enhanced fields from task 8
+    technical_indicators: dict[str, TechnicalIndicators | None]  # Coin -> technical indicators
+    open_interest_change_24h: dict[str, float]  # Coin -> 24h OI change percentage
+    oi_to_volume_ratio: dict[str, float]  # Coin -> OI-to-volume ratio for leverage assessment
+    funding_rate_trend: dict[
+        str, Literal["increasing", "decreasing", "stable"]
+    ]  # Coin -> funding rate trend
+    metadata: SignalQualityMetadata  # Signal quality and freshness metadata
 
 
 @dataclass

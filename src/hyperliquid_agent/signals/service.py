@@ -208,6 +208,11 @@ class SignalService:
                 perp_spot_basis={},
                 concentration_ratios={},
                 drift_from_targets={},
+                technical_indicators={},
+                open_interest_change_24h={},
+                oi_to_volume_ratio={},
+                funding_rate_trend={},
+                metadata=SignalQualityMetadata.create_fallback(),
             )
         else:  # slow
             return SlowLoopSignals(

@@ -34,7 +34,7 @@ class EnhancedPositionMonitor(PositionMonitor):
 
         # Initialize collectors with async providers
         self.fast_collector = FastSignalCollector(self.info, hl_provider, computed_processor)
-        self.medium_collector = MediumSignalCollector(self.info)
+        self.medium_collector = MediumSignalCollector(self.info, hl_provider, computed_processor)
         self.slow_collector = SlowSignalCollector(self.info)
 
     def get_current_state_with_signals(
@@ -79,7 +79,7 @@ class EnhancedPositionMonitor(PositionMonitor):
             enhanced.fast_signals = await self.fast_collector.collect(base_state)
 
         if loop_type in ["medium", "slow"]:
-            enhanced.medium_signals = self.medium_collector.collect(base_state)
+            enhanced.medium_signals = await self.medium_collector.collect(base_state)
 
         if loop_type == "slow":
             enhanced.slow_signals = self.slow_collector.collect(base_state)
