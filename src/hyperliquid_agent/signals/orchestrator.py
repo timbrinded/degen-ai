@@ -317,8 +317,10 @@ class SignalOrchestrator:
         """Get health status of all providers for monitoring.
 
         Returns:
-            Dictionary with health metrics for each provider
+            Dictionary with health metrics for each provider and cache performance
         """
+        cache_metrics = self.cache.get_metrics()
+
         return {
             "orchestrator": "healthy",
             "providers": {
@@ -326,6 +328,33 @@ class SignalOrchestrator:
                 # Future: Add other providers as they are implemented
             },
             "cache": {
-                "metrics": self.cache.get_metrics(),
+                "status": "healthy" if cache_metrics.expired_entries < 100 else "degraded",
+                "metrics": {
+                    "total_entries": cache_metrics.total_entries,
+                    "total_hits": cache_metrics.total_hits,
+                    "total_misses": cache_metrics.total_misses,
+                    "hit_rate_percent": round(cache_metrics.hit_rate, 2),
+                    "avg_hits_per_entry": round(cache_metrics.avg_hits_per_entry, 2),
+                    "avg_age_seconds": round(cache_metrics.avg_age_seconds, 2),
+                    "expired_entries_pending_cleanup": cache_metrics.expired_entries,
+                },
             },
+        }
+
+    def get_cache_metrics(self) -> dict:
+        """Get detailed cache metrics for monitoring interface.
+
+        Returns:
+            Dictionary with detailed cache performance metrics
+        """
+        metrics = self.cache.get_metrics()
+
+        return {
+            "total_entries": metrics.total_entries,
+            "total_hits": metrics.total_hits,
+            "total_misses": metrics.total_misses,
+            "hit_rate_percent": round(metrics.hit_rate, 2),
+            "avg_hits_per_entry": round(metrics.avg_hits_per_entry, 2),
+            "avg_age_seconds": round(metrics.avg_age_seconds, 2),
+            "expired_entries": metrics.expired_entries,
         }

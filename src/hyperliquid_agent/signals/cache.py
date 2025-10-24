@@ -26,6 +26,10 @@ class CacheMetrics:
     total_entries: int
     total_hits: int
     avg_hits_per_entry: float
+    hit_rate: float  # Percentage of cache hits vs total requests
+    total_misses: int
+    avg_age_seconds: float  # Average age of cached entries
+    expired_entries: int  # Count of expired entries pending cleanup
 
 
 class SQLiteCacheLayer:
@@ -43,7 +47,10 @@ class SQLiteCacheLayer:
         """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._total_requests = 0  # Track total cache requests for hit rate
+        self._total_hits = 0  # Track cache hits
         self._init_db()
+        self.vacuum()  # Optimize database on startup
 
     def _init_db(self):
         """Initialize SQLite database with cache table."""
@@ -69,6 +76,8 @@ class SQLiteCacheLayer:
         Returns:
             CacheEntry with value and age, or None if not found/expired
         """
+        self._total_requests += 1
+
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.execute(
@@ -82,6 +91,7 @@ class SQLiteCacheLayer:
                     conn.execute("UPDATE cache SET hit_count = hit_count + 1 WHERE key = ?", (key,))
                     conn.commit()
 
+                    self._total_hits += 1
                     value = pickle.loads(row[0])
                     age = datetime.now().timestamp() - row[2]
                     return CacheEntry(value=value, age_seconds=age)
@@ -120,10 +130,49 @@ class SQLiteCacheLayer:
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
-                conn.execute("DELETE FROM cache WHERE key LIKE ?", (pattern,))
+                cursor = conn.execute("DELETE FROM cache WHERE key LIKE ?", (pattern,))
+                deleted_count = cursor.rowcount
                 conn.commit()
+
+                if deleted_count > 0:
+                    logger.info(
+                        f"Invalidated {deleted_count} cache entries matching pattern: {pattern}"
+                    )
         except Exception as e:
             logger.error(f"Cache invalidate error for pattern {pattern}: {e}")
+
+    async def invalidate_by_key(self, key: str):
+        """Invalidate a specific cache entry by exact key match.
+
+        Args:
+            key: Exact cache key to invalidate
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("DELETE FROM cache WHERE key = ?", (key,))
+                deleted = cursor.rowcount > 0
+                conn.commit()
+
+                if deleted:
+                    logger.debug(f"Invalidated cache entry: {key}")
+        except Exception as e:
+            logger.error(f"Cache invalidate error for key {key}: {e}")
+
+    async def invalidate_all(self):
+        """Invalidate all cache entries (forced refresh scenario).
+
+        This is useful for scenarios requiring a complete cache refresh,
+        such as after configuration changes or detected data inconsistencies.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("DELETE FROM cache")
+                deleted_count = cursor.rowcount
+                conn.commit()
+
+                logger.warning(f"Invalidated all cache entries: {deleted_count} entries removed")
+        except Exception as e:
+            logger.error(f"Cache invalidate all error: {e}")
 
     async def cleanup_expired(self):
         """Remove expired entries (run periodically)."""
@@ -154,31 +203,103 @@ class SQLiteCacheLayer:
         """Return cache hit rate and other metrics.
 
         Returns:
-            CacheMetrics with performance statistics
+            CacheMetrics with performance statistics including:
+            - Total valid entries
+            - Total hits from database
+            - Average hits per entry
+            - Hit rate percentage
+            - Total misses
+            - Average age of entries
+            - Count of expired entries
         """
         try:
+            now = datetime.now().timestamp()
+
             with sqlite3.connect(self.db_path) as conn:
+                # Get valid entries metrics
                 cursor = conn.execute(
                     """
                     SELECT
                         COUNT(*) as total_entries,
                         SUM(hit_count) as total_hits,
-                        AVG(hit_count) as avg_hits_per_entry
+                        AVG(hit_count) as avg_hits_per_entry,
+                        AVG(? - created_at) as avg_age_seconds
                     FROM cache
                     WHERE expires_at > ?
                 """,
-                    (datetime.now().timestamp(),),
+                    (now, now),
                 )
                 row = cursor.fetchone()
 
+                total_entries = row[0] or 0
+                total_hits = row[1] or 0
+                avg_hits_per_entry = row[2] or 0.0
+                avg_age_seconds = row[3] or 0.0
+
+                # Get expired entries count
+                cursor = conn.execute("SELECT COUNT(*) FROM cache WHERE expires_at <= ?", (now,))
+                expired_entries = cursor.fetchone()[0] or 0
+
+                # Calculate hit rate from tracked requests
+                total_misses = self._total_requests - self._total_hits
+                hit_rate = (
+                    (self._total_hits / self._total_requests * 100.0)
+                    if self._total_requests > 0
+                    else 0.0
+                )
+
                 return CacheMetrics(
-                    total_entries=row[0] or 0,
-                    total_hits=row[1] or 0,
-                    avg_hits_per_entry=row[2] or 0.0,
+                    total_entries=total_entries,
+                    total_hits=total_hits,
+                    avg_hits_per_entry=avg_hits_per_entry,
+                    hit_rate=hit_rate,
+                    total_misses=total_misses,
+                    avg_age_seconds=avg_age_seconds,
+                    expired_entries=expired_entries,
                 )
         except Exception as e:
             logger.error(f"Cache metrics error: {e}")
-            return CacheMetrics(total_entries=0, total_hits=0, avg_hits_per_entry=0.0)
+            return CacheMetrics(
+                total_entries=0,
+                total_hits=0,
+                avg_hits_per_entry=0.0,
+                hit_rate=0.0,
+                total_misses=0,
+                avg_age_seconds=0.0,
+                expired_entries=0,
+            )
+
+    async def start_periodic_cleanup(self, interval_seconds: int = 300):
+        """Start periodic cache cleanup task.
+
+        This method runs in the background and periodically removes expired entries.
+        Should be called from an async context (e.g., signal service event loop).
+
+        Args:
+            interval_seconds: Cleanup interval in seconds (default: 5 minutes)
+        """
+        import asyncio
+
+        logger.info(f"Starting periodic cache cleanup (interval: {interval_seconds}s)")
+
+        while True:
+            try:
+                await asyncio.sleep(interval_seconds)
+                await self.cleanup_expired()
+            except asyncio.CancelledError:
+                logger.info("Periodic cache cleanup cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in periodic cache cleanup: {e}")
+
+    def reset_metrics(self):
+        """Reset cache hit/miss tracking metrics.
+
+        Useful for getting fresh metrics after a specific time period.
+        """
+        self._total_requests = 0
+        self._total_hits = 0
+        logger.debug("Cache metrics reset")
 
     def close(self):
         """Close cache connections and cleanup.

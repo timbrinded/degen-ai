@@ -1,6 +1,7 @@
 """Signal service bridging synchronous governance with async signal collection."""
 
 import asyncio
+import contextlib
 import logging
 import queue
 import threading
@@ -106,32 +107,47 @@ class SignalService:
 
         orchestrator = SignalOrchestrator(self.config)
 
-        while not self.shutdown_event.is_set():
-            try:
-                # Non-blocking queue check with timeout
-                try:
-                    request = self.request_queue.get(timeout=0.1)
-                except queue.Empty:
-                    continue
+        # Start periodic cache cleanup task
+        cleanup_interval = self.config.get("cache_cleanup_interval_seconds", 300)
+        cleanup_task = asyncio.create_task(
+            orchestrator.cache.start_periodic_cleanup(cleanup_interval)
+        )
 
-                # Process request asynchronously
+        try:
+            while not self.shutdown_event.is_set():
                 try:
-                    response = await orchestrator.collect_signals(request)
-                    self.response_queue.put(response)
+                    # Non-blocking queue check with timeout
+                    try:
+                        request = self.request_queue.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+
+                    # Process request asynchronously
+                    try:
+                        response = await orchestrator.collect_signals(request)
+                        self.response_queue.put(response)
+                    except Exception as e:
+                        logger.error(f"Error processing signal request: {e}")
+                        # Put error response in queue
+                        error_response = SignalResponse(
+                            signal_type=request.signal_type,
+                            signals=self._get_fallback_signals(request.signal_type),
+                            timestamp=datetime.now(),
+                            error=str(e),
+                        )
+                        self.response_queue.put(error_response)
+
                 except Exception as e:
-                    logger.error(f"Error processing signal request: {e}")
-                    # Put error response in queue
-                    error_response = SignalResponse(
-                        signal_type=request.signal_type,
-                        signals=self._get_fallback_signals(request.signal_type),
-                        timestamp=datetime.now(),
-                        error=str(e),
-                    )
-                    self.response_queue.put(error_response)
+                    logger.error(f"Unexpected error in request processing loop: {e}")
+                    await asyncio.sleep(0.1)
+        finally:
+            # Cancel cleanup task on shutdown
+            cleanup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await cleanup_task
 
-            except Exception as e:
-                logger.error(f"Unexpected error in request processing loop: {e}")
-                await asyncio.sleep(0.1)
+            # Shutdown orchestrator
+            await orchestrator.shutdown()
 
     def collect_signals_sync(
         self,
@@ -174,6 +190,18 @@ class SignalService:
         except queue.Empty:
             logger.error(f"Signal collection timeout after {timeout_seconds}s")
             return self._get_fallback_signals(signal_type)
+
+    def get_cache_metrics(self) -> dict | None:
+        """Get cache performance metrics for monitoring.
+
+        Returns:
+            Dictionary with cache metrics, or None if service not running
+        """
+        # This requires access to the orchestrator's cache, which is created
+        # in the background thread. For now, we'll return None and document
+        # that metrics should be accessed via the orchestrator's health status.
+        logger.warning("Cache metrics should be accessed via orchestrator.get_health_status()")
+        return None
 
     def _get_fallback_signals(
         self, signal_type: Literal["fast", "medium", "slow"]

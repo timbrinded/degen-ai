@@ -39,3 +39,4 @@ Thumbs.db
 htmlcov/
 
 timbo.toml
+**/*.json
