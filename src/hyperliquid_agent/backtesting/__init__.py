@@ -1,5 +1,6 @@
 """Backtesting framework for regime detection validation."""
 
+from hyperliquid_agent.backtesting.historical_data import HistoricalDataManager
 from hyperliquid_agent.backtesting.models import (
     BacktestConfig,
     BacktestResult,
@@ -12,4 +13,5 @@ __all__ = [
     "BacktestResult",
     "BacktestSummary",
     "HistoricalDataCache",
+    "HistoricalDataManager",
 ]
