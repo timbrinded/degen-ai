@@ -285,20 +285,18 @@ class GovernedTradingAgent:
 
                 # Find current price
                 if coin == "USDC":
-                    # USDC is the margin/collateral, not a position - price is always 1.0
-                    current_price = 1.0
+                    # USDC is the margin/collateral, not a tradeable asset - skip it
+                    continue
+
+                matching_pos = next((p for p in account_state.positions if p.coin == coin), None)
+                if matching_pos:
+                    current_price = matching_pos.current_price
                 else:
-                    matching_pos = next(
-                        (p for p in account_state.positions if p.coin == coin), None
+                    self.logger.warning(
+                        f"Cannot determine price for {coin} - no existing position",
+                        extra={"tick": self.tick_count, "coin": coin},
                     )
-                    if matching_pos:
-                        current_price = matching_pos.current_price
-                    else:
-                        self.logger.warning(
-                            f"Cannot determine price for {coin} - no existing position",
-                            extra={"tick": self.tick_count, "coin": coin},
-                        )
-                        continue
+                    continue
 
                 # Calculate size to trade
                 size = abs(value_gap / current_price) if current_price > 0 else 0.0

@@ -16,7 +16,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff>=0.8.0", "pyrefly>=0.1.0", "pytest>=8.0.0", "pytest-asyncio>=0.23.0"]
+dev = [
+    "ruff>=0.8.0",
+    "pyrefly>=0.1.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
 
 [project.scripts]
 degen = "hyperliquid_agent.cli:main"
@@ -54,18 +59,14 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.pyrefly]
-project-includes = ["src","tests"]
+project-includes = ["src", "tests"]
 
 [tool.pytest.ini_options]
 addopts = "-k 'not trio'"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-faulthandler_timeout=60
-faulthandler_exit_on_timeout=true
+faulthandler_timeout = 60
+faulthandler_exit_on_timeout = true
 
 [dependency-groups]
-dev = [
-    "pre-commit>=4.3.0",
-]
-
-
+dev = ["pre-commit>=4.3.0"]
