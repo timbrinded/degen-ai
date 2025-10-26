@@ -6,7 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from hyperliquid_agent.monitor import AccountState
 from hyperliquid_agent.signals.cache import SQLiteCacheLayer
+from hyperliquid_agent.signals.models import FastLoopSignals
 from hyperliquid_agent.signals.service import SignalService
 
 # ============================================================================
@@ -288,19 +290,8 @@ def test_signal_service_collect_signals_sync():
         # Give service time to start
         time.sleep(0.2)
 
-        # Create minimal account state using dataclass
-        from dataclasses import dataclass
-
-        @dataclass
-        class TestAccountState:
-            portfolio_value: float
-            available_balance: float
-            positions: list
-            spot_balances: dict
-            timestamp: float
-            is_stale: bool = False
-
-        account_state = TestAccountState(
+        # Create minimal account state
+        account_state = AccountState(
             portfolio_value=10000.0,
             available_balance=5000.0,
             positions=[],
@@ -325,18 +316,8 @@ def test_signal_service_timeout_fallback():
     service = SignalService()
 
     # Don't start service - should return fallback immediately
-    from dataclasses import dataclass
 
-    @dataclass
-    class TestAccountState:
-        portfolio_value: float
-        available_balance: float
-        positions: list
-        spot_balances: dict
-        timestamp: float
-        is_stale: bool = False
-
-    account_state = TestAccountState(
+    account_state = AccountState(
         portfolio_value=10000.0,
         available_balance=5000.0,
         positions=[],
@@ -348,6 +329,7 @@ def test_signal_service_timeout_fallback():
     signals = service.collect_signals_sync("fast", account_state, timeout_seconds=1.0)
 
     assert signals is not None
+    assert isinstance(signals, FastLoopSignals)
     assert signals.spreads == {}
     assert signals.slippage_estimates == {}
 
@@ -360,18 +342,7 @@ def test_signal_service_thread_safety():
     try:
         time.sleep(0.2)
 
-        from dataclasses import dataclass
-
-        @dataclass
-        class TestAccountState:
-            portfolio_value: float
-            available_balance: float
-            positions: list
-            spot_balances: dict
-            timestamp: float
-            is_stale: bool = False
-
-        account_state = TestAccountState(
+        account_state = AccountState(
             portfolio_value=10000.0,
             available_balance=5000.0,
             positions=[],

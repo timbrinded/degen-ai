@@ -109,6 +109,7 @@ def test_start_tracking_plan(sample_plan):
     initial_value = 10000.0
 
     scorekeeper.start_tracking_plan(sample_plan, initial_value)
+    assert scorekeeper.active_metrics is not None
 
     assert scorekeeper.active_metrics is not None
     assert scorekeeper.active_metrics.plan_id == sample_plan.plan_id
@@ -121,6 +122,7 @@ def test_update_metrics_calculates_pnl(sample_plan, account_state_with_positions
     """Test metrics update calculates PnL correctly."""
     scorekeeper = PlanScorekeeper()
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
 
     scorekeeper.update_metrics(account_state_with_positions, sample_plan)
 
@@ -131,6 +133,7 @@ def test_update_metrics_tracks_peak_value(sample_plan):
     """Test metrics update tracks peak portfolio value."""
     scorekeeper = PlanScorekeeper()
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
 
     # First update with higher value
     account_state1 = AccountState(
@@ -161,6 +164,7 @@ def test_update_metrics_calculates_max_drawdown(sample_plan):
     """Test metrics update calculates max drawdown."""
     scorekeeper = PlanScorekeeper()
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
 
     # Update to peak
     account_state1 = AccountState(
@@ -191,6 +195,7 @@ def test_update_metrics_calculates_pnl_per_unit_risk(sample_plan):
     """Test metrics update calculates PnL per unit risk."""
     scorekeeper = PlanScorekeeper()
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
 
     # Create scenario with drawdown
     account_state1 = AccountState(
@@ -222,6 +227,7 @@ def test_update_metrics_calculates_drift_from_targets(sample_plan, account_state
     """Test metrics update calculates drift from target allocations."""
     scorekeeper = PlanScorekeeper()
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
 
     scorekeeper.update_metrics(account_state_with_positions, sample_plan)
 
@@ -235,6 +241,7 @@ def test_finalize_plan_generates_summary(sample_plan):
     """Test plan finalization generates post-mortem summary."""
     scorekeeper = PlanScorekeeper()
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
 
     # Simulate some activity
     scorekeeper.active_metrics.total_pnl = 500.0
@@ -257,6 +264,7 @@ def test_finalize_plan_calculates_hit_rate(sample_plan):
     """Test plan finalization calculates hit rate."""
     scorekeeper = PlanScorekeeper()
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
 
     scorekeeper.active_metrics.total_trades = 10
     scorekeeper.active_metrics.winning_trades = 7
@@ -281,6 +289,7 @@ def test_record_trade_updates_metrics(sample_plan):
     """Test recording trades updates metrics."""
     scorekeeper = PlanScorekeeper()
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
 
     # Record winning trade
     scorekeeper.record_trade(is_winning=True, slippage_bps=5.0)
@@ -309,6 +318,7 @@ def test_record_rebalance(sample_plan):
     """Test recording rebalance events."""
     scorekeeper = PlanScorekeeper()
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
 
     assert scorekeeper.active_metrics.rebalance_count == 0
 
@@ -391,6 +401,7 @@ def test_estimate_opportunity_cost_no_shadows(sample_plan):
     """Test opportunity cost estimation with no shadow portfolios."""
     scorekeeper = PlanScorekeeper()
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
 
     opportunity_cost = scorekeeper.estimate_opportunity_cost()
 
@@ -401,6 +412,7 @@ def test_estimate_opportunity_cost_with_shadows(sample_plan):
     """Test opportunity cost estimation with shadow portfolios."""
     scorekeeper = PlanScorekeeper()
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
 
     # Active plan has 500 PnL
     scorekeeper.active_metrics.total_pnl = 500.0
@@ -442,6 +454,7 @@ def test_get_active_plan_summary_with_plan(sample_plan):
     """Test getting summary of active plan."""
     scorekeeper = PlanScorekeeper()
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
 
     # Update some metrics
     scorekeeper.active_metrics.total_pnl = 500.0
@@ -510,12 +523,14 @@ def test_multiple_plans_tracking(sample_plan):
 
     # Track first plan
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
     scorekeeper.active_metrics.total_pnl = 500.0
     scorekeeper.finalize_plan(10500.0)
 
     # Track second plan
     sample_plan.plan_id = "test_plan_002"
     scorekeeper.start_tracking_plan(sample_plan, 10500.0)
+    assert scorekeeper.active_metrics is not None
     scorekeeper.active_metrics.total_pnl = 300.0
     scorekeeper.finalize_plan(10800.0)
 
@@ -529,6 +544,7 @@ def test_avg_slippage_calculation_incremental(sample_plan):
     """Test average slippage is calculated incrementally."""
     scorekeeper = PlanScorekeeper()
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
 
     # Record trades with different slippage
     scorekeeper.record_trade(is_winning=True, slippage_bps=5.0)
@@ -545,6 +561,7 @@ def test_drift_calculation_with_missing_positions(sample_plan):
     """Test drift calculation when positions don't match targets."""
     scorekeeper = PlanScorekeeper()
     scorekeeper.start_tracking_plan(sample_plan, 10000.0)
+    assert scorekeeper.active_metrics is not None
 
     # Account state missing ETH position (target is 30%)
     account_state = AccountState(

@@ -221,10 +221,10 @@ def test_evaluate_change_proposal_sufficient_advantage(governor_config, sample_p
     assert "70.0 bps" in reason
 
 
-def test_plan_change_proposal_net_advantage_calculation():
+def test_plan_change_proposal_net_advantage_calculation(sample_plan):
     """Test PlanChangeProposal calculates net advantage correctly."""
     proposal = PlanChangeProposal(
-        new_plan=None,  # Not needed for this test
+        new_plan=sample_plan,
         reason="Test",
         expected_advantage_bps=150.0,
         change_cost_bps=40.0,

@@ -60,7 +60,8 @@ class SignalOrchestrator:
         self.cache = SQLiteCacheLayer(Path(cache_db_path))
 
         # Initialize Hyperliquid Info API client
-        info = Info()
+        # Note: skip_ws=True to avoid persistent WebSocket connection that prevents clean shutdown
+        info = Info(skip_ws=True)
 
         # Initialize async providers
         self.hl_provider = HyperliquidProvider(info, self.cache)
