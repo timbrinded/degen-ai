@@ -7,6 +7,7 @@ from hyperliquid_agent.backtesting.models import (
     BacktestSummary,
     HistoricalDataCache,
 )
+from hyperliquid_agent.backtesting.signal_reconstructor import SignalReconstructor
 
 __all__ = [
     "BacktestConfig",
@@ -14,4 +15,5 @@ __all__ = [
     "BacktestSummary",
     "HistoricalDataCache",
     "HistoricalDataManager",
+    "SignalReconstructor",
 ]
