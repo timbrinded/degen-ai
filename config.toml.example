@@ -137,3 +137,131 @@ max_data_staleness_seconds = 300
 # Freezes new risk when API becomes unreliable.
 # Recommended: 3-5 failures for conservative, 5-10 for aggressive
 max_api_failure_count = 3
+
+# ============================================================================
+# SIGNAL SYSTEM CONFIGURATION
+# ============================================================================
+# The signal system collects real-time market data from multiple sources to
+# enable accurate regime detection and risk monitoring. It uses async providers,
+# caching, and graceful degradation for reliability.
+
+[signals]
+# Global timeout for signal collection requests (in seconds)
+# If collection takes longer, falls back to cached signals
+# Recommended: 30-60 seconds
+timeout_seconds = 30.0
+
+# Enable caching for expensive calculations and API calls
+# Recommended: true for production, false only for debugging
+caching_enabled = true
+
+# Path to SQLite cache database (relative to project root)
+db_path = "state/signal_cache.db"
+
+[signals.hyperliquid]
+# Maximum retry attempts for Hyperliquid API calls
+# Recommended: 3-5 retries
+max_retries = 3
+
+# Timeout for individual Hyperliquid API calls (in seconds)
+# Recommended: 5-10 seconds
+timeout_seconds = 10.0
+
+# Exponential backoff factor for retries
+# Wait time = initial_delay * (backoff_factor ^ attempt)
+# Recommended: 2.0
+backoff_factor = 2.0
+
+# Initial delay before first retry (in seconds)
+# Recommended: 1.0
+initial_delay_seconds = 1.0
+
+[signals.onchain]
+# Enable on-chain data collection (token unlocks, whale flows)
+# Recommended: true for production, false if no API key available
+enabled = true
+
+# On-chain data provider: "token_unlocks", "nansen", "dune", "placeholder"
+# Recommended: "token_unlocks" for production
+provider = "placeholder"
+
+# API key for on-chain data provider (or set ONCHAIN_API_KEY env var)
+# Leave empty to use environment variable
+api_key = ""
+
+# Cache TTL for on-chain data (in seconds)
+# Recommended: 3600 (1 hour)
+cache_ttl_seconds = 3600
+
+[signals.external_market]
+# Enable external market data (BTC/ETH/SPX prices, correlations)
+# Recommended: true for production
+enabled = true
+
+# Enable CoinGecko API for crypto price data
+# Recommended: true
+use_coingecko = true
+
+# CoinGecko API key (or set COINGECKO_API_KEY env var)
+# Leave empty for free tier or to use environment variable
+coingecko_api_key = ""
+
+# Enable TradingView for traditional market data (SPX, etc.)
+# Recommended: false unless you have TradingView API access
+use_tradingview = false
+
+# Cache TTL for external market data (in seconds)
+# Recommended: 900 (15 minutes)
+cache_ttl_seconds = 900
+
+[signals.sentiment]
+# Enable sentiment data collection (Fear & Greed Index, social sentiment)
+# Recommended: true for production
+enabled = true
+
+# Enable Crypto Fear & Greed Index
+# Recommended: true (free, no API key required)
+use_fear_greed_index = true
+
+# Enable social media sentiment (Twitter/X)
+# Recommended: false unless you have API access
+use_social_sentiment = false
+
+# Cache TTL for sentiment data (in seconds)
+# Recommended: 1800 (30 minutes)
+cache_ttl_seconds = 1800
+
+[signals.computed]
+# Enable computed signals (technical indicators, volatility, correlations)
+# Recommended: true for production
+enabled = true
+
+# Lookback period for technical indicators (in hours)
+# Recommended: 168 (7 days)
+technical_lookback_hours = 168
+
+# Lookback period for volatility calculations (in hours)
+# Recommended: 168 (7 days)
+volatility_lookback_hours = 168
+
+# Lookback period for correlation calculations (in days)
+# Recommended: 30 days
+correlation_lookback_days = 30
+
+# Cache TTL for computed signals (in seconds)
+# Recommended: 300 (5 minutes)
+cache_ttl_seconds = 300
+
+[signals.cache]
+# Interval for automatic cache cleanup (in seconds)
+# Removes expired entries to prevent database bloat
+# Recommended: 3600 (1 hour)
+cleanup_interval_seconds = 3600
+
+# Run VACUUM on startup to optimize database
+# Recommended: true
+vacuum_on_startup = true
+
+# Maximum cache size (in MB) before triggering cleanup
+# Recommended: 100 MB for hobby trading, 500 MB for active trading
+max_size_mb = 100

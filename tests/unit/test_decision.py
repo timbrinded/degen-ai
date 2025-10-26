@@ -191,7 +191,7 @@ def test_decision_engine_init_anthropic(
 def test_decision_engine_init_invalid_provider(sample_prompt_template):
     """Test DecisionEngine raises error for invalid provider."""
     invalid_config = LLMConfig(
-        provider="invalid",
+        provider="invalid",  # type: ignore[arg-type]
         model="test-model",
         api_key="test-key",
     )
@@ -221,7 +221,7 @@ def test_parse_response_valid_json():
     )
 
     template = PromptTemplate(
-        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        str(Path(__file__).parent.parent.parent / "prompts" / "default.txt"),
         strategies_dir="nonexistent",
     )
     engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
@@ -259,7 +259,7 @@ def test_parse_response_with_markdown_code_block():
 ```"""
 
     template = PromptTemplate(
-        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        str(Path(__file__).parent.parent.parent / "prompts" / "default.txt"),
         strategies_dir="nonexistent",
     )
     engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
@@ -283,7 +283,7 @@ def test_parse_response_with_target_allocation():
     )
 
     template = PromptTemplate(
-        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        str(Path(__file__).parent.parent.parent / "prompts" / "default.txt"),
         strategies_dir="nonexistent",
     )
     engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
@@ -314,7 +314,7 @@ def test_parse_response_hold_action():
     )
 
     template = PromptTemplate(
-        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        str(Path(__file__).parent.parent.parent / "prompts" / "default.txt"),
         strategies_dir="nonexistent",
     )
     engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
@@ -332,7 +332,7 @@ def test_parse_response_invalid_json():
     response = "This is not valid JSON"
 
     template = PromptTemplate(
-        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        str(Path(__file__).parent.parent.parent / "prompts" / "default.txt"),
         strategies_dir="nonexistent",
     )
     engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
@@ -346,7 +346,7 @@ def test_parse_response_no_json_object():
     response = "Some text without any JSON"
 
     template = PromptTemplate(
-        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        str(Path(__file__).parent.parent.parent / "prompts" / "default.txt"),
         strategies_dir="nonexistent",
     )
     engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
@@ -359,7 +359,7 @@ def test_parse_response_malformed_json():
     """Test parsing malformed JSON raises ValueError."""
 
     template = PromptTemplate(
-        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        str(Path(__file__).parent.parent.parent / "prompts" / "default.txt"),
         strategies_dir="nonexistent",
     )
     engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
@@ -375,7 +375,7 @@ def test_parse_response_llm_error_state():
     response = json.dumps({"error": True, "error_reason": "Insufficient data to make decision"})
 
     template = PromptTemplate(
-        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        str(Path(__file__).parent.parent.parent / "prompts" / "default.txt"),
         strategies_dir="nonexistent",
     )
     engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
@@ -396,7 +396,7 @@ def test_parse_response_invalid_action_type():
     )
 
     template = PromptTemplate(
-        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        str(Path(__file__).parent.parent.parent / "prompts" / "default.txt"),
         strategies_dir="nonexistent",
     )
     engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
@@ -414,7 +414,7 @@ def test_parse_response_missing_coin():
     response = json.dumps({"actions": [{"action_type": "buy", "market_type": "perp", "size": 0.1}]})
 
     template = PromptTemplate(
-        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        str(Path(__file__).parent.parent.parent / "prompts" / "default.txt"),
         strategies_dir="nonexistent",
     )
     engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
@@ -436,7 +436,7 @@ def test_parse_response_invalid_market_type():
     )
 
     template = PromptTemplate(
-        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        str(Path(__file__).parent.parent.parent / "prompts" / "default.txt"),
         strategies_dir="nonexistent",
     )
     engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
@@ -452,7 +452,7 @@ def test_parse_response_actions_not_list():
     response = json.dumps({"actions": "not a list"})
 
     template = PromptTemplate(
-        Path(__file__).parent.parent.parent / "prompts" / "default.txt",
+        str(Path(__file__).parent.parent.parent / "prompts" / "default.txt"),
         strategies_dir="nonexistent",
     )
     engine = DecisionEngine(LLMConfig(provider="openai", model="gpt-4", api_key="test"), template)
@@ -546,5 +546,5 @@ def test_get_decision_parsing_failure(
     result = engine.get_decision(sample_account_state)
 
     assert result.success is False
-    assert "No JSON object found in response" in result.error
+    assert result.error is not None and "No JSON object found in response" in result.error
     assert len(result.actions) == 0

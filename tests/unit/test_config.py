@@ -256,3 +256,202 @@ def test_log_level_environment_variable_override(minimal_config_toml):
         # Clean up environment variable
         if "LOG_LEVEL" in os.environ:
             del os.environ["LOG_LEVEL"]
+
+
+def test_load_signal_config():
+    """Test loading signal system configuration."""
+    config_content = """
+[hyperliquid]
+account_address = "0x1234567890123456789012345678901234567890"
+secret_key = "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+base_url = "https://api.hyperliquid-testnet.xyz"
+
+[llm]
+provider = "openai"
+model = "gpt-4"
+api_key = "sk-test123"
+
+[agent]
+
+[signals]
+timeout_seconds = 45.0
+caching_enabled = true
+db_path = "custom/path/cache.db"
+
+[signals.hyperliquid]
+max_retries = 5
+timeout_seconds = 15.0
+backoff_factor = 3.0
+initial_delay_seconds = 2.0
+
+[signals.onchain]
+enabled = true
+provider = "token_unlocks"
+api_key = "test_key"
+cache_ttl_seconds = 7200
+
+[signals.external_market]
+enabled = true
+use_coingecko = true
+coingecko_api_key = "cg_test_key"
+use_tradingview = true
+cache_ttl_seconds = 1800
+
+[signals.sentiment]
+enabled = true
+use_fear_greed_index = true
+use_social_sentiment = true
+cache_ttl_seconds = 3600
+
+[signals.computed]
+enabled = true
+technical_lookback_hours = 336
+volatility_lookback_hours = 336
+correlation_lookback_days = 60
+cache_ttl_seconds = 600
+
+[signals.cache]
+cleanup_interval_seconds = 7200
+vacuum_on_startup = false
+max_size_mb = 200
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_content)
+        config_path = f.name
+
+    try:
+        config = load_config(config_path)
+
+        # Verify signal config exists
+        assert config.signals is not None
+
+        # Verify global signal settings
+        assert config.signals.timeout_seconds == 45.0
+        assert config.signals.caching_enabled is True
+        assert config.signals.db_path == "custom/path/cache.db"
+
+        # Verify Hyperliquid provider config
+        assert config.signals.hyperliquid is not None
+        assert config.signals.hyperliquid.max_retries == 5
+        assert config.signals.hyperliquid.timeout_seconds == 15.0
+        assert config.signals.hyperliquid.backoff_factor == 3.0
+        assert config.signals.hyperliquid.initial_delay_seconds == 2.0
+
+        # Verify on-chain config
+        assert config.signals.onchain is not None
+        assert config.signals.onchain.enabled is True
+        assert config.signals.onchain.provider == "token_unlocks"
+        assert config.signals.onchain.api_key == "test_key"
+        assert config.signals.onchain.cache_ttl_seconds == 7200
+
+        # Verify external market config
+        assert config.signals.external_market is not None
+        assert config.signals.external_market.enabled is True
+        assert config.signals.external_market.use_coingecko is True
+        assert config.signals.external_market.coingecko_api_key == "cg_test_key"
+        assert config.signals.external_market.use_tradingview is True
+        assert config.signals.external_market.cache_ttl_seconds == 1800
+
+        # Verify sentiment config
+        assert config.signals.sentiment is not None
+        assert config.signals.sentiment.enabled is True
+        assert config.signals.sentiment.use_fear_greed_index is True
+        assert config.signals.sentiment.use_social_sentiment is True
+        assert config.signals.sentiment.cache_ttl_seconds == 3600
+
+        # Verify computed config
+        assert config.signals.computed is not None
+        assert config.signals.computed.enabled is True
+        assert config.signals.computed.technical_lookback_hours == 336
+        assert config.signals.computed.volatility_lookback_hours == 336
+        assert config.signals.computed.correlation_lookback_days == 60
+        assert config.signals.computed.cache_ttl_seconds == 600
+
+        # Verify cache config
+        assert config.signals.cache is not None
+        assert config.signals.cache.cleanup_interval_seconds == 7200
+        assert config.signals.cache.vacuum_on_startup is False
+        assert config.signals.cache.max_size_mb == 200
+    finally:
+        os.unlink(config_path)
+
+
+def test_signal_config_environment_variables():
+    """Test signal config API keys from environment variables."""
+    config_content = """
+[hyperliquid]
+account_address = "0x1234567890123456789012345678901234567890"
+secret_key = "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+base_url = "https://api.hyperliquid-testnet.xyz"
+
+[llm]
+provider = "openai"
+model = "gpt-4"
+api_key = "sk-test123"
+
+[agent]
+
+[signals]
+timeout_seconds = 30.0
+
+[signals.onchain]
+enabled = true
+provider = "token_unlocks"
+api_key = ""
+
+[signals.external_market]
+enabled = true
+use_coingecko = true
+coingecko_api_key = ""
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_content)
+        config_path = f.name
+
+    try:
+        # Set environment variables
+        os.environ["ONCHAIN_API_KEY"] = "env_onchain_key"
+        os.environ["COINGECKO_API_KEY"] = "env_coingecko_key"
+
+        config = load_config(config_path)
+
+        # Verify API keys from environment
+        assert config.signals is not None
+        assert config.signals.onchain is not None
+        assert config.signals.onchain.api_key == "env_onchain_key"
+        assert config.signals.external_market is not None
+        assert config.signals.external_market.coingecko_api_key == "env_coingecko_key"
+    finally:
+        os.unlink(config_path)
+        # Clean up environment variables
+        if "ONCHAIN_API_KEY" in os.environ:
+            del os.environ["ONCHAIN_API_KEY"]
+        if "COINGECKO_API_KEY" in os.environ:
+            del os.environ["COINGECKO_API_KEY"]
+
+
+def test_signal_config_optional():
+    """Test that signal config is optional."""
+    config_content = """
+[hyperliquid]
+account_address = "0x1234567890123456789012345678901234567890"
+secret_key = "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+base_url = "https://api.hyperliquid-testnet.xyz"
+
+[llm]
+provider = "openai"
+model = "gpt-4"
+api_key = "sk-test123"
+
+[agent]
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_content)
+        config_path = f.name
+
+    try:
+        config = load_config(config_path)
+        # Signal config should be None when not present
+        assert config.signals is None
+    finally:
+        os.unlink(config_path)

@@ -36,6 +36,82 @@ class AgentConfig:
 
 
 @dataclass
+class HyperliquidProviderConfig:
+    """Hyperliquid provider configuration for signal system."""
+
+    max_retries: int = 3
+    timeout_seconds: float = 10.0
+    backoff_factor: float = 2.0
+    initial_delay_seconds: float = 1.0
+
+
+@dataclass
+class OnChainConfig:
+    """On-chain data provider configuration."""
+
+    enabled: bool = True
+    provider: str = "placeholder"  # e.g., "token_unlocks", "nansen", "dune"
+    api_key: str | None = None
+    cache_ttl_seconds: int = 3600
+
+
+@dataclass
+class ExternalMarketConfig:
+    """External market data provider configuration."""
+
+    enabled: bool = True
+    use_coingecko: bool = True
+    coingecko_api_key: str | None = None
+    use_tradingview: bool = False
+    cache_ttl_seconds: int = 900
+
+
+@dataclass
+class SentimentConfig:
+    """Sentiment data provider configuration."""
+
+    enabled: bool = True
+    use_fear_greed_index: bool = True
+    use_social_sentiment: bool = False
+    cache_ttl_seconds: int = 1800
+
+
+@dataclass
+class ComputedConfig:
+    """Computed signals configuration."""
+
+    enabled: bool = True
+    technical_lookback_hours: int = 168
+    volatility_lookback_hours: int = 168
+    correlation_lookback_days: int = 30
+    cache_ttl_seconds: int = 300
+
+
+@dataclass
+class CacheConfig:
+    """Cache layer configuration."""
+
+    cleanup_interval_seconds: int = 3600
+    vacuum_on_startup: bool = True
+    max_size_mb: int = 100
+
+
+@dataclass
+class SignalConfig:
+    """Signal system configuration."""
+
+    timeout_seconds: float = 30.0
+    caching_enabled: bool = True
+    db_path: str = "state/signal_cache.db"
+    hyperliquid: HyperliquidProviderConfig | None = None
+    onchain: OnChainConfig | None = None
+    external_market: ExternalMarketConfig | None = None
+    sentiment: SentimentConfig | None = None
+    computed: ComputedConfig | None = None
+    cache: CacheConfig | None = None
+
+
+@dataclass
 class GovernanceConfig:
     """Governance system configuration."""
 
@@ -55,6 +131,7 @@ class Config:
     llm: LLMConfig
     agent: AgentConfig
     governance: GovernanceConfig | None = None
+    signals: SignalConfig | None = None
 
 
 def load_config(config_path: str = "config.toml") -> Config:
@@ -149,9 +226,108 @@ def load_config(config_path: str = "config.toml") -> Config:
             slow_loop_interval_hours=gov_data.get("slow_loop_interval_hours", 24),
         )
 
+    # Parse Signal config (optional)
+    signal_config = None
+    if "signals" in data:
+        signals_data = data["signals"]
+
+        # Parse Hyperliquid provider config
+        hyperliquid_provider_config = None
+        if "hyperliquid" in signals_data:
+            hl_provider_data = signals_data["hyperliquid"]
+            hyperliquid_provider_config = HyperliquidProviderConfig(
+                max_retries=hl_provider_data.get("max_retries", 3),
+                timeout_seconds=hl_provider_data.get("timeout_seconds", 10.0),
+                backoff_factor=hl_provider_data.get("backoff_factor", 2.0),
+                initial_delay_seconds=hl_provider_data.get("initial_delay_seconds", 1.0),
+            )
+
+        # Parse On-chain config
+        onchain_config = None
+        if "onchain" in signals_data:
+            onchain_data = signals_data["onchain"]
+            # Support API key from config or environment variable
+            api_key = onchain_data.get("api_key") or os.environ.get("ONCHAIN_API_KEY")
+            # Empty string should be treated as None
+            if api_key == "":
+                api_key = None
+
+            onchain_config = OnChainConfig(
+                enabled=onchain_data.get("enabled", True),
+                provider=onchain_data.get("provider", "placeholder"),
+                api_key=api_key,
+                cache_ttl_seconds=onchain_data.get("cache_ttl_seconds", 3600),
+            )
+
+        # Parse External market config
+        external_market_config = None
+        if "external_market" in signals_data:
+            ext_data = signals_data["external_market"]
+            # Support API key from config or environment variable
+            coingecko_api_key = ext_data.get("coingecko_api_key") or os.environ.get(
+                "COINGECKO_API_KEY"
+            )
+            # Empty string should be treated as None
+            if coingecko_api_key == "":
+                coingecko_api_key = None
+
+            external_market_config = ExternalMarketConfig(
+                enabled=ext_data.get("enabled", True),
+                use_coingecko=ext_data.get("use_coingecko", True),
+                coingecko_api_key=coingecko_api_key,
+                use_tradingview=ext_data.get("use_tradingview", False),
+                cache_ttl_seconds=ext_data.get("cache_ttl_seconds", 900),
+            )
+
+        # Parse Sentiment config
+        sentiment_config = None
+        if "sentiment" in signals_data:
+            sent_data = signals_data["sentiment"]
+            sentiment_config = SentimentConfig(
+                enabled=sent_data.get("enabled", True),
+                use_fear_greed_index=sent_data.get("use_fear_greed_index", True),
+                use_social_sentiment=sent_data.get("use_social_sentiment", False),
+                cache_ttl_seconds=sent_data.get("cache_ttl_seconds", 1800),
+            )
+
+        # Parse Computed config
+        computed_config = None
+        if "computed" in signals_data:
+            comp_data = signals_data["computed"]
+            computed_config = ComputedConfig(
+                enabled=comp_data.get("enabled", True),
+                technical_lookback_hours=comp_data.get("technical_lookback_hours", 168),
+                volatility_lookback_hours=comp_data.get("volatility_lookback_hours", 168),
+                correlation_lookback_days=comp_data.get("correlation_lookback_days", 30),
+                cache_ttl_seconds=comp_data.get("cache_ttl_seconds", 300),
+            )
+
+        # Parse Cache config
+        cache_config = None
+        if "cache" in signals_data:
+            cache_data = signals_data["cache"]
+            cache_config = CacheConfig(
+                cleanup_interval_seconds=cache_data.get("cleanup_interval_seconds", 3600),
+                vacuum_on_startup=cache_data.get("vacuum_on_startup", True),
+                max_size_mb=cache_data.get("max_size_mb", 100),
+            )
+
+        signal_config = SignalConfig(
+            timeout_seconds=signals_data.get("timeout_seconds", 30.0),
+            caching_enabled=signals_data.get("caching_enabled", True),
+            db_path=signals_data.get("db_path", "state/signal_cache.db"),
+            hyperliquid=hyperliquid_provider_config,
+            onchain=onchain_config,
+            external_market=external_market_config,
+            sentiment=sentiment_config,
+            computed=computed_config,
+            cache=cache_config,
+        )
+
     return Config(
         hyperliquid=hyperliquid_config,
         llm=llm_config,
         agent=agent_config,
         governance=governance_config,
+        signals=signal_config,
     )

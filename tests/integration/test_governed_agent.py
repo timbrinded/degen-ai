@@ -222,6 +222,7 @@ def test_tripwire_invalidates_plan(governor_config, tripwire_config, sample_plan
 
     # Activate plan
     governor.activate_plan(sample_plan, current_time)
+    assert governor.active_plan is not None
     assert governor.active_plan.status == "active"
 
     # Create account state that triggers invalidation
@@ -253,6 +254,7 @@ def test_tripwire_invalidates_plan(governor_config, tripwire_config, sample_plan
     assert len(invalidation_events) > 0
 
     # In full implementation, this would set plan status to "invalidated"
+    assert governor.active_plan is not None
     governor.active_plan.status = "invalidated"
     assert governor.active_plan.status == "invalidated"
 
@@ -304,7 +306,7 @@ def test_plan_change_with_cost_benefit_analysis(governor_config, sample_plan):
         minimum_dwell_minutes=30,
         compatible_regimes=["trending"],
         avoid_regimes=["range-bound"],
-        status="pending",
+        status="active",
     )
 
     # Evaluate weak proposal (80 - 50 = 30 bps < 50 bps threshold)
@@ -369,6 +371,7 @@ def test_state_persistence_across_restarts(governor_config, sample_plan):
 
     # Activate plan
     governor1.activate_plan(sample_plan, current_time)
+    assert governor1.active_plan is not None
     plan_id = governor1.active_plan.plan_id
 
     # Create second governor instance (simulating restart)

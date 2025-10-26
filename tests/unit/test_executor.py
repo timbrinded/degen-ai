@@ -135,7 +135,7 @@ def test_validate_action_valid_close(hyperliquid_config, valid_close_action):
 def test_validate_action_invalid_action_type(hyperliquid_config):
     """Test validation fails for invalid action type."""
     invalid_action = TradeAction(
-        action_type="invalid",
+        action_type="invalid",  # type: ignore[arg-type]
         coin="BTC",
         market_type="perp",
         size=0.1,
@@ -165,7 +165,7 @@ def test_validate_action_invalid_market_type(hyperliquid_config):
     invalid_action = TradeAction(
         action_type="buy",
         coin="BTC",
-        market_type="invalid",
+        market_type="invalid",  # type: ignore[arg-type]
         size=0.1,
     )
 
@@ -399,7 +399,7 @@ def test_execute_action_insufficient_balance_error(
         result = executor.execute_action(valid_buy_action)
 
         assert result.success is False
-        assert "Insufficient balance" in result.error
+        assert result.error is not None and "Insufficient balance" in result.error
 
 
 def test_execute_action_response_without_order_id(
@@ -523,4 +523,6 @@ def test_submit_order_close_without_size(hyperliquid_config, mock_asset_metadata
         result = executor.execute_action(close_action)
 
         assert result.success is False
-        assert "Size must be specified for close action" in result.error
+        assert (
+            result.error is not None and "Size must be specified for close action" in result.error
+        )

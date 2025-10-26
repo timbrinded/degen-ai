@@ -31,6 +31,7 @@ logs/*.log
 # OS
 .DS_Store
 Thumbs.db
+*.db
 
 # Testing
 .pytest_cache/
@@ -38,3 +39,4 @@ Thumbs.db
 htmlcov/
 
 timbo.toml
+**/governor_integration.json
