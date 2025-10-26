@@ -105,7 +105,8 @@ class SignalService:
 
             # Wait for tasks to complete cancellation
             if pending:
-                self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                gather_future = asyncio.gather(*pending, return_exceptions=True)
+                self.loop.run_until_complete(gather_future)  # type: ignore[arg-type]
 
             # Shutdown async generators and executor
             self.loop.run_until_complete(self.loop.shutdown_asyncgens())
