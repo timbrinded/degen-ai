@@ -97,6 +97,21 @@ class SignalService:
         except Exception as e:
             logger.error(f"Error in signal service event loop: {e}")
         finally:
+            # Proper event loop shutdown to prevent pytest hanging
+            # Cancel all pending tasks
+            pending = asyncio.all_tasks(self.loop)
+            for task in pending:
+                task.cancel()
+
+            # Wait for tasks to complete cancellation
+            if pending:
+                self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+
+            # Shutdown async generators and executor
+            self.loop.run_until_complete(self.loop.shutdown_asyncgens())
+            self.loop.run_until_complete(self.loop.shutdown_default_executor())
+
+            # Now safe to close
             self.loop.close()
             logger.info("Signal service event loop closed")
 

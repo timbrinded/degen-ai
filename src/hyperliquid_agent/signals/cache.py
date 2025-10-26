@@ -282,15 +282,17 @@ class SQLiteCacheLayer:
 
         logger.info(f"Starting periodic cache cleanup (interval: {interval_seconds}s)")
 
-        while True:
-            try:
-                await asyncio.sleep(interval_seconds)
+        try:
+            while True:
+                # Break sleep into 1-second chunks for responsive cancellation
+                for _ in range(interval_seconds):
+                    await asyncio.sleep(1)
                 await self.cleanup_expired()
-            except asyncio.CancelledError:
-                logger.info("Periodic cache cleanup cancelled")
-                break
-            except Exception as e:
-                logger.error(f"Error in periodic cache cleanup: {e}")
+        except asyncio.CancelledError:
+            logger.info("Periodic cache cleanup cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"Error in periodic cache cleanup: {e}")
 
     def reset_metrics(self):
         """Reset cache hit/miss tracking metrics.
