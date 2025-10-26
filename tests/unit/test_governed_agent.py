@@ -1,0 +1,559 @@
+"""Unit tests for GovernedTradingAgent helper methods."""
+
+from datetime import datetime
+from unittest.mock import Mock
+
+import pytest
+
+from hyperliquid_agent.governed_agent import GovernedTradingAgent, TradingConstants
+from hyperliquid_agent.monitor import Position
+from hyperliquid_agent.signals import EnhancedAccountState, FastLoopSignals, MediumLoopSignals
+from hyperliquid_agent.signals.processor import TechnicalIndicators
+
+
+@pytest.fixture
+def mock_agent():
+    """Create a mock agent with minimal setup for testing helper methods."""
+    # Create a mock agent without full initialization
+    agent = Mock(spec=GovernedTradingAgent)
+
+    # Add the logger mock
+    agent.logger = Mock()
+    agent.tick_count = 0
+    agent.constants = TradingConstants()
+
+    # Bind the actual methods from GovernedTradingAgent to the mock
+    agent._select_representative_asset = GovernedTradingAgent._select_representative_asset.__get__(
+        agent, GovernedTradingAgent
+    )
+    agent._validate_indicators = GovernedTradingAgent._validate_indicators.__get__(
+        agent, GovernedTradingAgent
+    )
+    agent._extract_technical_indicators = (
+        GovernedTradingAgent._extract_technical_indicators.__get__(agent, GovernedTradingAgent)
+    )
+    agent._calculate_weighted_funding_rate = (
+        GovernedTradingAgent._calculate_weighted_funding_rate.__get__(agent, GovernedTradingAgent)
+    )
+    agent._calculate_average_spread_and_depth = (
+        GovernedTradingAgent._calculate_average_spread_and_depth.__get__(
+            agent, GovernedTradingAgent
+        )
+    )
+
+    return agent
+
+
+@pytest.fixture
+def btc_indicators():
+    """Create valid BTC technical indicators."""
+    return TechnicalIndicators(
+        sma_20=95000.0,
+        sma_50=92000.0,
+        adx=35.0,
+        rsi=65.0,
+    )
+
+
+@pytest.fixture
+def eth_indicators():
+    """Create valid ETH technical indicators."""
+    return TechnicalIndicators(
+        sma_20=3500.0,
+        sma_50=3400.0,
+        adx=28.0,
+        rsi=58.0,
+    )
+
+
+class TestSelectRepresentativeAsset:
+    """Test the _select_representative_asset helper method."""
+
+    def test_btc_preferred(self, mock_agent, btc_indicators, eth_indicators):
+        """Test that BTC is preferred when available."""
+        account_state = EnhancedAccountState(
+            portfolio_value=50000.0,
+            available_balance=10000.0,
+            positions=[
+                Position(
+                    coin="ETH",
+                    size=10.0,
+                    entry_price=3400.0,
+                    current_price=3500.0,
+                    unrealized_pnl=1000.0,
+                    market_type="perp",
+                )
+            ],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+        )
+
+        medium_signals = MediumLoopSignals(
+            technical_indicators={"BTC": btc_indicators, "ETH": eth_indicators},
+            funding_basis={"BTC": 0.0001, "ETH": 0.00015},
+            perp_spot_basis={"BTC": 2.0, "ETH": 3.0},
+            concentration_ratios={"ETH": 0.7},
+            drift_from_targets={"ETH": 2.5},
+            realized_vol_1h=0.3,
+            realized_vol_24h=0.45,
+            trend_score=0.6,
+            open_interest_change_24h={"BTC": 5.0, "ETH": 3.0},
+            oi_to_volume_ratio={"BTC": 0.8, "ETH": 0.7},
+            funding_rate_trend={"BTC": "stable", "ETH": "increasing"},
+            metadata=None,  # type: ignore
+        )
+
+        selected = mock_agent._select_representative_asset(account_state, medium_signals)
+
+        assert selected == "BTC", "BTC should be selected when available"
+
+    def test_largest_position_when_no_btc(self, mock_agent, eth_indicators):
+        """Test that largest position is selected when BTC not available."""
+        account_state = EnhancedAccountState(
+            portfolio_value=50000.0,
+            available_balance=10000.0,
+            positions=[
+                Position(
+                    coin="ETH",
+                    size=10.0,
+                    entry_price=3400.0,
+                    current_price=3500.0,
+                    unrealized_pnl=1000.0,
+                    market_type="perp",
+                ),
+                Position(
+                    coin="SOL",
+                    size=100.0,
+                    entry_price=100.0,
+                    current_price=110.0,
+                    unrealized_pnl=1000.0,
+                    market_type="perp",
+                ),
+            ],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+        )
+
+        sol_indicators = TechnicalIndicators(sma_20=105.0, sma_50=102.0, adx=22.0, rsi=55.0)
+
+        medium_signals = MediumLoopSignals(
+            technical_indicators={"ETH": eth_indicators, "SOL": sol_indicators},
+            funding_basis={"ETH": 0.00015, "SOL": 0.0002},
+            perp_spot_basis={"ETH": 3.0, "SOL": 4.0},
+            concentration_ratios={"ETH": 0.7, "SOL": 0.22},
+            drift_from_targets={"ETH": 2.5, "SOL": 1.2},
+            realized_vol_1h=0.3,
+            realized_vol_24h=0.45,
+            trend_score=0.6,
+            open_interest_change_24h={"ETH": 3.0, "SOL": 8.0},
+            oi_to_volume_ratio={"ETH": 0.7, "SOL": 0.9},
+            funding_rate_trend={"ETH": "increasing", "SOL": "stable"},
+            metadata=None,  # type: ignore
+        )
+
+        selected = mock_agent._select_representative_asset(account_state, medium_signals)
+
+        # ETH has larger notional value: 10 * 3500 = 35000 vs SOL: 100 * 110 = 11000
+        assert selected == "ETH", "Largest position by notional value should be selected"
+
+    def test_first_available_when_no_positions(self, mock_agent, eth_indicators):
+        """Test fallback to first available coin when no positions."""
+        account_state = EnhancedAccountState(
+            portfolio_value=10000.0,
+            available_balance=10000.0,
+            positions=[],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+        )
+
+        medium_signals = MediumLoopSignals(
+            technical_indicators={"ETH": eth_indicators},
+            funding_basis={"ETH": 0.00015},
+            perp_spot_basis={"ETH": 3.0},
+            concentration_ratios={},
+            drift_from_targets={},
+            realized_vol_1h=0.3,
+            realized_vol_24h=0.45,
+            trend_score=0.6,
+            open_interest_change_24h={"ETH": 3.0},
+            oi_to_volume_ratio={"ETH": 0.7},
+            funding_rate_trend={"ETH": "increasing"},
+            metadata=None,  # type: ignore
+        )
+
+        selected = mock_agent._select_representative_asset(account_state, medium_signals)
+
+        assert selected == "ETH", "First available coin should be selected"
+
+    def test_none_when_no_indicators(self, mock_agent):
+        """Test returns None when no indicators available."""
+        account_state = EnhancedAccountState(
+            portfolio_value=10000.0,
+            available_balance=10000.0,
+            positions=[],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+        )
+
+        medium_signals = MediumLoopSignals(
+            technical_indicators={},
+            funding_basis={},
+            perp_spot_basis={},
+            concentration_ratios={},
+            drift_from_targets={},
+            realized_vol_1h=0.3,
+            realized_vol_24h=0.45,
+            trend_score=0.6,
+            open_interest_change_24h={},
+            oi_to_volume_ratio={},
+            funding_rate_trend={},
+            metadata=None,  # type: ignore
+        )
+
+        selected = mock_agent._select_representative_asset(account_state, medium_signals)
+
+        assert selected is None, "Should return None when no indicators available"
+
+
+class TestValidateIndicators:
+    """Test the _validate_indicators helper method."""
+
+    def test_valid_indicators(self, mock_agent, btc_indicators):
+        """Test validation passes for valid indicators."""
+        assert mock_agent._validate_indicators(btc_indicators) is True
+
+    def test_invalid_adx_too_high(self, mock_agent):
+        """Test validation fails for ADX > 100."""
+        invalid_indicators = TechnicalIndicators(
+            sma_20=95000.0, sma_50=92000.0, adx=150.0, rsi=65.0
+        )
+
+        assert mock_agent._validate_indicators(invalid_indicators) is False
+
+    def test_invalid_adx_negative(self, mock_agent):
+        """Test validation fails for negative ADX."""
+        invalid_indicators = TechnicalIndicators(sma_20=95000.0, sma_50=92000.0, adx=-5.0, rsi=65.0)
+
+        assert mock_agent._validate_indicators(invalid_indicators) is False
+
+    def test_invalid_sma_20_zero(self, mock_agent):
+        """Test validation fails for SMA20 = 0."""
+        invalid_indicators = TechnicalIndicators(sma_20=0.0, sma_50=92000.0, adx=35.0, rsi=65.0)
+
+        assert mock_agent._validate_indicators(invalid_indicators) is False
+
+    def test_invalid_sma_50_negative(self, mock_agent):
+        """Test validation fails for negative SMA50."""
+        invalid_indicators = TechnicalIndicators(sma_20=95000.0, sma_50=-1000.0, adx=35.0, rsi=65.0)
+
+        assert mock_agent._validate_indicators(invalid_indicators) is False
+
+
+class TestExtractTechnicalIndicators:
+    """Test the _extract_technical_indicators helper method."""
+
+    def test_extract_valid_indicators(self, mock_agent, btc_indicators):
+        """Test extraction of valid technical indicators."""
+        medium_signals = MediumLoopSignals(
+            technical_indicators={"BTC": btc_indicators},
+            funding_basis={"BTC": 0.0001},
+            perp_spot_basis={"BTC": 2.0},
+            concentration_ratios={"BTC": 0.3},
+            drift_from_targets={"BTC": 1.5},
+            realized_vol_1h=0.3,
+            realized_vol_24h=0.45,
+            trend_score=0.6,
+            open_interest_change_24h={"BTC": 5.0},
+            oi_to_volume_ratio={"BTC": 0.8},
+            funding_rate_trend={"BTC": "stable"},
+            metadata=None,  # type: ignore
+        )
+
+        adx, sma_20, sma_50 = mock_agent._extract_technical_indicators("BTC", medium_signals)
+
+        assert adx == 35.0
+        assert sma_20 == 95000.0
+        assert sma_50 == 92000.0
+
+    def test_extract_with_none_coin(self, mock_agent):
+        """Test extraction with None representative coin."""
+        medium_signals = MediumLoopSignals(
+            technical_indicators={},
+            funding_basis={},
+            perp_spot_basis={},
+            concentration_ratios={},
+            drift_from_targets={},
+            realized_vol_1h=0.3,
+            realized_vol_24h=0.45,
+            trend_score=0.6,
+            open_interest_change_24h={},
+            oi_to_volume_ratio={},
+            funding_rate_trend={},
+            metadata=None,  # type: ignore
+        )
+
+        adx, sma_20, sma_50 = mock_agent._extract_technical_indicators(None, medium_signals)
+
+        assert adx == 0.0
+        assert sma_20 == 0.0
+        assert sma_50 == 0.0
+
+    def test_extract_with_missing_coin(self, mock_agent, btc_indicators):
+        """Test extraction with coin not in technical_indicators."""
+        medium_signals = MediumLoopSignals(
+            technical_indicators={"BTC": btc_indicators},
+            funding_basis={"BTC": 0.0001},
+            perp_spot_basis={"BTC": 2.0},
+            concentration_ratios={"BTC": 0.3},
+            drift_from_targets={"BTC": 1.5},
+            realized_vol_1h=0.3,
+            realized_vol_24h=0.45,
+            trend_score=0.6,
+            open_interest_change_24h={"BTC": 5.0},
+            oi_to_volume_ratio={"BTC": 0.8},
+            funding_rate_trend={"BTC": "stable"},
+            metadata=None,  # type: ignore
+        )
+
+        adx, sma_20, sma_50 = mock_agent._extract_technical_indicators("ETH", medium_signals)
+
+        assert adx == 0.0
+        assert sma_20 == 0.0
+        assert sma_50 == 0.0
+
+    def test_extract_with_invalid_indicators(self, mock_agent):
+        """Test extraction with invalid indicators (ADX > 100)."""
+        invalid_indicators = TechnicalIndicators(
+            sma_20=95000.0, sma_50=92000.0, adx=150.0, rsi=65.0
+        )
+
+        medium_signals = MediumLoopSignals(
+            technical_indicators={"BTC": invalid_indicators},
+            funding_basis={"BTC": 0.0001},
+            perp_spot_basis={"BTC": 2.0},
+            concentration_ratios={"BTC": 0.3},
+            drift_from_targets={"BTC": 1.5},
+            realized_vol_1h=0.3,
+            realized_vol_24h=0.45,
+            trend_score=0.6,
+            open_interest_change_24h={"BTC": 5.0},
+            oi_to_volume_ratio={"BTC": 0.8},
+            funding_rate_trend={"BTC": "stable"},
+            metadata=None,  # type: ignore
+        )
+
+        adx, sma_20, sma_50 = mock_agent._extract_technical_indicators("BTC", medium_signals)
+
+        # Should fall back to zeros for invalid indicators
+        assert adx == 0.0
+        assert sma_20 == 0.0
+        assert sma_50 == 0.0
+
+
+class TestCalculateWeightedFundingRate:
+    """Test the _calculate_weighted_funding_rate helper method."""
+
+    def test_weighted_funding_rate(self, mock_agent):
+        """Test position-weighted funding rate calculation."""
+        account_state = EnhancedAccountState(
+            portfolio_value=50000.0,
+            available_balance=10000.0,
+            positions=[
+                Position(
+                    coin="BTC",
+                    size=0.1,
+                    entry_price=94000.0,
+                    current_price=95000.0,
+                    unrealized_pnl=100.0,
+                    market_type="perp",
+                ),
+                Position(
+                    coin="ETH",
+                    size=10.0,
+                    entry_price=3400.0,
+                    current_price=3500.0,
+                    unrealized_pnl=1000.0,
+                    market_type="perp",
+                ),
+            ],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+        )
+
+        medium_signals = MediumLoopSignals(
+            technical_indicators={},
+            funding_basis={"BTC": 0.0001, "ETH": 0.0002},
+            perp_spot_basis={},
+            concentration_ratios={},
+            drift_from_targets={},
+            realized_vol_1h=0.3,
+            realized_vol_24h=0.45,
+            trend_score=0.6,
+            open_interest_change_24h={},
+            oi_to_volume_ratio={},
+            funding_rate_trend={},
+            metadata=None,  # type: ignore
+        )
+
+        avg_funding = mock_agent._calculate_weighted_funding_rate(account_state, medium_signals)
+
+        # BTC notional: 0.1 * 95000 = 9500
+        # ETH notional: 10 * 3500 = 35000
+        # Total: 44500
+        # Weighted: (0.0001 * 9500 + 0.0002 * 35000) / 44500
+        #         = (0.95 + 7.0) / 44500 = 7.95 / 44500 ≈ 0.0001787
+        expected = (0.0001 * 9500 + 0.0002 * 35000) / 44500
+
+        assert abs(avg_funding - expected) < 1e-6
+
+    def test_funding_rate_empty_basis(self, mock_agent):
+        """Test returns 0.0 when funding_basis is empty."""
+        account_state = EnhancedAccountState(
+            portfolio_value=10000.0,
+            available_balance=10000.0,
+            positions=[],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+        )
+
+        medium_signals = MediumLoopSignals(
+            technical_indicators={},
+            funding_basis={},
+            perp_spot_basis={},
+            concentration_ratios={},
+            drift_from_targets={},
+            realized_vol_1h=0.3,
+            realized_vol_24h=0.45,
+            trend_score=0.6,
+            open_interest_change_24h={},
+            oi_to_volume_ratio={},
+            funding_rate_trend={},
+            metadata=None,  # type: ignore
+        )
+
+        avg_funding = mock_agent._calculate_weighted_funding_rate(account_state, medium_signals)
+
+        assert avg_funding == 0.0
+
+    def test_funding_rate_no_matching_positions(self, mock_agent):
+        """Test returns 0.0 when no positions have funding data."""
+        account_state = EnhancedAccountState(
+            portfolio_value=10000.0,
+            available_balance=5000.0,
+            positions=[
+                Position(
+                    coin="SOL",
+                    size=100.0,
+                    entry_price=100.0,
+                    current_price=110.0,
+                    unrealized_pnl=1000.0,
+                    market_type="perp",
+                )
+            ],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+        )
+
+        medium_signals = MediumLoopSignals(
+            technical_indicators={},
+            funding_basis={"BTC": 0.0001, "ETH": 0.0002},  # No SOL
+            perp_spot_basis={},
+            concentration_ratios={},
+            drift_from_targets={},
+            realized_vol_1h=0.3,
+            realized_vol_24h=0.45,
+            trend_score=0.6,
+            open_interest_change_24h={},
+            oi_to_volume_ratio={},
+            funding_rate_trend={},
+            metadata=None,  # type: ignore
+        )
+
+        avg_funding = mock_agent._calculate_weighted_funding_rate(account_state, medium_signals)
+
+        assert avg_funding == 0.0
+
+
+class TestCalculateAverageSpreadAndDepth:
+    """Test the _calculate_average_spread_and_depth helper method."""
+
+    def test_average_spread_and_depth(self, mock_agent):
+        """Test calculation of average spread and order book depth."""
+        account_state = EnhancedAccountState(
+            portfolio_value=50000.0,
+            available_balance=10000.0,
+            positions=[],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+            fast_signals=FastLoopSignals(
+                spreads={"BTC": 2.5, "ETH": 3.0, "SOL": 4.5},
+                slippage_estimates={"BTC": 5.0, "ETH": 6.0},
+                short_term_volatility=0.2,
+                micro_pnl=100.0,
+                partial_fill_rates={"BTC": 0.95, "ETH": 0.92},
+                order_book_depth={"BTC": 1000000.0, "ETH": 500000.0, "SOL": 200000.0},
+                api_latency_ms=50.0,
+                metadata=None,  # type: ignore
+            ),
+        )
+
+        avg_spread, avg_depth = mock_agent._calculate_average_spread_and_depth(account_state)
+
+        # Average spread: (2.5 + 3.0 + 4.5) / 3 = 10.0 / 3 ≈ 3.333
+        expected_spread = (2.5 + 3.0 + 4.5) / 3
+        assert abs(avg_spread - expected_spread) < 0.01
+
+        # Average depth: (1000000 + 500000 + 200000) / 3 = 566666.67
+        expected_depth = (1000000.0 + 500000.0 + 200000.0) / 3
+        assert abs(avg_depth - expected_depth) < 0.01
+
+    def test_no_fast_signals(self, mock_agent):
+        """Test returns (0.0, 0.0) when fast_signals is None."""
+        account_state = EnhancedAccountState(
+            portfolio_value=10000.0,
+            available_balance=10000.0,
+            positions=[],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+            fast_signals=None,
+        )
+
+        avg_spread, avg_depth = mock_agent._calculate_average_spread_and_depth(account_state)
+
+        assert avg_spread == 0.0
+        assert avg_depth == 0.0
+
+    def test_empty_spreads_and_depth(self, mock_agent):
+        """Test returns (0.0, 0.0) when spreads and depth dicts are empty."""
+        account_state = EnhancedAccountState(
+            portfolio_value=10000.0,
+            available_balance=10000.0,
+            positions=[],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+            fast_signals=FastLoopSignals(
+                spreads={},
+                slippage_estimates={},
+                short_term_volatility=0.2,
+                micro_pnl=0.0,
+                partial_fill_rates={},
+                order_book_depth={},
+                api_latency_ms=50.0,
+                metadata=None,  # type: ignore
+            ),
+        )
+
+        avg_spread, avg_depth = mock_agent._calculate_average_spread_and_depth(account_state)
+
+        assert avg_spread == 0.0
+        assert avg_depth == 0.0

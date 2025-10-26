@@ -27,7 +27,7 @@ from hyperliquid_agent.governance.tripwire import (
     TripwireService,
 )
 from hyperliquid_agent.monitor_enhanced import EnhancedPositionMonitor
-from hyperliquid_agent.signals import EnhancedAccountState
+from hyperliquid_agent.signals import EnhancedAccountState, MediumLoopSignals, TechnicalIndicators
 
 
 @dataclass
@@ -991,6 +991,225 @@ class GovernedTradingAgent:
             opportunity_cost_bps=opportunity_cost_bps,
         )
 
+    def _select_representative_asset(
+        self, account_state: EnhancedAccountState, medium: "MediumLoopSignals"
+    ) -> str | None:
+        """Select which coin's indicators to use for portfolio regime classification.
+
+        Selection priority:
+        1. BTC (best market regime indicator)
+        2. Largest position by notional value
+        3. First available coin with complete indicators
+        4. None (triggers fallback to zeros)
+
+        Args:
+            account_state: Enhanced account state with positions
+            medium: Medium loop signals with technical indicators
+
+        Returns:
+            Selected coin symbol or None if no valid indicators available
+        """
+        # Priority 1: BTC if available
+        if "BTC" in medium.technical_indicators and medium.technical_indicators["BTC"] is not None:
+            self.logger.debug(
+                "Selected BTC as representative asset for regime classification",
+                extra={"tick": self.tick_count, "selection_reason": "btc_preferred"},
+            )
+            return "BTC"
+
+        # Priority 2: Largest position by notional value
+        if account_state.positions:
+            # Find largest position
+            largest_position = max(
+                account_state.positions,
+                key=lambda p: abs(p.size * p.current_price),
+                default=None,
+            )
+
+            if (
+                largest_position
+                and largest_position.coin in medium.technical_indicators
+                and medium.technical_indicators[largest_position.coin] is not None
+            ):
+                self.logger.debug(
+                    f"Selected {largest_position.coin} as representative asset (largest position)",
+                    extra={
+                        "tick": self.tick_count,
+                        "coin": largest_position.coin,
+                        "notional": abs(largest_position.size * largest_position.current_price),
+                        "selection_reason": "largest_position",
+                    },
+                )
+                return largest_position.coin
+
+        # Priority 3: First available coin with complete indicators
+        for coin, indicators in medium.technical_indicators.items():
+            if indicators is not None:
+                self.logger.debug(
+                    f"Selected {coin} as representative asset (first available)",
+                    extra={
+                        "tick": self.tick_count,
+                        "coin": coin,
+                        "selection_reason": "first_available",
+                    },
+                )
+                return coin
+
+        # Priority 4: No valid indicators available
+        self.logger.warning(
+            "No valid technical indicators available for any coin",
+            extra={"tick": self.tick_count, "selection_reason": "none_available"},
+        )
+        return None
+
+    def _validate_indicators(self, indicators: TechnicalIndicators) -> bool:
+        """Validate technical indicators are within reasonable ranges.
+
+        Args:
+            indicators: Technical indicators to validate
+
+        Returns:
+            True if indicators are valid, False otherwise
+        """
+        return 0 <= indicators.adx <= 100 and indicators.sma_20 > 0 and indicators.sma_50 > 0
+
+    def _extract_technical_indicators(
+        self, representative_coin: str | None, medium: MediumLoopSignals
+    ) -> tuple[float, float, float]:
+        """Extract ADX and SMA values from technical indicators.
+
+        Args:
+            representative_coin: Selected coin for portfolio-level indicators
+            medium: Medium loop signals with technical indicators
+
+        Returns:
+            (adx, sma_20, sma_50) or (0.0, 0.0, 0.0) if unavailable/invalid
+        """
+        if representative_coin and representative_coin in medium.technical_indicators:
+            indicators = medium.technical_indicators[representative_coin]
+            if indicators and self._validate_indicators(indicators):
+                self.logger.debug(
+                    f"Using {representative_coin} indicators: "
+                    f"ADX={indicators.adx:.1f}, "
+                    f"SMA20={indicators.sma_20:.2f}, "
+                    f"SMA50={indicators.sma_50:.2f}",
+                    extra={
+                        "tick": self.tick_count,
+                        "coin": representative_coin,
+                        "adx": indicators.adx,
+                        "sma_20": indicators.sma_20,
+                        "sma_50": indicators.sma_50,
+                    },
+                )
+                return indicators.adx, indicators.sma_20, indicators.sma_50
+            else:
+                self.logger.warning(
+                    f"Invalid indicators for {representative_coin}, using fallback",
+                    extra={"tick": self.tick_count, "coin": representative_coin},
+                )
+
+        return 0.0, 0.0, 0.0
+
+    def _calculate_weighted_funding_rate(
+        self, account_state: EnhancedAccountState, medium: MediumLoopSignals
+    ) -> float:
+        """Calculate position-weighted average funding rate.
+
+        Args:
+            account_state: Enhanced account state with positions
+            medium: Medium loop signals with funding basis
+
+        Returns:
+            Weighted average funding rate, or 0.0 if no data available
+        """
+        if not medium.funding_basis:
+            self.logger.debug(
+                "No funding basis data available",
+                extra={"tick": self.tick_count},
+            )
+            return 0.0
+
+        total_weighted_funding = 0.0
+        total_notional = 0.0
+
+        for position in account_state.positions:
+            if position.coin in medium.funding_basis:
+                notional = abs(position.size * position.current_price)
+                funding_rate = medium.funding_basis[position.coin]
+
+                total_weighted_funding += funding_rate * notional
+                total_notional += notional
+
+        if total_notional > 0:
+            avg_funding = total_weighted_funding / total_notional
+            self.logger.debug(
+                f"Weighted funding rate: {avg_funding:.4f} "
+                f"across {len(account_state.positions)} positions",
+                extra={
+                    "tick": self.tick_count,
+                    "avg_funding_rate": avg_funding,
+                    "num_positions": len(account_state.positions),
+                },
+            )
+            return avg_funding
+        else:
+            self.logger.warning(
+                "No positions have funding data, using 0.0",
+                extra={"tick": self.tick_count},
+            )
+            return 0.0
+
+    def _calculate_average_spread_and_depth(
+        self, account_state: EnhancedAccountState
+    ) -> tuple[float, float]:
+        """Calculate average spread and order book depth from fast signals.
+
+        Args:
+            account_state: Enhanced account state with fast signals
+
+        Returns:
+            (avg_spread_bps, avg_order_book_depth) or (0.0, 0.0) if unavailable
+        """
+        if account_state.fast_signals is None:
+            self.logger.debug(
+                "Fast signals not available",
+                extra={"tick": self.tick_count},
+            )
+            return 0.0, 0.0
+
+        fast = account_state.fast_signals
+
+        # Calculate average spread
+        if fast.spreads:
+            avg_spread_bps = sum(fast.spreads.values()) / len(fast.spreads)
+            self.logger.debug(
+                f"Average spread: {avg_spread_bps:.2f} bps across {len(fast.spreads)} coins",
+                extra={
+                    "tick": self.tick_count,
+                    "avg_spread_bps": avg_spread_bps,
+                    "num_coins": len(fast.spreads),
+                },
+            )
+        else:
+            avg_spread_bps = 0.0
+
+        # Calculate average order book depth
+        if fast.order_book_depth:
+            avg_order_book_depth = sum(fast.order_book_depth.values()) / len(fast.order_book_depth)
+            self.logger.debug(
+                f"Average order book depth: {avg_order_book_depth:.2f} "
+                f"across {len(fast.order_book_depth)} coins",
+                extra={
+                    "tick": self.tick_count,
+                    "avg_order_book_depth": avg_order_book_depth,
+                    "num_coins": len(fast.order_book_depth),
+                },
+            )
+        else:
+            avg_order_book_depth = 0.0
+
+        return avg_spread_bps, avg_order_book_depth
+
     def _extract_regime_signals(self, account_state: EnhancedAccountState) -> RegimeSignals:
         """Extract regime signals from enhanced account state.
 
@@ -1006,27 +1225,33 @@ class GovernedTradingAgent:
         if account_state.medium_signals:
             medium = account_state.medium_signals
 
+            # Select representative asset for technical indicators
+            representative_coin = self._select_representative_asset(account_state, medium)
+
+            # Extract technical indicators from nested structure
+            adx, sma_20, sma_50 = self._extract_technical_indicators(representative_coin, medium)
+
+            # Calculate funding rate from funding_basis dict (Phase 3)
+            avg_funding = self._calculate_weighted_funding_rate(account_state, medium)
+
+            # Calculate spreads and depth from fast_signals (Phase 4)
+            avg_spread_bps, avg_order_book_depth = self._calculate_average_spread_and_depth(
+                account_state
+            )
+
             # Use medium signals for regime classification
             return RegimeSignals(
-                # Trend indicators
-                price_sma_20=medium.sma_20 if hasattr(medium, "sma_20") else 0.0,
-                price_sma_50=medium.sma_50 if hasattr(medium, "sma_50") else 0.0,
-                adx=medium.adx if hasattr(medium, "adx") else 0.0,
-                # Volatility
-                realized_vol_24h=medium.realized_vol_24h
-                if hasattr(medium, "realized_vol_24h")
-                else 0.0,
-                # Funding/Carry
-                avg_funding_rate=medium.avg_funding_rate
-                if hasattr(medium, "avg_funding_rate")
-                else 0.0,
-                # Liquidity
-                bid_ask_spread_bps=medium.avg_spread_bps
-                if hasattr(medium, "avg_spread_bps")
-                else 0.0,
-                order_book_depth=medium.avg_order_book_depth
-                if hasattr(medium, "avg_order_book_depth")
-                else 0.0,
+                # Trend indicators (extracted from technical_indicators dict)
+                price_sma_20=sma_20,
+                price_sma_50=sma_50,
+                adx=adx,
+                # Volatility (direct attribute on medium)
+                realized_vol_24h=medium.realized_vol_24h,
+                # Funding/Carry (Phase 3 - aggregated from funding_basis dict)
+                avg_funding_rate=avg_funding,
+                # Liquidity (Phase 4 - aggregated from fast_signals)
+                bid_ask_spread_bps=avg_spread_bps,
+                order_book_depth=avg_order_book_depth,
                 # Enhanced signals (optional)
                 cross_asset_correlation=None,
                 macro_risk_score=None,
