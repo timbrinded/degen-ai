@@ -4,7 +4,12 @@ from pathlib import Path
 
 import typer
 
+from hyperliquid_agent.backtesting.cli import backtest_command
+
 app = typer.Typer()
+
+# Register backtest command
+app.command(name="backtest")(backtest_command)
 
 
 def _create_governed_agent(config_path: str):

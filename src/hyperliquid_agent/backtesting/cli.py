@@ -1,12 +1,12 @@
-"""CLI entry point for regime backtesting."""
+"""CLI commands for regime backtesting."""
 
-import argparse
 import asyncio
 import logging
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
+
+import typer
 
 from hyperliquid_agent.backtesting.historical_data import HistoricalDataManager
 from hyperliquid_agent.backtesting.reports import ReportGenerator
@@ -21,136 +21,32 @@ from hyperliquid_agent.signals.processor import ComputedSignalProcessor
 logger = logging.getLogger(__name__)
 
 
-def parse_arguments() -> argparse.Namespace:
-    """Parse command-line arguments.
-
-    Returns:
-        Parsed arguments namespace
-
-    Raises:
-        SystemExit: If arguments are invalid
-    """
-    parser = argparse.ArgumentParser(
-        description="Run regime detection backtest on historical Hyperliquid data",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Run 3-month backtest with default settings
-  %(prog)s --start-date 2024-01-01 --end-date 2024-03-31
-
-  # Run 1-year backtest with hourly sampling
-  %(prog)s --start-date 2023-01-01 --end-date 2023-12-31 --interval 1h
-
-  # Run backtest for specific assets
-  %(prog)s --start-date 2024-01-01 --end-date 2024-03-31 --assets BTC,ETH,SOL
-
-  # Save results to custom directory
-  %(prog)s --start-date 2024-01-01 --end-date 2024-03-31 --output ./my_backtest
-        """,
-    )
-
-    parser.add_argument(
-        "--start-date",
-        type=str,
-        required=True,
-        help="Backtest start date in ISO 8601 format (e.g., 2024-01-01)",
-    )
-
-    parser.add_argument(
-        "--end-date",
-        type=str,
-        required=True,
-        help="Backtest end date in ISO 8601 format (e.g., 2024-03-31)",
-    )
-
-    parser.add_argument(
-        "--interval",
-        type=str,
-        default="4h",
-        choices=["1h", "4h", "1d"],
-        help="Sampling interval for data points (default: 4h)",
-    )
-
-    parser.add_argument(
-        "--assets",
-        type=str,
-        default="BTC,ETH",
-        help="Comma-separated list of asset symbols (default: BTC,ETH)",
-    )
-
-    parser.add_argument(
-        "--output",
-        type=str,
-        default="./backtest_results",
-        help="Output directory for backtest results (default: ./backtest_results)",
-    )
-
-    parser.add_argument(
-        "--config",
-        type=str,
-        default="config.toml",
-        help="Path to configuration file (default: config.toml)",
-    )
-
-    return parser.parse_args()
-
-
-def validate_arguments(args: argparse.Namespace) -> tuple[datetime, datetime, list[str]]:
-    """Validate and parse command-line arguments.
+def validate_date_range(start_date: datetime, end_date: datetime) -> None:
+    """Validate date range for backtesting.
 
     Args:
-        args: Parsed arguments namespace
-
-    Returns:
-        Tuple of (start_date, end_date, assets)
+        start_date: Backtest start timestamp
+        end_date: Backtest end timestamp
 
     Raises:
-        ValueError: If arguments are invalid
+        typer.BadParameter: If date range is invalid
     """
-    # Parse ISO 8601 date strings
-    try:
-        start_date = datetime.fromisoformat(args.start_date)
-    except ValueError as e:
-        raise ValueError(
-            f"Invalid start-date format: {args.start_date}. "
-            f"Expected ISO 8601 format (e.g., 2024-01-01). Error: {e}"
-        ) from e
-
-    try:
-        end_date = datetime.fromisoformat(args.end_date)
-    except ValueError as e:
-        raise ValueError(
-            f"Invalid end-date format: {args.end_date}. "
-            f"Expected ISO 8601 format (e.g., 2024-03-31). Error: {e}"
-        ) from e
-
     # Validate end-date > start-date
     if end_date <= start_date:
-        raise ValueError(
+        raise typer.BadParameter(
             f"End date ({end_date.date()}) must be after start date ({start_date.date()})"
         )
 
     # Validate dates are not in future
     now = datetime.now()
     if start_date > now:
-        raise ValueError(f"Start date ({start_date.date()}) cannot be in the future")
+        raise typer.BadParameter(f"Start date ({start_date.date()}) cannot be in the future")
 
     if end_date > now:
-        raise ValueError(f"End date ({end_date.date()}) cannot be in the future")
-
-    # Parse comma-separated asset list
-    assets = [asset.strip().upper() for asset in args.assets.split(",")]
-    if not assets:
-        raise ValueError("At least one asset must be specified")
-
-    # Remove duplicates while preserving order
-    seen = set()
-    assets = [asset for asset in assets if not (asset in seen or seen.add(asset))]  # type: ignore[func-returns-value]
-
-    return start_date, end_date, assets
+        raise typer.BadParameter(f"End date ({end_date.date()}) cannot be in the future")
 
 
-async def run_backtest_async(
+async def _run_backtest_async(
     config_path: str,
     start_date: datetime,
     end_date: datetime,
@@ -301,21 +197,52 @@ async def run_backtest_async(
     print("\n" + "=" * 80 + "\n")
 
 
-def main() -> None:
-    """Main CLI entry point.
+def backtest_command(
+    start_date: str = typer.Option(
+        ...,
+        "--start-date",
+        help="Backtest start date in ISO 8601 format (e.g., 2024-01-01)",
+    ),
+    end_date: str = typer.Option(
+        ...,
+        "--end-date",
+        help="Backtest end date in ISO 8601 format (e.g., 2024-03-31)",
+    ),
+    interval: str = typer.Option(
+        "4h",
+        "--interval",
+        help="Sampling interval for data points (1h, 4h, 1d)",
+    ),
+    assets: str = typer.Option(
+        "BTC,ETH",
+        "--assets",
+        help="Comma-separated list of asset symbols",
+    ),
+    output: Path = typer.Option(
+        Path("./backtest_results"),
+        "--output",
+        help="Output directory for backtest results",
+    ),
+    config: Path = typer.Option(
+        Path("config.toml"),
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
+) -> None:
+    """Run regime detection backtest on historical Hyperliquid data.
 
-    Parses arguments, validates inputs, orchestrates backtest execution,
-    and handles errors.
+    Examples:
 
-    Raises:
-        SystemExit: On error or completion
+      # Run 3-month backtest with default settings
+      degen backtest --start-date 2024-01-01 --end-date 2024-03-31
+
+      # Run 1-year backtest with hourly sampling
+      degen backtest --start-date 2023-01-01 --end-date 2023-12-31 --interval 1h
+
+      # Run backtest for specific assets
+      degen backtest --start-date 2024-01-01 --end-date 2024-03-31 --assets BTC,ETH,SOL
     """
-    # Parse arguments
-    try:
-        args = parse_arguments()
-    except SystemExit:
-        raise
-
     # Setup logging
     logging.basicConfig(
         level=logging.INFO,
@@ -323,48 +250,66 @@ def main() -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # Validate arguments
+    # Parse and validate dates
     try:
-        start_date, end_date, assets = validate_arguments(args)
+        start_dt = datetime.fromisoformat(start_date)
     except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
+        raise typer.BadParameter(
+            f"Invalid start-date format: {start_date}. "
+            f"Expected ISO 8601 format (e.g., 2024-01-01). Error: {e}"
+        ) from e
 
-    # Convert output path
-    output_dir = Path(args.output)
+    try:
+        end_dt = datetime.fromisoformat(end_date)
+    except ValueError as e:
+        raise typer.BadParameter(
+            f"Invalid end-date format: {end_date}. "
+            f"Expected ISO 8601 format (e.g., 2024-03-31). Error: {e}"
+        ) from e
+
+    validate_date_range(start_dt, end_dt)
+
+    # Validate interval
+    if interval not in ["1h", "4h", "1d"]:
+        raise typer.BadParameter(f"Invalid interval: {interval}. Must be one of: 1h, 4h, 1d")
+
+    # Parse asset list
+    asset_list = [asset.strip().upper() for asset in assets.split(",")]
+    if not asset_list:
+        raise typer.BadParameter("At least one asset must be specified")
+
+    # Remove duplicates while preserving order
+    seen = set()
+    asset_list = [a for a in asset_list if not (a in seen or seen.add(a))]  # type: ignore[func-returns-value]
 
     # Display configuration
-    print("\n" + "=" * 80)
-    print("REGIME BACKTEST CONFIGURATION")
-    print("=" * 80)
-    print(f"Start Date: {start_date.date()}")
-    print(f"End Date: {end_date.date()}")
-    print(f"Interval: {args.interval}")
-    print(f"Assets: {', '.join(assets)}")
-    print(f"Output Directory: {output_dir.absolute()}")
-    print(f"Config File: {args.config}")
-    print("=" * 80 + "\n")
+    typer.echo("\n" + "=" * 80)
+    typer.echo("REGIME BACKTEST CONFIGURATION")
+    typer.echo("=" * 80)
+    typer.echo(f"Start Date: {start_dt.date()}")
+    typer.echo(f"End Date: {end_dt.date()}")
+    typer.echo(f"Interval: {interval}")
+    typer.echo(f"Assets: {', '.join(asset_list)}")
+    typer.echo(f"Output Directory: {output.absolute()}")
+    typer.echo(f"Config File: {config}")
+    typer.echo("=" * 80 + "\n")
 
     # Run backtest
     try:
         asyncio.run(
-            run_backtest_async(
-                config_path=args.config,
-                start_date=start_date,
-                end_date=end_date,
-                interval=args.interval,
-                assets=assets,
-                output_dir=output_dir,
+            _run_backtest_async(
+                config_path=str(config),
+                start_date=start_dt,
+                end_date=end_dt,
+                interval=interval,
+                assets=asset_list,
+                output_dir=output,
             )
         )
     except KeyboardInterrupt:
-        print("\n\nBacktest interrupted by user.", file=sys.stderr)
-        sys.exit(130)
+        typer.echo("\n\nBacktest interrupted by user.", err=True)
+        raise typer.Exit(code=130) from None
     except Exception as e:
-        print(f"\n\nBacktest failed: {e}", file=sys.stderr)
+        typer.echo(f"\n\nBacktest failed: {e}", err=True)
         logger.error("Backtest failed", exc_info=True)
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
+        raise typer.Exit(code=1) from e
