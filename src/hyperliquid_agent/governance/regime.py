@@ -146,11 +146,15 @@ class RegimeDetector:
         if self.config.use_enhanced_signals and self.external_data:
             base_confidence = self._adjust_confidence_with_external_data(signals)
 
-        # Trending: Strong directional movement
+        # Trending: Strong directional movement OR high volatility with strong trend
+        # Two pathways:
+        # 1. Traditional directional trend: ADX > 25 + SMA divergence > 2%
+        # 2. High-volatility trend: ADX ≥ 40 + realized vol ≥ 100% (crypto-specific)
         if (
             signals.adx > 25
-            and abs(signals.price_sma_20 - signals.price_sma_50) / signals.price_sma_50 > 0.02
-        ):
+            and signals.price_sma_50 > 0
+            and (abs(signals.price_sma_20 - signals.price_sma_50) / signals.price_sma_50) > 0.02
+        ) or (signals.adx >= 40 and signals.realized_vol_24h >= 1.0):
             confidence = min(signals.adx / 40, 1.0) * base_confidence
             classification = RegimeClassification(
                 regime="trending",

@@ -179,14 +179,18 @@ class ReportGenerator:
 
         df = pd.DataFrame(data)
 
-        # Format timestamp for readability
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        # Only format and export if we have data
+        if not df.empty:
+            # Format timestamp for readability
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
 
-        # Export to CSV
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        df.to_csv(output_path, index=False, float_format="%.6f")
+            # Export to CSV
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(output_path, index=False, float_format="%.6f")
 
-        logger.info(f"CSV export saved to {output_path} ({len(df)} rows)")
+            logger.info(f"CSV export saved to {output_path} ({len(df)} rows)")
+        else:
+            logger.warning("No data to export - skipping CSV generation")
 
     def generate_visualization(
         self,

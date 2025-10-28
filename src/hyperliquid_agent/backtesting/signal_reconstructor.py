@@ -70,6 +70,14 @@ class SignalReconstructor:
         # Filter candles up to timestamp
         btc_candles_filtered = [c for c in btc_candles if c.timestamp <= timestamp]
 
+        # Debug: Log candle availability for early dates
+        if len(btc_candles_filtered) < self.SMA_50_PERIOD:
+            logger.debug(
+                f"Insufficient candles at {timestamp}: "
+                f"filtered={len(btc_candles_filtered)}, total_available={len(btc_candles)}, "
+                f"need_sma50={self.SMA_50_PERIOD}"
+            )
+
         # Calculate SMA-20
         sma_20 = self._calculate_sma(btc_candles_filtered, self.SMA_20_PERIOD, timestamp)
         if sma_20 == 0.0:
