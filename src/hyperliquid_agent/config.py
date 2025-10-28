@@ -1,6 +1,8 @@
 """Configuration management for the trading agent."""
 
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 
@@ -134,7 +136,7 @@ class Config:
     signals: SignalConfig | None = None
 
 
-def load_config(config_path: str = "config.toml") -> Config:
+def load_config(config_path: str | Path = "config.toml") -> Config:
     """Load configuration from TOML file.
 
     Args:
@@ -147,9 +149,7 @@ def load_config(config_path: str = "config.toml") -> Config:
         FileNotFoundError: If config file doesn't exist
         ValueError: If required fields are missing or invalid
     """
-    import os
     import tomllib
-    from pathlib import Path
 
     config_file = Path(config_path)
     if not config_file.exists():

@@ -47,7 +47,7 @@ def validate_date_range(start_date: datetime, end_date: datetime) -> None:
 
 
 async def _run_backtest_async(
-    config_path: str,
+    cfg,
     start_date: datetime,
     end_date: datetime,
     interval: str,
@@ -57,19 +57,16 @@ async def _run_backtest_async(
     """Run backtest asynchronously.
 
     Args:
-        config_path: Path to configuration file
+        cfg: Loaded configuration object
         start_date: Backtest start timestamp
         end_date: Backtest end timestamp
         interval: Sampling interval
         assets: List of asset symbols
-        output_dir: Output directory for results
+        output_dir: Path for results
 
     Raises:
         Exception: If backtest fails
     """
-    # Load config
-    logger.info(f"Loading configuration from {config_path}")
-    cfg = load_config(config_path)
 
     # Initialize components
     logger.info("Initializing components...")
@@ -271,12 +268,19 @@ def backtest_command(
       # Run backtest for specific assets
       degen backtest --start-date 2024-01-01 --end-date 2024-03-31 --assets BTC,ETH,SOL
     """
-    # Setup logging
+    # Load config first to get log level
+    cfg = load_config(config)
+
+    # Setup logging with level from config
+    log_level = getattr(logging, cfg.agent.log_level.upper(), logging.INFO)
     logging.basicConfig(
-        level=logging.INFO,
+        level=log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+
+    logger.info(f"Logging configured at level: {cfg.agent.log_level}")
+    logger.info(f"Configuration loaded from {config}")
 
     # Parse and validate dates
     try:
@@ -326,7 +330,7 @@ def backtest_command(
     try:
         asyncio.run(
             _run_backtest_async(
-                config_path=str(config),
+                cfg=cfg,
                 start_date=start_dt,
                 end_date=end_dt,
                 interval=interval,

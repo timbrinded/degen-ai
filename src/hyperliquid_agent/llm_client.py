@@ -140,7 +140,16 @@ class LLMClient:
             return response
 
         except Exception as e:
-            self.logger.error(f"LLM query failed: {e}", exc_info=True)
+            self.logger.error(
+                f"LLM query failed: {e}\n"
+                f"  Provider: {self.config.provider}\n"
+                f"  Model: {self.config.model}\n"
+                f"  Temperature: {temp}\n"
+                f"  Max tokens: {max_tok}\n"
+                f"  Schema: {schema.__name__ if schema else 'None'}\n"
+                f"  Prompt length: {len(prompt)} chars",
+                exc_info=True,
+            )
             raise
 
     def _query_openai(
@@ -169,6 +178,16 @@ class LLMClient:
         # GPT-5 models use responses API
         if self.config.model.startswith("gpt-5"):
             if schema is not None:
+                # Log the prompt for debugging
+                self.logger.debug(
+                    f"GPT-5 structured output request:\n"
+                    f"  Model: {self.config.model}\n"
+                    f"  Max tokens: {max_tokens}\n"
+                    f"  Schema: {schema.__name__}\n"
+                    f"  Prompt length: {len(prompt)} chars\n"
+                    f"  Prompt preview: {prompt[:300]}..."
+                )
+
                 # Use structured outputs with responses.parse()
                 response = client.responses.parse(
                     model=self.config.model,
@@ -176,8 +195,24 @@ class LLMClient:
                     max_output_tokens=max_tokens,
                     text_format=schema,
                 )
+
+                # Log raw response details before parsing
+                self.logger.debug(
+                    f"GPT-5 raw response received:\n"
+                    f"  Output parsed: {response.output_parsed is not None}\n"
+                    f"  Input tokens: {getattr(response, 'input_tokens', 'N/A')}\n"
+                    f"  Output tokens: {getattr(response, 'output_tokens', 'N/A')}"
+                )
+
                 # Convert parsed output to JSON string
                 content = response.output_parsed.model_dump_json() if response.output_parsed else ""
+
+                if not content:
+                    self.logger.error("GPT-5 returned empty parsed output!")
+                else:
+                    self.logger.debug(
+                        f"GPT-5 parsed response ({len(content)} chars): {content[:300]}..."
+                    )
             else:
                 # Fallback to unstructured text output
                 response = client.responses.create(

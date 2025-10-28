@@ -32,6 +32,12 @@ class BacktestRunner:
     # Warning threshold for skipped points percentage
     MAX_SKIP_PERCENTAGE = 20.0
 
+    # Hyperliquid API candle limits (most recent N candles available)
+    HYPERLIQUID_CANDLE_LIMIT = 5000
+
+    # Lookback periods needed for indicators (SMA-50 is the largest)
+    REQUIRED_LOOKBACK_PERIODS = 50
+
     def __init__(
         self,
         historical_data_manager: HistoricalDataManager,
@@ -75,7 +81,7 @@ class BacktestRunner:
             ValueError: If date range is invalid
         """
         # Validate date range
-        self._validate_date_range(start_date, end_date)
+        self._validate_date_range(start_date, end_date, interval)
 
         logger.info(
             f"Starting backtest: {start_date.date()} to {end_date.date()}, "
@@ -157,15 +163,16 @@ class BacktestRunner:
 
         return summary
 
-    def _validate_date_range(self, start_date: datetime, end_date: datetime) -> None:
-        """Validate date range parameters.
+    def _validate_date_range(self, start_date: datetime, end_date: datetime, interval: str) -> None:
+        """Validate date range parameters against Hyperliquid API limitations.
 
         Args:
             start_date: Start timestamp
             end_date: End timestamp
+            interval: Sampling interval (e.g., "1h", "4h", "1d")
 
         Raises:
-            ValueError: If date range is invalid
+            ValueError: If date range is invalid or exceeds API limitations
         """
         if end_date <= start_date:
             raise ValueError(f"End date ({end_date}) must be after start date ({start_date})")
@@ -176,6 +183,33 @@ class BacktestRunner:
 
         if end_date > now:
             raise ValueError(f"End date ({end_date}) cannot be in the future")
+
+        # Validate against Hyperliquid API candle limit
+        interval_delta = self._interval_to_timedelta(interval)
+
+        # Calculate maximum usable lookback (total candles - lookback periods needed)
+        usable_candles = self.HYPERLIQUID_CANDLE_LIMIT - self.REQUIRED_LOOKBACK_PERIODS
+        max_lookback = interval_delta * usable_candles
+
+        # Calculate actual date range requested (with lookback)
+        requested_range = end_date - start_date
+        total_range_needed = requested_range + (interval_delta * self.REQUIRED_LOOKBACK_PERIODS)
+
+        if total_range_needed > max_lookback:
+            usable_days = max_lookback.days
+            requested_days = requested_range.days
+            raise ValueError(
+                f"Backtest date range too large for Hyperliquid API limitations.\n"
+                f"  Interval: {interval}\n"
+                f"  Requested range: {requested_days} days ({start_date.date()} to {end_date.date()})\n"
+                f"  Maximum usable range: {usable_days} days (after {self.REQUIRED_LOOKBACK_PERIODS}-period lookback)\n"
+                f"  Hyperliquid API limit: {self.HYPERLIQUID_CANDLE_LIMIT} most recent candles only\n"
+                f"\n"
+                f"Solutions:\n"
+                f"  1. Reduce date range to {usable_days} days or less\n"
+                f"  2. Use a larger interval (4h gives ~825 days, 1d gives ~4950 days)\n"
+                f"  3. Move start date closer to present (earliest valid: {(now - max_lookback).date()})"
+            )
 
     def _generate_timestamp_sequence(
         self,

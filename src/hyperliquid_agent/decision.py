@@ -366,7 +366,12 @@ class DecisionEngine:
             # GPT-5 models use the responses API with structured outputs
             if self.llm_config.model.startswith("gpt-5"):
                 self.logger.debug(
-                    "gpt-5 model selected, using responses API with structured outputs"
+                    f"GPT-5 structured output request:\n"
+                    f"  Model: {self.llm_config.model}\n"
+                    f"  Max tokens: {self.llm_config.max_tokens}\n"
+                    f"  Schema: {schema.__name__ if schema else 'None'}\n"
+                    f"  Prompt length: {len(prompt)} chars\n"
+                    f"  Prompt preview: {prompt[:300]}..."
                 )
 
                 if schema is not None:
@@ -377,10 +382,26 @@ class DecisionEngine:
                         max_output_tokens=self.llm_config.max_tokens,
                         text_format=schema,
                     )
+
+                    # Log raw response details
+                    self.logger.debug(
+                        f"GPT-5 raw response received:\n"
+                        f"  Output parsed: {response.output_parsed is not None}\n"
+                        f"  Input tokens: {getattr(response, 'input_tokens', 'N/A')}\n"
+                        f"  Output tokens: {getattr(response, 'output_tokens', 'N/A')}"
+                    )
+
                     # Convert parsed output back to JSON string for compatibility
                     result = (
                         response.output_parsed.model_dump_json() if response.output_parsed else ""
                     )
+
+                    if not result:
+                        self.logger.error("GPT-5 returned empty parsed output!")
+                    else:
+                        self.logger.debug(
+                            f"GPT-5 parsed result ({len(result)} chars): {result[:300]}..."
+                        )
                 else:
                     # Fallback to unstructured output
                     response = client.responses.create(
