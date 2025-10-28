@@ -153,6 +153,7 @@ class LLMClient:
                 model=self.config.model,
                 input=prompt,
                 max_output_tokens=max_tokens,
+                text={"format": {"type": "text"}},
             )
             content = response.output_text or ""
             input_tokens = getattr(response, "input_tokens", 0)

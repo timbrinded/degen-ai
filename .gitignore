@@ -40,3 +40,5 @@ htmlcov/
 
 timbo.toml
 **/governor_integration.json
+
+**/backtest_results

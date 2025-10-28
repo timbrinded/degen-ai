@@ -36,57 +36,59 @@ def _create_governed_agent(config_path: str):
         typer.echo("Error: [governance] section missing in config file", err=True)
         raise typer.Exit(code=1)
 
+    # Type narrowing: assign to local variable after None check
+    governance = cfg.governance
+
     # Convert config dicts to proper types
     governor_config = GovernorConfig(
-        minimum_advantage_over_cost_bps=cfg.governance.governor.get(
+        minimum_advantage_over_cost_bps=governance.governor.get(
             "minimum_advantage_over_cost_bps", 50.0
         ),
-        cooldown_after_change_minutes=cfg.governance.governor.get(
-            "cooldown_after_change_minutes", 60
-        ),
-        partial_rotation_pct_per_cycle=cfg.governance.governor.get(
+        cooldown_after_change_minutes=governance.governor.get("cooldown_after_change_minutes", 60),
+        partial_rotation_pct_per_cycle=governance.governor.get(
             "partial_rotation_pct_per_cycle", 25.0
         ),
-        state_persistence_path=cfg.governance.governor.get(
+        state_persistence_path=governance.governor.get(
             "state_persistence_path", "state/governor.json"
         ),
     )
 
     regime_config = RegimeDetectorConfig(
-        confirmation_cycles_required=cfg.governance.regime_detector.get(
+        confirmation_cycles_required=governance.regime_detector.get(
             "confirmation_cycles_required", 3
         ),
-        hysteresis_enter_threshold=cfg.governance.regime_detector.get(
+        hysteresis_enter_threshold=governance.regime_detector.get(
             "hysteresis_enter_threshold", 0.7
         ),
-        hysteresis_exit_threshold=cfg.governance.regime_detector.get(
-            "hysteresis_exit_threshold", 0.4
-        ),
-        event_lock_window_hours_before=cfg.governance.regime_detector.get(
+        hysteresis_exit_threshold=governance.regime_detector.get("hysteresis_exit_threshold", 0.4),
+        event_lock_window_hours_before=governance.regime_detector.get(
             "event_lock_window_hours_before", 2
         ),
-        event_lock_window_hours_after=cfg.governance.regime_detector.get(
+        event_lock_window_hours_after=governance.regime_detector.get(
             "event_lock_window_hours_after", 1
         ),
+        llm_provider=governance.regime_detector.get("llm_provider"),
+        llm_model=governance.regime_detector.get("llm_model"),
+        llm_temperature=governance.regime_detector.get("llm_temperature"),
     )
 
     tripwire_config = TripwireConfig(
-        min_margin_ratio=cfg.governance.tripwire.get("min_margin_ratio", 0.15),
-        liquidation_proximity_threshold=cfg.governance.tripwire.get(
+        min_margin_ratio=governance.tripwire.get("min_margin_ratio", 0.15),
+        liquidation_proximity_threshold=governance.tripwire.get(
             "liquidation_proximity_threshold", 0.25
         ),
-        daily_loss_limit_pct=cfg.governance.tripwire.get("daily_loss_limit_pct", 5.0),
-        max_data_staleness_seconds=cfg.governance.tripwire.get("max_data_staleness_seconds", 300),
-        max_api_failure_count=cfg.governance.tripwire.get("max_api_failure_count", 3),
+        daily_loss_limit_pct=governance.tripwire.get("daily_loss_limit_pct", 5.0),
+        max_data_staleness_seconds=governance.tripwire.get("max_data_staleness_seconds", 300),
+        max_api_failure_count=governance.tripwire.get("max_api_failure_count", 3),
     )
 
     gov_config = GovernedAgentConfig(
         governor=governor_config,
         regime_detector=regime_config,
         tripwire=tripwire_config,
-        fast_loop_interval_seconds=cfg.governance.fast_loop_interval_seconds,
-        medium_loop_interval_minutes=cfg.governance.medium_loop_interval_minutes,
-        slow_loop_interval_hours=cfg.governance.slow_loop_interval_hours,
+        fast_loop_interval_seconds=governance.fast_loop_interval_seconds,
+        medium_loop_interval_minutes=governance.medium_loop_interval_minutes,
+        slow_loop_interval_hours=governance.slow_loop_interval_hours,
     )
 
     agent = GovernedTradingAgent(cfg, gov_config)

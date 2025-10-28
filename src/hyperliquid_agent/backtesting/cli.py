@@ -103,11 +103,36 @@ async def _run_backtest_async(
         processor=computed_processor,
     )
 
-    # Create regime detector with default config and main LLM config
-    regime_detector_config = RegimeDetectorConfig()
+    # Validate governance config exists
+    if cfg.governance is None:
+        logger.error("Error: [governance] section missing in config file")
+        raise ValueError("Governance configuration is required for backtesting")
+
+    # Type narrowing: assign to local variable after None check
+    governance = cfg.governance
+
+    # Create regime detector with config from TOML file
+    regime_detector_config = RegimeDetectorConfig(
+        confirmation_cycles_required=governance.regime_detector.get(
+            "confirmation_cycles_required", 3
+        ),
+        hysteresis_enter_threshold=governance.regime_detector.get(
+            "hysteresis_enter_threshold", 0.7
+        ),
+        hysteresis_exit_threshold=governance.regime_detector.get("hysteresis_exit_threshold", 0.4),
+        event_lock_window_hours_before=governance.regime_detector.get(
+            "event_lock_window_hours_before", 2
+        ),
+        event_lock_window_hours_after=governance.regime_detector.get(
+            "event_lock_window_hours_after", 1
+        ),
+        llm_provider=governance.regime_detector.get("llm_provider"),
+        llm_model=governance.regime_detector.get("llm_model"),
+        llm_temperature=governance.regime_detector.get("llm_temperature"),
+    )
     regime_detector = RegimeDetector(
         config=regime_detector_config,
-        llm_config=cfg.llm,  # Reuse main LLM config
+        llm_config=cfg.llm,
     )
 
     # Create backtest runner
