@@ -210,7 +210,7 @@ def test_full_governance_workflow(
         classification = regime_detector.classify_regime(trending_signals)
         regime_detector.update_and_confirm(classification)
 
-    assert regime_detector.current_regime == "trending"
+    assert regime_detector.current_regime in ["trending-bull", "trending-bear"]
 
 
 def test_regime_change_triggers_plan_review(
@@ -252,7 +252,7 @@ def test_regime_change_triggers_plan_review(
 
     # Regime changed - this would override dwell time in full implementation
     assert changed is True
-    assert regime_detector.current_regime == "trending"
+    assert regime_detector.current_regime in ["trending-bull", "trending-bear"]
 
 
 def test_tripwire_invalidates_plan(governor_config, tripwire_config, sample_plan):
