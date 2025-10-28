@@ -103,9 +103,12 @@ async def _run_backtest_async(
         processor=computed_processor,
     )
 
-    # Create regime detector with default config
+    # Create regime detector with default config and main LLM config
     regime_detector_config = RegimeDetectorConfig()
-    regime_detector = RegimeDetector(config=regime_detector_config)
+    regime_detector = RegimeDetector(
+        config=regime_detector_config,
+        llm_config=cfg.llm,  # Reuse main LLM config
+    )
 
     # Create backtest runner
     backtest_runner = BacktestRunner(

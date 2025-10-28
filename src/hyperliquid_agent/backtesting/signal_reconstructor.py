@@ -4,7 +4,7 @@ import logging
 import math
 from datetime import datetime
 
-from hyperliquid_agent.governance.regime import RegimeSignals
+from hyperliquid_agent.governance.regime import PriceContext, RegimeSignals
 from hyperliquid_agent.signals.hyperliquid_provider import Candle, FundingRate, OrderBookData
 from hyperliquid_agent.signals.processor import ComputedSignalProcessor
 
@@ -135,7 +135,11 @@ class SignalReconstructor:
                 f"confidence={confidence:.2f}, missing={missing_indicators}"
             )
 
+        # Extract price context from historical candles
+        price_context = self._extract_price_context(btc_candles_filtered, timestamp, sma_20, sma_50)
+
         return RegimeSignals(
+            price_context=price_context,
             price_sma_20=sma_20,
             price_sma_50=sma_50,
             adx=adx,
@@ -143,6 +147,90 @@ class SignalReconstructor:
             avg_funding_rate=avg_funding_rate,
             bid_ask_spread_bps=bid_ask_spread_bps,
             order_book_depth=order_book_depth,
+        )
+
+    def _extract_price_context(
+        self,
+        candles: list[Candle],
+        timestamp: datetime,
+        sma_20: float,
+        sma_50: float,
+    ) -> PriceContext:
+        """Extract price context with multi-timeframe returns from candles.
+
+        Args:
+            candles: Filtered candles up to timestamp
+            timestamp: Current timestamp
+            sma_20: Pre-calculated 20-period SMA
+            sma_50: Pre-calculated 50-period SMA
+
+        Returns:
+            PriceContext with current price and returns
+        """
+        from datetime import timedelta
+
+        # Get current price from latest candle
+        current_price = candles[-1].close if candles else 0.0
+
+        # Helper to find price N days ago
+        def get_price_n_days_ago(days: int) -> float:
+            target_time = timestamp - timedelta(days=days)
+            # Find closest candle before or at target_time
+            for candle in reversed(candles):
+                if candle.timestamp <= target_time:
+                    return candle.close
+            # If not found, use earliest available price
+            return candles[0].close if candles else current_price
+
+        # Calculate multi-timeframe returns
+        price_1d_ago = get_price_n_days_ago(1)
+        price_7d_ago = get_price_n_days_ago(7)
+        price_30d_ago = get_price_n_days_ago(30)
+        price_90d_ago = get_price_n_days_ago(90)
+
+        return_1d = (
+            ((current_price - price_1d_ago) / price_1d_ago * 100) if price_1d_ago > 0 else 0.0
+        )
+        return_7d = (
+            ((current_price - price_7d_ago) / price_7d_ago * 100) if price_7d_ago > 0 else 0.0
+        )
+        return_30d = (
+            ((current_price - price_30d_ago) / price_30d_ago * 100) if price_30d_ago > 0 else 0.0
+        )
+        return_90d = (
+            ((current_price - price_90d_ago) / price_90d_ago * 100) if price_90d_ago > 0 else 0.0
+        )
+
+        # Calculate SMA distances
+        sma20_distance = ((current_price - sma_20) / sma_20 * 100) if sma_20 > 0 else 0.0
+        sma50_distance = ((current_price - sma_50) / sma_50 * 100) if sma_50 > 0 else 0.0
+
+        # Determine market structure (simplified - could be enhanced)
+        # Check if making higher highs/lows by comparing recent price action
+        lookback_period = min(20, len(candles))
+        recent_candles = candles[-lookback_period:] if lookback_period > 0 else []
+
+        higher_highs = False
+        higher_lows = False
+        if len(recent_candles) >= 2:
+            # Simple heuristic: current price above median of recent highs/lows
+            recent_highs = [c.high for c in recent_candles]
+            recent_lows = [c.low for c in recent_candles]
+            median_high = sorted(recent_highs)[len(recent_highs) // 2]
+            median_low = sorted(recent_lows)[len(recent_lows) // 2]
+            higher_highs = current_price > median_high
+            higher_lows = current_price > median_low
+
+        return PriceContext(
+            current_price=current_price,
+            return_1d=return_1d,
+            return_7d=return_7d,
+            return_30d=return_30d,
+            return_90d=return_90d,
+            sma20_distance=sma20_distance,
+            sma50_distance=sma50_distance,
+            higher_highs=higher_highs,
+            higher_lows=higher_lows,
         )
 
     def _calculate_sma(

@@ -1,10 +1,13 @@
 """Unit tests for Regime Detector module."""
 
 from datetime import datetime, timedelta
+from typing import cast
 
 import pytest
 
+from hyperliquid_agent.config import LLMConfig
 from hyperliquid_agent.governance.regime import (
+    PriceContext,
     RegimeDetector,
     RegimeDetectorConfig,
     RegimeSignals,
@@ -12,7 +15,19 @@ from hyperliquid_agent.governance.regime import (
 
 
 @pytest.fixture
-def regime_config():
+def llm_config() -> LLMConfig:
+    """Create a test LLM configuration."""
+    return LLMConfig(
+        provider="anthropic",
+        model="claude-3-5-haiku-20241022",
+        api_key="test-key",
+        temperature=0.0,
+        max_tokens=500,
+    )
+
+
+@pytest.fixture
+def regime_config() -> RegimeDetectorConfig:
     """Create a test regime detector configuration."""
     return RegimeDetectorConfig(
         confirmation_cycles_required=3,
@@ -25,9 +40,42 @@ def regime_config():
 
 
 @pytest.fixture
-def trending_signals():
+def bull_price_context() -> PriceContext:
+    """Create price context for bull trend."""
+    return PriceContext(
+        current_price=51000.0,
+        return_1d=2.0,
+        return_7d=10.0,
+        return_30d=20.0,
+        return_90d=50.0,
+        sma20_distance=2.0,
+        sma50_distance=6.25,
+        higher_highs=True,
+        higher_lows=True,
+    )
+
+
+@pytest.fixture
+def range_price_context() -> PriceContext:
+    """Create price context for range-bound market."""
+    return PriceContext(
+        current_price=50000.0,
+        return_1d=0.2,
+        return_7d=1.0,
+        return_30d=2.0,
+        return_90d=3.0,
+        sma20_distance=0.0,
+        sma50_distance=-0.2,
+        higher_highs=False,
+        higher_lows=False,
+    )
+
+
+@pytest.fixture
+def trending_signals(bull_price_context: PriceContext) -> RegimeSignals:
     """Create signals indicating a trending regime."""
     return RegimeSignals(
+        price_context=bull_price_context,
         price_sma_20=50000.0,
         price_sma_50=48000.0,  # SMA20 > SMA50 by >2%
         adx=30.0,  # Strong trend (>25)
@@ -39,9 +87,10 @@ def trending_signals():
 
 
 @pytest.fixture
-def range_bound_signals():
+def range_bound_signals(range_price_context: PriceContext) -> RegimeSignals:
     """Create signals indicating a range-bound regime."""
     return RegimeSignals(
+        price_context=range_price_context,
         price_sma_20=50000.0,
         price_sma_50=50100.0,  # SMAs very close
         adx=15.0,  # Weak trend (<20)
@@ -53,9 +102,10 @@ def range_bound_signals():
 
 
 @pytest.fixture
-def carry_friendly_signals():
+def carry_friendly_signals(range_price_context: PriceContext) -> RegimeSignals:
     """Create signals indicating a carry-friendly regime."""
     return RegimeSignals(
+        price_context=range_price_context,
         price_sma_20=50000.0,
         price_sma_50=50000.0,
         adx=18.0,
@@ -67,9 +117,10 @@ def carry_friendly_signals():
 
 
 @pytest.fixture
-def unknown_signals():
+def unknown_signals(range_price_context: PriceContext) -> RegimeSignals:
     """Create signals that don't match any clear regime."""
     return RegimeSignals(
+        price_context=range_price_context,
         price_sma_20=50000.0,
         price_sma_50=49500.0,
         adx=22.0,  # Borderline
@@ -80,9 +131,9 @@ def unknown_signals():
     )
 
 
-def test_regime_detector_initialization(regime_config):
+def test_regime_detector_initialization(regime_config, llm_config):
     """Test RegimeDetector initializes correctly."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
 
     assert detector.config == regime_config
     assert detector.current_regime == "unknown"
@@ -91,9 +142,9 @@ def test_regime_detector_initialization(regime_config):
     assert detector.external_data is None
 
 
-def test_classify_regime_trending(regime_config, trending_signals):
+def test_classify_regime_trending(regime_config, llm_config, trending_signals):
     """Test classification of trending regime."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
 
     classification = detector.classify_regime(trending_signals)
 
@@ -103,9 +154,9 @@ def test_classify_regime_trending(regime_config, trending_signals):
     assert isinstance(classification.timestamp, datetime)
 
 
-def test_classify_regime_range_bound(regime_config, range_bound_signals):
+def test_classify_regime_range_bound(regime_config, llm_config, range_bound_signals):
     """Test classification of range-bound regime."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
 
     classification = detector.classify_regime(range_bound_signals)
 
@@ -114,9 +165,9 @@ def test_classify_regime_range_bound(regime_config, range_bound_signals):
     assert classification.signals == range_bound_signals
 
 
-def test_classify_regime_carry_friendly(regime_config, carry_friendly_signals):
+def test_classify_regime_carry_friendly(regime_config, llm_config, carry_friendly_signals):
     """Test classification of carry-friendly regime."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
 
     classification = detector.classify_regime(carry_friendly_signals)
 
@@ -125,9 +176,9 @@ def test_classify_regime_carry_friendly(regime_config, carry_friendly_signals):
     assert classification.signals == carry_friendly_signals
 
 
-def test_classify_regime_unknown(regime_config, unknown_signals):
+def test_classify_regime_unknown(regime_config, llm_config, unknown_signals):
     """Test classification defaults to unknown for ambiguous signals."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
 
     classification = detector.classify_regime(unknown_signals)
 
@@ -136,9 +187,9 @@ def test_classify_regime_unknown(regime_config, unknown_signals):
     assert classification.signals == unknown_signals
 
 
-def test_classify_regime_event_risk_near_macro_event(regime_config, unknown_signals):
+def test_classify_regime_event_risk_near_macro_event(regime_config, llm_config, unknown_signals):
     """Test classification prioritizes event-risk when near macro event."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
 
     # Add upcoming macro event within the lock window (< 2 hours before)
     detector.macro_calendar = [
@@ -155,9 +206,9 @@ def test_classify_regime_event_risk_near_macro_event(regime_config, unknown_sign
     assert classification.confidence == 1.0
 
 
-def test_update_and_confirm_insufficient_history(regime_config, trending_signals):
+def test_update_and_confirm_insufficient_history(regime_config, llm_config, trending_signals):
     """Test regime change requires sufficient history."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
 
     # Add only 2 classifications (need 3)
     for _ in range(2):
@@ -168,12 +219,13 @@ def test_update_and_confirm_insufficient_history(regime_config, trending_signals
         assert "Insufficient history" in reason
 
 
-def test_update_and_confirm_no_change(regime_config, trending_signals):
+def test_update_and_confirm_no_change(regime_config, llm_config, trending_signals):
     """Test no regime change when regime stays the same."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
     detector.current_regime = "trending"
 
     # Add 3 trending classifications
+    changed, reason = False, ""
     for _ in range(3):
         classification = detector.classify_regime(trending_signals)
         changed, reason = detector.update_and_confirm(classification)
@@ -184,13 +236,14 @@ def test_update_and_confirm_no_change(regime_config, trending_signals):
 
 
 def test_update_and_confirm_regime_change_confirmed(
-    regime_config, trending_signals, range_bound_signals
+    regime_config, llm_config, trending_signals, range_bound_signals
 ):
     """Test regime change is confirmed with sufficient sustained signals."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
     detector.current_regime = "range-bound"
 
     # Add 3 trending classifications (100% trending = 1.0 > 0.7 threshold)
+    changed, reason = False, ""
     for _ in range(3):
         classification = detector.classify_regime(trending_signals)
         changed, reason = detector.update_and_confirm(classification)
@@ -202,10 +255,10 @@ def test_update_and_confirm_regime_change_confirmed(
 
 
 def test_update_and_confirm_regime_change_not_confirmed(
-    regime_config, trending_signals, range_bound_signals
+    regime_config, llm_config, trending_signals, range_bound_signals
 ):
     """Test regime change is not confirmed without sufficient confidence."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
     detector.current_regime = "range-bound"
 
     # Add mixed classifications (2 trending, 1 range-bound = 66.7% < 70% threshold)
@@ -222,10 +275,10 @@ def test_update_and_confirm_regime_change_not_confirmed(
 
 
 def test_hysteresis_threshold_prevents_ping_pong(
-    regime_config, trending_signals, range_bound_signals
+    regime_config, llm_config, trending_signals, range_bound_signals
 ):
     """Test hysteresis prevents rapid regime switching."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
     detector.current_regime = "range-bound"
 
     # Add 2 trending, 1 range-bound (66.7% confidence)
@@ -250,9 +303,9 @@ def test_hysteresis_threshold_prevents_ping_pong(
     assert changed is False
 
 
-def test_regime_history_max_length(regime_config, trending_signals):
+def test_regime_history_max_length(regime_config, llm_config, trending_signals):
     """Test regime history respects max length."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
 
     # Add more classifications than max length
     for _ in range(5):
@@ -263,9 +316,9 @@ def test_regime_history_max_length(regime_config, trending_signals):
     assert len(detector.regime_history) == regime_config.confirmation_cycles_required
 
 
-def test_is_in_event_lock_window_no_events(regime_config):
+def test_is_in_event_lock_window_no_events(regime_config, llm_config):
     """Test no event lock when no events scheduled."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
     current_time = datetime.now()
 
     in_lock, message = detector.is_in_event_lock_window(current_time)
@@ -274,9 +327,9 @@ def test_is_in_event_lock_window_no_events(regime_config):
     assert "No event lock" in message
 
 
-def test_is_in_event_lock_window_before_event(regime_config):
+def test_is_in_event_lock_window_before_event(regime_config, llm_config):
     """Test event lock window before scheduled event."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
     event_time = datetime.now() + timedelta(hours=1)
     current_time = datetime.now()
 
@@ -294,9 +347,9 @@ def test_is_in_event_lock_window_before_event(regime_config):
     assert "FOMC Meeting" in message
 
 
-def test_is_in_event_lock_window_after_event(regime_config):
+def test_is_in_event_lock_window_after_event(regime_config, llm_config):
     """Test event lock window after scheduled event."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
     event_time = datetime.now() - timedelta(minutes=30)  # 30 min ago
     current_time = datetime.now()
 
@@ -314,9 +367,9 @@ def test_is_in_event_lock_window_after_event(regime_config):
     assert "CPI Release" in message
 
 
-def test_is_in_event_lock_window_outside_window(regime_config):
+def test_is_in_event_lock_window_outside_window(regime_config, llm_config):
     """Test no event lock outside event window."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
     event_time = datetime.now() + timedelta(hours=5)  # 5 hours away
     current_time = datetime.now()
 
@@ -333,9 +386,9 @@ def test_is_in_event_lock_window_outside_window(regime_config):
     assert "No event lock" in message
 
 
-def test_is_in_event_lock_window_multiple_events(regime_config):
+def test_is_in_event_lock_window_multiple_events(regime_config, llm_config):
     """Test event lock with multiple scheduled events."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
     current_time = datetime.now()
 
     detector.macro_calendar = [
@@ -355,14 +408,14 @@ def test_is_in_event_lock_window_multiple_events(regime_config):
     assert "Event 2" in message
 
 
-def test_event_lock_window_configuration(regime_config):
+def test_event_lock_window_configuration(regime_config, llm_config):
     """Test event lock window respects configuration."""
     # Custom config with different window sizes
     custom_config = RegimeDetectorConfig(
         event_lock_window_hours_before=4,
         event_lock_window_hours_after=2,
     )
-    detector = RegimeDetector(custom_config)
+    detector = RegimeDetector(custom_config, cast(LLMConfig, llm_config))
 
     event_time = datetime.now() + timedelta(hours=3)  # 3 hours away
     current_time = datetime.now()
@@ -392,12 +445,13 @@ def test_event_lock_window_configuration(regime_config):
     assert in_lock is True
 
 
-def test_trending_regime_confidence_scales_with_adx(regime_config):
+def test_trending_regime_confidence_scales_with_adx(regime_config, llm_config, bull_price_context):
     """Test trending regime confidence scales with ADX strength."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
 
     # Weak trend
     weak_signals = RegimeSignals(
+        price_context=bull_price_context,
         price_sma_20=50000.0,
         price_sma_50=48000.0,
         adx=26.0,  # Just above threshold
@@ -409,6 +463,7 @@ def test_trending_regime_confidence_scales_with_adx(regime_config):
 
     # Strong trend
     strong_signals = RegimeSignals(
+        price_context=bull_price_context,
         price_sma_20=50000.0,
         price_sma_50=48000.0,
         adx=38.0,  # Much stronger
@@ -426,9 +481,11 @@ def test_trending_regime_confidence_scales_with_adx(regime_config):
     assert strong_classification.confidence > weak_classification.confidence
 
 
-def test_regime_classification_priority_order(regime_config):
+def test_regime_classification_priority_order(
+    regime_config, llm_config, bull_price_context, range_price_context
+):
     """Test regime classification checks in order: trending, range-bound, carry-friendly, event-risk."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
 
     # Signals that match trending (checked first)
     detector.macro_calendar = [
@@ -439,6 +496,7 @@ def test_regime_classification_priority_order(regime_config):
     ]
 
     trending_signals = RegimeSignals(
+        price_context=bull_price_context,
         price_sma_20=50000.0,
         price_sma_50=48000.0,
         adx=30.0,  # Matches trending
@@ -455,6 +513,7 @@ def test_regime_classification_priority_order(regime_config):
 
     # Now test with signals that don't match other regimes
     unknown_signals = RegimeSignals(
+        price_context=range_price_context,
         price_sma_20=50000.0,
         price_sma_50=49500.0,
         adx=22.0,  # Doesn't match trending
@@ -470,7 +529,7 @@ def test_regime_classification_priority_order(regime_config):
     assert classification.regime == "event-risk"
 
 
-def test_regime_detector_with_external_data_provider(regime_config):
+def test_regime_detector_with_external_data_provider(regime_config, llm_config):
     """Test regime detector accepts external data provider."""
 
     # Mock external data provider
@@ -485,15 +544,19 @@ def test_regime_detector_with_external_data_provider(regime_config):
             return 60.0
 
     external_provider = MockExternalData()
-    detector = RegimeDetector(regime_config, external_data_provider=external_provider)
+    detector = RegimeDetector(
+        regime_config,
+        cast(LLMConfig, llm_config),
+        external_data_provider=external_provider,
+    )
 
     assert detector.external_data is not None
     assert detector.external_data == external_provider
 
 
-def test_regime_history_tracking(regime_config, trending_signals, range_bound_signals):
+def test_regime_history_tracking(regime_config, llm_config, trending_signals, range_bound_signals):
     """Test regime history tracks classifications correctly."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
 
     # Add trending classification
     trending_class = detector.classify_regime(trending_signals)
@@ -511,10 +574,10 @@ def test_regime_history_tracking(regime_config, trending_signals, range_bound_si
 
 
 def test_regime_change_requires_sustained_signals(
-    regime_config, trending_signals, range_bound_signals
+    regime_config, llm_config, trending_signals, range_bound_signals
 ):
     """Test regime change requires sustained signals, not just majority."""
-    detector = RegimeDetector(regime_config)
+    detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
     detector.current_regime = "range-bound"
 
     # Pattern: trending, trending, range-bound

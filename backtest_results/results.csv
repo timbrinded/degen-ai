@@ -1,0 +1,3 @@
+timestamp,regime,confidence,adx,price_sma_20,price_sma_50,realized_vol_24h,avg_funding_rate,bid_ask_spread_bps,order_book_depth
+2024-01-01 00:00:00,range-bound,0.600000,0.000000,0.000000,0.000000,0.000000,0.000096,0.000000,0.000000
+2024-01-01 04:00:00,range-bound,0.600000,0.000000,0.000000,0.000000,0.000000,0.000066,0.000000,0.000000
