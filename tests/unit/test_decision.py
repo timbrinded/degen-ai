@@ -466,11 +466,13 @@ def test_get_decision_success(
     mock_openai_class, llm_config_openai, sample_prompt_template, sample_account_state
 ):
     """Test successful decision retrieval."""
-    # Setup mock
+    # Setup mock for structured outputs
     mock_client = MagicMock()
     mock_response = MagicMock()
-    mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = json.dumps(
+
+    # Mock the parsed response
+    mock_parsed = MagicMock()
+    mock_parsed.model_dump_json.return_value = json.dumps(
         {
             "selected_strategy": "test-strategy",
             "actions": [
@@ -484,11 +486,18 @@ def test_get_decision_success(
             ],
         }
     )
+
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.parsed = mock_parsed
     mock_response.usage = MagicMock()
     mock_response.usage.prompt_tokens = 100
     mock_response.usage.completion_tokens = 50
 
-    mock_client.chat.completions.create.return_value = mock_response
+    # Mock beta.chat.completions.parse for structured outputs
+    mock_client.beta = MagicMock()
+    mock_client.beta.chat = MagicMock()
+    mock_client.beta.chat.completions = MagicMock()
+    mock_client.beta.chat.completions.parse = MagicMock(return_value=mock_response)
     mock_openai_class.return_value = mock_client
 
     template = PromptTemplate(sample_prompt_template, strategies_dir="nonexistent")
@@ -510,7 +519,12 @@ def test_get_decision_llm_failure(
 ):
     """Test decision retrieval handles LLM failures."""
     mock_client = MagicMock()
-    mock_client.chat.completions.create.side_effect = Exception("API error")
+
+    # Mock beta.chat.completions.parse to raise exception
+    mock_client.beta = MagicMock()
+    mock_client.beta.chat = MagicMock()
+    mock_client.beta.chat.completions = MagicMock()
+    mock_client.beta.chat.completions.parse = MagicMock(side_effect=Exception("API error"))
     mock_openai_class.return_value = mock_client
 
     template = PromptTemplate(sample_prompt_template, strategies_dir="nonexistent")

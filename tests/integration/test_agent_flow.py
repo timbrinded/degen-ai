@@ -152,15 +152,23 @@ def test_execute_tick_success(
     mock_exchange_instance = MagicMock()
     mock_executor_exchange.return_value = mock_exchange_instance
 
-    # Setup LLM mock
+    # Setup LLM mock - must mock beta.chat.completions.parse for structured outputs
+    from hyperliquid_agent.decision import DecisionSchema, TradeActionSchema
+
     mock_llm_client = MagicMock()
     mock_llm_response_obj = MagicMock()
+    # Create proper DecisionSchema instance for structured output
+    decision_data = json.loads(mock_llm_response)
+    parsed_decision = DecisionSchema(
+        selected_strategy=decision_data.get("selected_strategy"),
+        actions=[TradeActionSchema(**action) for action in decision_data.get("actions", [])],
+    )
     mock_llm_response_obj.choices = [MagicMock()]
-    mock_llm_response_obj.choices[0].message.content = mock_llm_response
+    mock_llm_response_obj.choices[0].message.parsed = parsed_decision
     mock_llm_response_obj.usage = MagicMock()
     mock_llm_response_obj.usage.prompt_tokens = 100
     mock_llm_response_obj.usage.completion_tokens = 50
-    mock_llm_client.chat.completions.create.return_value = mock_llm_response_obj
+    mock_llm_client.beta.chat.completions.parse.return_value = mock_llm_response_obj
     mock_openai_class.return_value = mock_llm_client
 
     # Create agent and execute tick
@@ -174,7 +182,7 @@ def test_execute_tick_success(
     mock_monitor_instance.user_state.assert_called_once()
 
     # Verify LLM was called
-    mock_llm_client.chat.completions.create.assert_called_once()
+    mock_llm_client.beta.chat.completions.parse.assert_called_once()
 
     # Verify no orders were submitted (hold action)
     mock_exchange_instance.order.assert_not_called()
@@ -208,29 +216,31 @@ def test_execute_tick_with_trade_execution(
     mock_exchange_instance.order.return_value = {"status": {"resting": {"oid": "0xorder123"}}}
     mock_executor_exchange.return_value = mock_exchange_instance
 
-    # Setup LLM mock with buy action
+    # Setup LLM mock with buy action - must mock beta.chat.completions.parse
+    from hyperliquid_agent.decision import DecisionSchema, TradeActionSchema
+
     mock_llm_client = MagicMock()
     mock_llm_response_obj = MagicMock()
-    mock_llm_response_obj.choices = [MagicMock()]
-    mock_llm_response_obj.choices[0].message.content = json.dumps(
-        {
-            "selected_strategy": "test-buy-strategy",
-            "actions": [
-                {
-                    "action_type": "buy",
-                    "coin": "ETH",
-                    "market_type": "perp",
-                    "size": 0.5,
-                    "price": 3000.0,
-                    "reasoning": "Good entry point",
-                }
-            ],
-        }
+    # Create proper DecisionSchema instance for structured output
+    parsed_decision = DecisionSchema(
+        selected_strategy="test-buy-strategy",
+        actions=[
+            TradeActionSchema(
+                action_type="buy",
+                coin="ETH",
+                market_type="perp",
+                size=0.5,
+                price=3000.0,
+                reasoning="Good entry point",
+            )
+        ],
     )
+    mock_llm_response_obj.choices = [MagicMock()]
+    mock_llm_response_obj.choices[0].message.parsed = parsed_decision
     mock_llm_response_obj.usage = MagicMock()
     mock_llm_response_obj.usage.prompt_tokens = 100
     mock_llm_response_obj.usage.completion_tokens = 50
-    mock_llm_client.chat.completions.create.return_value = mock_llm_response_obj
+    mock_llm_client.beta.chat.completions.parse.return_value = mock_llm_response_obj
     mock_openai_class.return_value = mock_llm_client
 
     # Create agent and execute tick
@@ -371,27 +381,29 @@ def test_execute_tick_executor_error_recovery(
     mock_exchange_instance.order.side_effect = Exception("Insufficient balance")
     mock_executor_exchange.return_value = mock_exchange_instance
 
-    # Setup LLM mock with buy action
+    # Setup LLM mock with buy action - must mock beta.chat.completions.parse
+    from hyperliquid_agent.decision import DecisionSchema, TradeActionSchema
+
     mock_llm_client = MagicMock()
     mock_llm_response_obj = MagicMock()
-    mock_llm_response_obj.choices = [MagicMock()]
-    mock_llm_response_obj.choices[0].message.content = json.dumps(
-        {
-            "actions": [
-                {
-                    "action_type": "buy",
-                    "coin": "BTC",
-                    "market_type": "perp",
-                    "size": 0.1,
-                    "price": 50000.0,
-                }
-            ]
-        }
+    # Create proper DecisionSchema instance for structured output
+    parsed_decision = DecisionSchema(
+        actions=[
+            TradeActionSchema(
+                action_type="buy",
+                coin="BTC",
+                market_type="perp",
+                size=0.1,
+                price=50000.0,
+            )
+        ]
     )
+    mock_llm_response_obj.choices = [MagicMock()]
+    mock_llm_response_obj.choices[0].message.parsed = parsed_decision
     mock_llm_response_obj.usage = MagicMock()
     mock_llm_response_obj.usage.prompt_tokens = 100
     mock_llm_response_obj.usage.completion_tokens = 50
-    mock_llm_client.chat.completions.create.return_value = mock_llm_response_obj
+    mock_llm_client.beta.chat.completions.parse.return_value = mock_llm_response_obj
     mock_openai_class.return_value = mock_llm_client
 
     # Create agent and execute tick
@@ -481,37 +493,39 @@ def test_execute_tick_multiple_actions(
     mock_exchange_instance.order.return_value = {"status": {"resting": {"oid": "0xorder123"}}}
     mock_executor_exchange.return_value = mock_exchange_instance
 
-    # Setup LLM mock with multiple actions
+    # Setup LLM mock with multiple actions - must mock beta.chat.completions.parse
+    from hyperliquid_agent.decision import DecisionSchema, TradeActionSchema
+
     mock_llm_client = MagicMock()
     mock_llm_response_obj = MagicMock()
-    mock_llm_response_obj.choices = [MagicMock()]
-    mock_llm_response_obj.choices[0].message.content = json.dumps(
-        {
-            "selected_strategy": "multi-action-strategy",
-            "actions": [
-                {
-                    "action_type": "buy",
-                    "coin": "BTC",
-                    "market_type": "perp",
-                    "size": 0.1,
-                    "price": 50000.0,
-                    "reasoning": "Buy BTC",
-                },
-                {
-                    "action_type": "sell",
-                    "coin": "ETH",
-                    "market_type": "spot",
-                    "size": 1.0,
-                    "price": 3000.0,
-                    "reasoning": "Sell ETH",
-                },
-            ],
-        }
+    # Create proper DecisionSchema instance for structured output
+    parsed_decision = DecisionSchema(
+        selected_strategy="multi-action-strategy",
+        actions=[
+            TradeActionSchema(
+                action_type="buy",
+                coin="BTC",
+                market_type="perp",
+                size=0.1,
+                price=50000.0,
+                reasoning="Buy BTC",
+            ),
+            TradeActionSchema(
+                action_type="sell",
+                coin="ETH",
+                market_type="spot",
+                size=1.0,
+                price=3000.0,
+                reasoning="Sell ETH",
+            ),
+        ],
     )
+    mock_llm_response_obj.choices = [MagicMock()]
+    mock_llm_response_obj.choices[0].message.parsed = parsed_decision
     mock_llm_response_obj.usage = MagicMock()
     mock_llm_response_obj.usage.prompt_tokens = 100
     mock_llm_response_obj.usage.completion_tokens = 50
-    mock_llm_client.chat.completions.create.return_value = mock_llm_response_obj
+    mock_llm_client.beta.chat.completions.parse.return_value = mock_llm_response_obj
     mock_openai_class.return_value = mock_llm_client
 
     # Create agent and execute tick

@@ -2,9 +2,20 @@
 
 import logging
 from datetime import datetime
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 from hyperliquid_agent.governance.regime import RegimeClassification, RegimeSignals
 from hyperliquid_agent.llm_client import LLMClient
+
+
+class RegimeClassificationSchema(BaseModel):
+    """Pydantic schema for LLM regime classification using structured outputs."""
+
+    regime: Literal["trending-bull", "trending-bear", "range-bound", "carry-friendly", "unknown"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    reasoning: str = ""
 
 
 def classify_regime_with_llm(
@@ -32,13 +43,14 @@ def classify_regime_with_llm(
     prompt = _build_regime_classification_prompt(signals)
 
     try:
-        # Query LLM using centralized client
-        response = llm_client.query(prompt)
+        # Query LLM using centralized client with structured outputs
+        # Pass schema for OpenAI providers, fallback to manual parsing for others
+        response = llm_client.query(prompt, schema=RegimeClassificationSchema)
 
         # Parse JSON response
         classification_data = llm_client.parse_json_response(response)
 
-        # Validate classification data
+        # Validate classification data (Pydantic should have already validated for OpenAI)
         _validate_classification_data(classification_data)
 
         # Create classification object

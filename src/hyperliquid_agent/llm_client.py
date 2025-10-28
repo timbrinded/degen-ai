@@ -8,8 +8,13 @@ abstraction.
 import json
 import logging
 from dataclasses import dataclass
+from typing import TypeVar
+
+from pydantic import BaseModel
 
 from hyperliquid_agent.config import LLMConfig
+
+T = TypeVar("T", bound=BaseModel)
 
 
 @dataclass
@@ -85,6 +90,7 @@ class LLMClient:
         prompt: str,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        schema: type[BaseModel] | None = None,
     ) -> LLMResponse:
         """Query LLM with prompt and return standardized response.
 
@@ -92,6 +98,7 @@ class LLMClient:
             prompt: Text prompt to send to LLM
             temperature: Override config temperature (0.0-1.0)
             max_tokens: Override config max_tokens
+            schema: Optional Pydantic model for structured outputs (OpenAI only)
 
         Returns:
             LLMResponse with content, token usage, and cost
@@ -104,13 +111,18 @@ class LLMClient:
 
         self.logger.debug(
             f"LLM query: provider={self.config.provider}, "
-            f"model={self.config.model}, temperature={temp}"
+            f"model={self.config.model}, temperature={temp}, "
+            f"structured_output={schema is not None}"
         )
 
         try:
             if self.config.provider == "openai":
-                response = self._query_openai(prompt, temp, max_tok)
+                response = self._query_openai(prompt, temp, max_tok, schema=schema)
             elif self.config.provider == "anthropic":
+                if schema is not None:
+                    self.logger.warning(
+                        "Structured outputs not supported for Anthropic, falling back to manual parsing"
+                    )
                 response = self._query_anthropic(prompt, temp, max_tok)
             else:
                 raise ValueError(f"Unsupported provider: {self.config.provider}")
@@ -131,13 +143,20 @@ class LLMClient:
             self.logger.error(f"LLM query failed: {e}", exc_info=True)
             raise
 
-    def _query_openai(self, prompt: str, temperature: float, max_tokens: int) -> LLMResponse:
-        """Query OpenAI API.
+    def _query_openai(
+        self,
+        prompt: str,
+        temperature: float,
+        max_tokens: int,
+        schema: type[BaseModel] | None = None,
+    ) -> LLMResponse:
+        """Query OpenAI API with optional structured outputs.
 
         Args:
             prompt: Text prompt
             temperature: Temperature setting
             max_tokens: Maximum tokens in response
+            schema: Optional Pydantic model for structured outputs
 
         Returns:
             LLMResponse with standardized fields
@@ -149,24 +168,52 @@ class LLMClient:
 
         # GPT-5 models use responses API
         if self.config.model.startswith("gpt-5"):
-            response = client.responses.create(
-                model=self.config.model,
-                input=prompt,
-                max_output_tokens=max_tokens,
-                text={"format": {"type": "text"}},
-            )
-            content = response.output_text or ""
+            if schema is not None:
+                # Use structured outputs with responses.parse()
+                response = client.responses.parse(
+                    model=self.config.model,
+                    input=[{"role": "user", "content": prompt}],
+                    max_output_tokens=max_tokens,
+                    text_format=schema,
+                )
+                # Convert parsed output to JSON string
+                content = response.output_parsed.model_dump_json() if response.output_parsed else ""
+            else:
+                # Fallback to unstructured text output
+                response = client.responses.create(
+                    model=self.config.model,
+                    input=[{"role": "user", "content": prompt}],
+                    max_output_tokens=max_tokens,
+                    text={"format": {"type": "text"}},
+                )
+                content = response.output_text or ""
+
             input_tokens = getattr(response, "input_tokens", 0)
             output_tokens = getattr(response, "output_tokens", 0)
         else:
             # GPT-4 and earlier use chat completions API
-            response = client.chat.completions.create(
-                model=self.config.model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            content = response.choices[0].message.content or ""
+            if schema is not None:
+                # Use structured outputs with chat.completions.parse()
+                response = client.beta.chat.completions.parse(
+                    model=self.config.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    response_format=schema,
+                )
+                # Convert parsed output to JSON string
+                parsed = response.choices[0].message.parsed
+                content = parsed.model_dump_json() if parsed else ""
+            else:
+                # Fallback to unstructured text output
+                response = client.chat.completions.create(
+                    model=self.config.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                content = response.choices[0].message.content or ""
+
             input_tokens = response.usage.prompt_tokens if response.usage else 0
             output_tokens = response.usage.completion_tokens if response.usage else 0
 
