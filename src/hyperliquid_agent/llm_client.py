@@ -196,23 +196,77 @@ class LLMClient:
                     text_format=schema,
                 )
 
-                # Log raw response details before parsing
+                # Log comprehensive response details for debugging
                 self.logger.debug(
                     f"GPT-5 raw response received:\n"
                     f"  Output parsed: {response.output_parsed is not None}\n"
                     f"  Input tokens: {getattr(response, 'input_tokens', 'N/A')}\n"
-                    f"  Output tokens: {getattr(response, 'output_tokens', 'N/A')}"
+                    f"  Output tokens: {getattr(response, 'output_tokens', 'N/A')}\n"
+                    f"  Response type: {type(response)}\n"
+                    f"  Response attributes: {dir(response)}"
                 )
 
-                # Convert parsed output to JSON string
-                content = response.output_parsed.model_dump_json() if response.output_parsed else ""
-
-                if not content:
-                    self.logger.error("GPT-5 returned empty parsed output!")
-                else:
+                # Convert parsed output to JSON string, with fallback to raw response
+                if response.output_parsed:
+                    content = response.output_parsed.model_dump_json()
                     self.logger.debug(
                         f"GPT-5 parsed response ({len(content)} chars): {content[:300]}..."
                     )
+                else:
+                    # output_parsed is None - try to get raw response for troubleshooting
+                    self.logger.error(
+                        f"GPT-5 output_parsed is None! Attempting to extract raw response.\n"
+                        f"  Response object: {response}\n"
+                        f"  Available attributes: {[attr for attr in dir(response) if not attr.startswith('_')]}"
+                    )
+
+                    # Try to get any text content from the response
+                    raw_content: str | None = None
+                    if hasattr(response, "output_text"):
+                        raw_text = response.output_text
+                        raw_content = str(raw_text) if raw_text is not None else None
+                        self.logger.error(
+                            f"Found output_text: {raw_content[:500] if raw_content else 'None'}"
+                        )
+                    elif hasattr(response, "content"):
+                        raw_text = response.content
+                        raw_content = str(raw_text) if raw_text is not None else None
+                        self.logger.error(
+                            f"Found content: {raw_content[:500] if raw_content else 'None'}"
+                        )
+                    elif hasattr(response, "text"):
+                        raw_text = response.text
+                        raw_content = str(raw_text) if raw_text is not None else None
+                        self.logger.error(
+                            f"Found text: {raw_content[:500] if raw_content else 'None'}"
+                        )
+
+                    # Log the full response object as JSON if possible
+                    try:
+                        import json
+
+                        response_dict = (
+                            response.model_dump()
+                            if hasattr(response, "model_dump")
+                            else str(response)
+                        )
+                        self.logger.error(
+                            f"Full response object: {json.dumps(response_dict, indent=2, default=str)[:1000]}"
+                        )
+                    except Exception as e:
+                        self.logger.error(f"Could not serialize response: {e}")
+
+                    # Use raw content as fallback if available, otherwise empty string
+                    content = raw_content if raw_content else ""
+
+                    if content:
+                        self.logger.warning(
+                            f"Using raw unparsed content as fallback ({len(content)} chars): {content[:300]}..."
+                        )
+                    else:
+                        self.logger.error(
+                            "No content available in response - will trigger empty response error"
+                        )
             else:
                 # Fallback to unstructured text output
                 response = client.responses.create(

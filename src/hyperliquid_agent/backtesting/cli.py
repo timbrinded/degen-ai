@@ -297,6 +297,12 @@ def backtest_command(
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    # Suppress verbose logging from matplotlib and other noisy libraries
+    logging.getLogger("matplotlib").setLevel(logging.WARNING)
+    logging.getLogger("PIL").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
+
     logger.info(f"Logging configured at level: {cfg.agent.log_level}")
     logger.info(f"Configuration loaded from {config}")
 
