@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta
 from typing import cast
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -165,8 +166,23 @@ def test_classify_regime_range_bound(regime_config, llm_config, range_bound_sign
     assert classification.signals == range_bound_signals
 
 
-def test_classify_regime_carry_friendly(regime_config, llm_config, carry_friendly_signals):
+@patch("hyperliquid_agent.llm_client.create_llm_client")
+def test_classify_regime_carry_friendly(
+    mock_create_client, regime_config, llm_config, carry_friendly_signals
+):
     """Test classification of carry-friendly regime."""
+    # Create mock LLM client instance
+    mock_llm_instance = MagicMock()
+    mock_create_client.return_value = mock_llm_instance
+
+    # Mock the query response to return a valid regime classification
+    mock_llm_instance.query.return_value = '{"regime": "carry-friendly", "confidence": 0.8, "reasoning": "Positive funding with low volatility"}'
+    mock_llm_instance.parse_json_response.return_value = {
+        "regime": "carry-friendly",
+        "confidence": 0.8,
+        "reasoning": "Positive funding with low volatility",
+    }
+
     detector = RegimeDetector(regime_config, cast(LLMConfig, llm_config))
 
     classification = detector.classify_regime(carry_friendly_signals)

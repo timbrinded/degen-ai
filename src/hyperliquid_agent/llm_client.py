@@ -243,7 +243,6 @@ class LLMClient:
 
                     # Log the full response object as JSON if possible
                     try:
-
                         response_dict = (
                             response.model_dump()
                             if hasattr(response, "model_dump")
