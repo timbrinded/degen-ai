@@ -197,7 +197,7 @@ class RegimeDetector:
             temperature=self.config.llm_temperature
             if self.config.llm_temperature is not None
             else 0.0,  # Default to 0.0 for deterministic regime classification
-            max_tokens=500,  # Regime classification is concise
+            max_tokens=1000,  # Regime classification is concise
         )
 
         return create_llm_client(effective_config, logger=self.logger)
