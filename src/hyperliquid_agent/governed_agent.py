@@ -1313,11 +1313,8 @@ class GovernedTradingAgent:
     ) -> "PriceContext":
         """Extract price context with multi-timeframe returns.
 
-        TODO: This currently uses simplified/placeholder calculations.
-        Proper implementation requires:
-        1. Price history tracking in signal collectors (1d, 7d, 30d, 90d candles)
-        2. Return calculation from historical closes
-        3. Market structure analysis (higher highs/lows over lookback period)
+        Uses real price history from signal collectors when available, otherwise
+        falls back to placeholder calculations.
 
         Args:
             account_state: Enhanced account state
@@ -1347,23 +1344,83 @@ class GovernedTradingAgent:
         if current_price > 0 and sma_50 > 0:
             sma50_distance = ((current_price - sma_50) / sma_50) * 100
 
-        # TODO: Calculate actual returns from price history
-        # For now, use placeholder values based on SMA relationship as rough proxy
-        # This is NOT accurate and should be replaced with proper historical returns
+        # Try to get price history from signal service
+        price_history = None
+        if hasattr(self.monitor, "signal_service") and representative_coin:
+            try:
+                # Access the orchestrator's medium collector to get price history
+                orchestrator = self.monitor.signal_service.loop
+                if orchestrator and hasattr(orchestrator, "medium_collector"):
+                    price_history = orchestrator.medium_collector.get_price_history(
+                        representative_coin
+                    )
+            except Exception as e:
+                self.logger.debug(f"Could not access price history: {e}")
+
+        # Use real price history if available
+        if price_history:
+            returns = price_history.calculate_returns()
+            market_structure = price_history.detect_market_structure()
+            data_quality = price_history.get_data_quality()
+            oldest_data = price_history.get_oldest_data_point()
+
+            if returns:
+                self.logger.debug(
+                    f"Using real price history for {representative_coin}",
+                    extra={
+                        "tick": self.tick_count,
+                        "coin": representative_coin,
+                        "data_quality": data_quality,
+                        "oldest_data": oldest_data,
+                    },
+                )
+                return PriceContext(
+                    current_price=current_price,
+                    return_1d=returns.get("return_1d", 0.0),
+                    return_7d=returns.get("return_7d", 0.0),
+                    return_30d=returns.get("return_30d", 0.0),
+                    return_90d=returns.get("return_90d", 0.0),
+                    sma20_distance=sma20_distance,
+                    sma50_distance=sma50_distance,
+                    higher_highs=market_structure.get("higher_highs", False),
+                    higher_lows=market_structure.get("higher_lows", False),
+                    data_quality=data_quality,
+                    oldest_data_point=oldest_data,
+                )
+            else:
+                self.logger.warning(
+                    f"Price history exists but returns calculation failed for {representative_coin}",
+                    extra={
+                        "tick": self.tick_count,
+                        "coin": representative_coin,
+                        "data_quality": data_quality,
+                    },
+                )
+
+        # Price history not available - log warning and use placeholder
+        self.logger.warning(
+            f"Price history not available for {representative_coin} - regime classification will be degraded",
+            extra={
+                "tick": self.tick_count,
+                "coin": representative_coin,
+                "reason": "price_history_missing",
+            },
+        )
+
         return_proxy = sma20_distance  # Very rough approximation
 
         return PriceContext(
             current_price=current_price,
-            # TODO: Replace with actual historical return calculations
             return_1d=return_proxy * 0.2,  # Placeholder
             return_7d=return_proxy * 0.5,  # Placeholder
             return_30d=return_proxy,  # Placeholder
             return_90d=return_proxy * 1.5,  # Placeholder
             sma20_distance=sma20_distance,
             sma50_distance=sma50_distance,
-            # TODO: Calculate from actual price history
             higher_highs=sma20_distance > 0 and sma20_distance > sma50_distance,  # Rough proxy
             higher_lows=sma20_distance > sma50_distance,  # Rough proxy
+            data_quality="insufficient",
+            oldest_data_point=None,
         )
 
     # Status methods for CLI commands

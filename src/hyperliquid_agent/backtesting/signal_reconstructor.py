@@ -158,6 +158,8 @@ class SignalReconstructor:
     ) -> PriceContext:
         """Extract price context with multi-timeframe returns from candles.
 
+        Uses PriceHistory class for consistent return calculations and market structure detection.
+
         Args:
             candles: Filtered candles up to timestamp
             timestamp: Current timestamp
@@ -167,59 +169,48 @@ class SignalReconstructor:
         Returns:
             PriceContext with current price and returns
         """
-        from datetime import timedelta
+        from hyperliquid_agent.signals.collectors import PriceHistory
 
         # Get current price from latest candle
         current_price = candles[-1].close if candles else 0.0
 
-        # Helper to find price N days ago
-        def get_price_n_days_ago(days: int) -> float:
-            target_time = timestamp - timedelta(days=days)
-            # Find closest candle before or at target_time
-            for candle in reversed(candles):
-                if candle.timestamp <= target_time:
-                    return candle.close
-            # If not found, use earliest available price
-            return candles[0].close if candles else current_price
+        # Populate PriceHistory with historical candles
+        # Assuming candles are 4-hour candles for consistency with live system
+        price_history = PriceHistory(lookback_days=90)
 
-        # Calculate multi-timeframe returns
-        price_1d_ago = get_price_n_days_ago(1)
-        price_7d_ago = get_price_n_days_ago(7)
-        price_30d_ago = get_price_n_days_ago(30)
-        price_90d_ago = get_price_n_days_ago(90)
+        for candle in candles:
+            price_history.add_candle(
+                close=candle.close,
+                high=candle.high,
+                low=candle.low,
+                timestamp=candle.timestamp,
+            )
 
-        return_1d = (
-            ((current_price - price_1d_ago) / price_1d_ago * 100) if price_1d_ago > 0 else 0.0
-        )
-        return_7d = (
-            ((current_price - price_7d_ago) / price_7d_ago * 100) if price_7d_ago > 0 else 0.0
-        )
-        return_30d = (
-            ((current_price - price_30d_ago) / price_30d_ago * 100) if price_30d_ago > 0 else 0.0
-        )
-        return_90d = (
-            ((current_price - price_90d_ago) / price_90d_ago * 100) if price_90d_ago > 0 else 0.0
-        )
+        # Calculate returns using PriceHistory
+        returns = price_history.calculate_returns()
+        market_structure = price_history.detect_market_structure()
+        data_quality = price_history.get_data_quality()
+        oldest_data = price_history.get_oldest_data_point()
+
+        # Use calculated returns if available, otherwise fall back to 0.0
+        if returns:
+            return_1d = returns.get("return_1d", 0.0)
+            return_7d = returns.get("return_7d", 0.0)
+            return_30d = returns.get("return_30d", 0.0)
+            return_90d = returns.get("return_90d", 0.0)
+        else:
+            return_1d = 0.0
+            return_7d = 0.0
+            return_30d = 0.0
+            return_90d = 0.0
 
         # Calculate SMA distances
         sma20_distance = ((current_price - sma_20) / sma_20 * 100) if sma_20 > 0 else 0.0
         sma50_distance = ((current_price - sma_50) / sma_50 * 100) if sma_50 > 0 else 0.0
 
-        # Determine market structure (simplified - could be enhanced)
-        # Check if making higher highs/lows by comparing recent price action
-        lookback_period = min(20, len(candles))
-        recent_candles = candles[-lookback_period:] if lookback_period > 0 else []
-
-        higher_highs = False
-        higher_lows = False
-        if len(recent_candles) >= 2:
-            # Simple heuristic: current price above median of recent highs/lows
-            recent_highs = [c.high for c in recent_candles]
-            recent_lows = [c.low for c in recent_candles]
-            median_high = sorted(recent_highs)[len(recent_highs) // 2]
-            median_low = sorted(recent_lows)[len(recent_lows) // 2]
-            higher_highs = current_price > median_high
-            higher_lows = current_price > median_low
+        # Use market structure from PriceHistory
+        higher_highs = market_structure.get("higher_highs", False)
+        higher_lows = market_structure.get("higher_lows", False)
 
         return PriceContext(
             current_price=current_price,
@@ -231,6 +222,8 @@ class SignalReconstructor:
             sma50_distance=sma50_distance,
             higher_highs=higher_highs,
             higher_lows=higher_lows,
+            data_quality=data_quality,
+            oldest_data_point=oldest_data,
         )
 
     def _calculate_sma(

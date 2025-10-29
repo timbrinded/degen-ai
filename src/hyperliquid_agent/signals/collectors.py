@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from collections import deque
 from datetime import datetime
 from typing import Any, Literal
 
@@ -25,6 +26,172 @@ from hyperliquid_agent.signals.models import (
 from hyperliquid_agent.signals.processor import ComputedSignalProcessor, TechnicalIndicators
 
 logger = logging.getLogger(__name__)
+
+
+class PriceHistory:
+    """Maintains rolling buffer of historical price data for multi-timeframe analysis.
+
+    Stores 90 days of 4-hour candles (540 data points) to enable accurate calculation
+    of 1d, 7d, 30d, and 90d returns, as well as market structure detection.
+    """
+
+    def __init__(self, lookback_days: int = 90):
+        """Initialize price history with specified lookback period.
+
+        Args:
+            lookback_days: Number of days to maintain in history (default 90)
+        """
+        # 4-hour candles: 6 per day * lookback_days
+        max_len = lookback_days * 6
+        self.closes: deque[float] = deque(maxlen=max_len)
+        self.highs: deque[float] = deque(maxlen=max_len)
+        self.lows: deque[float] = deque(maxlen=max_len)
+        self.timestamps: deque[datetime] = deque(maxlen=max_len)
+        self.lookback_days = lookback_days
+
+    def add_candle(self, close: float, high: float, low: float, timestamp: datetime):
+        """Add new price data point to history.
+
+        Args:
+            close: Closing price
+            high: High price
+            low: Low price
+            timestamp: Candle timestamp
+        """
+        self.closes.append(close)
+        self.highs.append(high)
+        self.lows.append(low)
+        self.timestamps.append(timestamp)
+
+    def calculate_returns(self) -> dict[str, float] | None:
+        """Calculate multi-timeframe returns from historical price data.
+
+        Returns:
+            Dictionary with keys: return_1d, return_7d, return_30d, return_90d
+            Returns None if insufficient data available
+        """
+        if len(self.closes) < 7:  # Need at least 1 day of data (6 candles)
+            return None
+
+        current_price = self.closes[-1]
+
+        # Calculate returns for each timeframe
+        # 1d = 6 candles ago (6 * 4h = 24h)
+        # 7d = 42 candles ago (42 * 4h = 168h = 7d)
+        # 30d = 180 candles ago (180 * 4h = 720h = 30d)
+        # 90d = 540 candles ago (540 * 4h = 2160h = 90d)
+
+        returns = {}
+
+        # 1-day return
+        if len(self.closes) >= 7:
+            price_1d_ago = self.closes[-7]
+            if price_1d_ago > 0:
+                returns["return_1d"] = ((current_price - price_1d_ago) / price_1d_ago) * 100
+            else:
+                returns["return_1d"] = 0.0
+        else:
+            returns["return_1d"] = 0.0
+
+        # 7-day return
+        if len(self.closes) >= 43:
+            price_7d_ago = self.closes[-43]
+            if price_7d_ago > 0:
+                returns["return_7d"] = ((current_price - price_7d_ago) / price_7d_ago) * 100
+            else:
+                returns["return_7d"] = 0.0
+        else:
+            returns["return_7d"] = 0.0
+
+        # 30-day return
+        if len(self.closes) >= 181:
+            price_30d_ago = self.closes[-181]
+            if price_30d_ago > 0:
+                returns["return_30d"] = ((current_price - price_30d_ago) / price_30d_ago) * 100
+            else:
+                returns["return_30d"] = 0.0
+        else:
+            returns["return_30d"] = 0.0
+
+        # 90-day return
+        if len(self.closes) >= 541:
+            price_90d_ago = self.closes[-541]
+            if price_90d_ago > 0:
+                returns["return_90d"] = ((current_price - price_90d_ago) / price_90d_ago) * 100
+            else:
+                returns["return_90d"] = 0.0
+        else:
+            returns["return_90d"] = 0.0
+
+        return returns
+
+    def detect_market_structure(self) -> dict[str, bool]:
+        """Detect higher highs and higher lows patterns using peak and trough analysis.
+
+        Analyzes the most recent price action to identify trend structure:
+        - Higher highs: Recent peaks are higher than earlier peaks
+        - Higher lows: Recent troughs are higher than earlier troughs
+
+        Returns:
+            Dictionary with keys: higher_highs, higher_lows
+        """
+        if len(self.highs) < 50:  # Need sufficient data for pattern detection
+            return {"higher_highs": False, "higher_lows": False}
+
+        # Analyze last 50 candles for market structure
+        recent_highs = list(self.highs)[-50:]
+        recent_lows = list(self.lows)[-50:]
+
+        # Find peaks (local maxima) in highs
+        peaks = []
+        for i in range(1, len(recent_highs) - 1):
+            if recent_highs[i] > recent_highs[i - 1] and recent_highs[i] > recent_highs[i + 1]:
+                peaks.append(recent_highs[i])
+
+        # Find troughs (local minima) in lows
+        troughs = []
+        for i in range(1, len(recent_lows) - 1):
+            if recent_lows[i] < recent_lows[i - 1] and recent_lows[i] < recent_lows[i + 1]:
+                troughs.append(recent_lows[i])
+
+        # Determine higher highs: compare recent peaks to earlier peaks
+        higher_highs = False
+        if len(peaks) >= 2:
+            # Compare last peak to previous peak
+            higher_highs = peaks[-1] > peaks[-2]
+
+        # Determine higher lows: compare recent troughs to earlier troughs
+        higher_lows = False
+        if len(troughs) >= 2:
+            # Compare last trough to previous trough
+            higher_lows = troughs[-1] > troughs[-2]
+
+        return {"higher_highs": higher_highs, "higher_lows": higher_lows}
+
+    def get_data_quality(self) -> str:
+        """Assess data quality based on available history.
+
+        Returns:
+            "complete" if 90d of data, "partial" if 7-90d, "insufficient" if <7d
+        """
+        num_candles = len(self.closes)
+
+        if num_candles >= 540:  # 90 days
+            return "complete"
+        elif num_candles >= 42:  # 7 days
+            return "partial"
+        else:
+            return "insufficient"
+
+    def get_oldest_data_point(self) -> datetime | None:
+        """Get timestamp of oldest data point in history.
+
+        Returns:
+            Oldest timestamp or None if no data
+        """
+        if len(self.timestamps) > 0:
+            return self.timestamps[0]
+        return None
 
 
 class SignalCollectorBase:
@@ -254,6 +421,8 @@ class MediumSignalCollector(SignalCollectorBase):
         super().__init__(info)
         self.hyperliquid_provider = hyperliquid_provider
         self.computed_processor = computed_processor
+        # Price history tracking for each coin
+        self.price_history: dict[str, PriceHistory] = {}
 
     async def collect(self, account_state: AccountState) -> MediumLoopSignals:
         """Collect medium-loop signals asynchronously with concurrent data fetching.
@@ -389,6 +558,19 @@ class MediumSignalCollector(SignalCollectorBase):
                     candles = candles_response.data
                     if candles and len(candles) >= 50:
                         try:
+                            # Update price history with latest candle
+                            if coin not in self.price_history:
+                                self.price_history[coin] = PriceHistory()
+
+                            # Add the most recent candle to price history
+                            latest_candle = candles[-1]
+                            self.price_history[coin].add_candle(
+                                close=latest_candle.close,
+                                high=latest_candle.high,
+                                low=latest_candle.low,
+                                timestamp=latest_candle.timestamp,
+                            )
+
                             # Calculate technical indicators using ComputedSignalProcessor
                             indicators = (
                                 await self.computed_processor.calculate_technical_indicators(
@@ -479,6 +661,17 @@ class MediumSignalCollector(SignalCollectorBase):
         if pct_change < -0.1:
             return "decreasing"
         return "stable"
+
+    def get_price_history(self, coin: str) -> PriceHistory | None:
+        """Get price history for a specific coin.
+
+        Args:
+            coin: Coin symbol
+
+        Returns:
+            PriceHistory object or None if not available
+        """
+        return self.price_history.get(coin)
 
     async def _calculate_volatility_and_trend(
         self, positions: list[Position]
