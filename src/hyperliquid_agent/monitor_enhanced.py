@@ -51,26 +51,6 @@ class EnhancedPositionMonitor(PositionMonitor):
             self.signal_service.stop()
             logger.info("Signal service shutdown complete")
 
-    def get_cache_metrics(self) -> dict:
-        """Get cache performance metrics for monitoring.
-
-        Returns:
-            Dictionary with cache metrics including hit rate, entry count, and average age.
-            Returns empty dict if signal service is not initialized.
-        """
-        if not hasattr(self, "signal_service"):
-            logger.warning("Signal service not initialized, cannot get cache metrics")
-            return {}
-
-        # Note: Cache metrics are accessed via the orchestrator which is created
-        # in the background thread. For proper access, we'd need to pass a request
-        # through the queue. For now, return a placeholder.
-        # In production, this could be enhanced to request metrics via the queue.
-        return {
-            "status": "metrics_available_via_orchestrator",
-            "note": "Use orchestrator.get_health_status() for detailed cache metrics",
-        }
-
     def get_current_state_with_signals(
         self, loop_type: Literal["fast", "medium", "slow"], timeout_seconds: float = 30.0
     ) -> EnhancedAccountState:

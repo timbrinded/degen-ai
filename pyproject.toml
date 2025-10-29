@@ -13,6 +13,10 @@ dependencies = [
     "tomli>=2.0.0; python_version < '3.11'",
     "eth-account>=0.13.7",
     "colorama>=0.4.6",
+    "pandas>=2.0.0",
+    "matplotlib>=3.7.0",
+    "tqdm>=4.65.0",
+    "pytest>=8.4.2",
 ]
 
 [project.optional-dependencies]

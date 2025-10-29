@@ -16,6 +16,7 @@ from hyperliquid_agent.governance.governor import (
 )
 from hyperliquid_agent.governance.plan_card import ChangeCostModel, StrategyPlanCard
 from hyperliquid_agent.governance.regime import (
+    PriceContext,
     RegimeDetector,
     RegimeDetectorConfig,
     RegimeSignals,
@@ -92,7 +93,9 @@ class GovernedTradingAgent:
         # Initialize governance components with logger
         self.governor = StrategyGovernor(governance_config.governor, logger=self.base_agent.logger)
         self.regime_detector = RegimeDetector(
-            governance_config.regime_detector, logger=self.base_agent.logger
+            config=governance_config.regime_detector,
+            llm_config=config.llm,  # Pass main LLM config for reuse
+            logger=self.base_agent.logger,
         )
         self.tripwire_service = TripwireService(
             governance_config.tripwire, logger=self.base_agent.logger
@@ -1214,13 +1217,16 @@ class GovernedTradingAgent:
         """Extract regime signals from enhanced account state.
 
         Maps relevant fields from EnhancedAccountState to RegimeSignals dataclass.
+        Now includes PriceContext with multi-timeframe returns for LLM classification.
 
         Args:
             account_state: Enhanced account state with signals
 
         Returns:
-            RegimeSignals for regime classification
+            RegimeSignals for regime classification (including PriceContext)
         """
+        from hyperliquid_agent.governance.regime import PriceContext
+
         # Extract signals from medium signals if available
         if account_state.medium_signals:
             medium = account_state.medium_signals
@@ -1239,8 +1245,17 @@ class GovernedTradingAgent:
                 account_state
             )
 
+            # Extract or calculate price context
+            # TODO: This currently uses placeholder values - needs to be enhanced with actual
+            # price history tracking in signal collectors for proper multi-timeframe returns
+            price_context = self._extract_price_context(
+                account_state, representative_coin, sma_20, sma_50
+            )
+
             # Use medium signals for regime classification
             return RegimeSignals(
+                # Price context (PRIMARY for LLM classification)
+                price_context=price_context,
                 # Trend indicators (extracted from technical_indicators dict)
                 price_sma_20=sma_20,
                 price_sma_50=sma_50,
@@ -1265,7 +1280,21 @@ class GovernedTradingAgent:
             extra={"tick": self.tick_count},
         )
 
+        # Create placeholder price context
+        placeholder_price_context = PriceContext(
+            current_price=0.0,
+            return_1d=0.0,
+            return_7d=0.0,
+            return_30d=0.0,
+            return_90d=0.0,
+            sma20_distance=0.0,
+            sma50_distance=0.0,
+            higher_highs=False,
+            higher_lows=False,
+        )
+
         return RegimeSignals(
+            price_context=placeholder_price_context,
             price_sma_20=0.0,
             price_sma_50=0.0,
             adx=0.0,
@@ -1273,6 +1302,68 @@ class GovernedTradingAgent:
             avg_funding_rate=0.0,
             bid_ask_spread_bps=0.0,
             order_book_depth=0.0,
+        )
+
+    def _extract_price_context(
+        self,
+        account_state: EnhancedAccountState,
+        representative_coin: str | None,
+        sma_20: float,
+        sma_50: float,
+    ) -> "PriceContext":
+        """Extract price context with multi-timeframe returns.
+
+        TODO: This currently uses simplified/placeholder calculations.
+        Proper implementation requires:
+        1. Price history tracking in signal collectors (1d, 7d, 30d, 90d candles)
+        2. Return calculation from historical closes
+        3. Market structure analysis (higher highs/lows over lookback period)
+
+        Args:
+            account_state: Enhanced account state
+            representative_coin: Selected coin for regime analysis
+            sma_20: 20-period SMA value
+            sma_50: 50-period SMA value
+
+        Returns:
+            PriceContext with price returns and market structure
+        """
+        from hyperliquid_agent.governance.regime import PriceContext
+
+        # Get current price from positions
+        current_price = 0.0
+        if representative_coin and account_state.positions:
+            matching_pos = next(
+                (p for p in account_state.positions if p.coin == representative_coin), None
+            )
+            if matching_pos:
+                current_price = matching_pos.current_price
+
+        # Calculate SMA distances
+        sma20_distance = 0.0
+        sma50_distance = 0.0
+        if current_price > 0 and sma_20 > 0:
+            sma20_distance = ((current_price - sma_20) / sma_20) * 100
+        if current_price > 0 and sma_50 > 0:
+            sma50_distance = ((current_price - sma_50) / sma_50) * 100
+
+        # TODO: Calculate actual returns from price history
+        # For now, use placeholder values based on SMA relationship as rough proxy
+        # This is NOT accurate and should be replaced with proper historical returns
+        return_proxy = sma20_distance  # Very rough approximation
+
+        return PriceContext(
+            current_price=current_price,
+            # TODO: Replace with actual historical return calculations
+            return_1d=return_proxy * 0.2,  # Placeholder
+            return_7d=return_proxy * 0.5,  # Placeholder
+            return_30d=return_proxy,  # Placeholder
+            return_90d=return_proxy * 1.5,  # Placeholder
+            sma20_distance=sma20_distance,
+            sma50_distance=sma50_distance,
+            # TODO: Calculate from actual price history
+            higher_highs=sma20_distance > 0 and sma20_distance > sma50_distance,  # Rough proxy
+            higher_lows=sma20_distance > sma50_distance,  # Rough proxy
         )
 
     # Status methods for CLI commands

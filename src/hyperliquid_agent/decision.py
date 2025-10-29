@@ -8,12 +8,44 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import frontmatter
+from pydantic import BaseModel, Field
 
 from hyperliquid_agent.config import LLMConfig
 from hyperliquid_agent.monitor import AccountState, Position
 
 if TYPE_CHECKING:
     from hyperliquid_agent.governance.plan_card import StrategyPlanCard
+
+
+# Pydantic models for structured outputs
+class TradeActionSchema(BaseModel):
+    """Schema for a single trading action using structured outputs."""
+
+    action_type: Literal["buy", "sell", "hold", "close", "transfer"]
+    coin: str
+    market_type: Literal["spot", "perp"] = "perp"
+    size: float | None = None
+    price: float | None = None
+    reasoning: str = ""
+
+
+class DecisionSchema(BaseModel):
+    """Schema for LLM trading decision using structured outputs."""
+
+    actions: list[TradeActionSchema] = Field(default_factory=list)
+    selected_strategy: str | None = None
+    target_allocation: dict[str, float] | None = None
+    error: bool = False
+    error_reason: str | None = None
+
+
+class GovernanceDecisionSchema(BaseModel):
+    """Schema for governance-aware LLM decision using structured outputs."""
+
+    maintain_plan: bool = True
+    reasoning: str = ""
+    micro_adjustments: list[TradeActionSchema] | None = None
+    proposed_plan: dict | None = None  # Will be parsed separately
 
 
 @dataclass
@@ -218,7 +250,9 @@ class DecisionEngine:
         """
         try:
             prompt = self.prompt_template.format(account_state)
-            response, input_tokens, output_tokens, cost_usd = self._query_llm(prompt)
+            # Use structured outputs for OpenAI, fallback to manual parsing for Anthropic
+            schema = DecisionSchema if self.llm_config.provider == "openai" else None
+            response, input_tokens, output_tokens, cost_usd = self._query_llm(prompt, schema=schema)
             actions, selected_strategy, target_allocation = self._parse_response(response)
 
             # Update running totals
@@ -302,11 +336,14 @@ class DecisionEngine:
 
         return input_cost + output_cost
 
-    def _query_llm(self, prompt: str) -> tuple[str, int, int, float]:
+    def _query_llm(
+        self, prompt: str, schema: type[BaseModel] | None = None
+    ) -> tuple[str, int, int, float]:
         """Send prompt to LLM and get response with usage tracking.
 
         Args:
             prompt: Formatted prompt string
+            schema: Optional Pydantic model for structured outputs (OpenAI only)
 
         Returns:
             Tuple of (response text, input tokens, output tokens, cost in USD)
@@ -317,7 +354,8 @@ class DecisionEngine:
         self.logger.debug(
             f"Making LLM call: provider={self.llm_config.provider}, "
             f"model={self.llm_config.model}, "
-            f"max_tokens={self.llm_config.max_tokens}"
+            f"max_tokens={self.llm_config.max_tokens}, "
+            f"structured_output={schema is not None}"
         )
 
         if self.llm_config.provider == "openai":
@@ -325,28 +363,136 @@ class DecisionEngine:
 
             client: OpenAI = self.client  # type: ignore
 
-            # GPT-5 models use the responses API
+            # GPT-5 models use the responses API with structured outputs
             if self.llm_config.model.startswith("gpt-5"):
-                self.logger.debug("gpt-5 model selected, using responses api")
-                response = client.responses.create(
-                    model=self.llm_config.model,
-                    input=prompt,
-                    max_output_tokens=self.llm_config.max_tokens,
+                self.logger.debug(
+                    f"GPT-5 structured output request:\n"
+                    f"  Model: {self.llm_config.model}\n"
+                    f"  Max tokens: {self.llm_config.max_tokens}\n"
+                    f"  Schema: {schema.__name__ if schema else 'None'}\n"
+                    f"  Prompt length: {len(prompt)} chars\n"
+                    f"  Prompt preview: {prompt[:300]}..."
                 )
-                result = response.output_text or ""
-                # GPT-5 API may have different usage tracking
+
+                if schema is not None:
+                    # Use structured outputs with responses.parse()
+                    response = client.responses.parse(
+                        model=self.llm_config.model,
+                        input=[{"role": "user", "content": prompt}],
+                        max_output_tokens=self.llm_config.max_tokens,
+                        text_format=schema,
+                    )
+
+                    # Log comprehensive response details for debugging
+                    self.logger.debug(
+                        f"GPT-5 raw response received:\n"
+                        f"  Output parsed: {response.output_parsed is not None}\n"
+                        f"  Input tokens: {getattr(response, 'input_tokens', 'N/A')}\n"
+                        f"  Output tokens: {getattr(response, 'output_tokens', 'N/A')}\n"
+                        f"  Response type: {type(response)}\n"
+                        f"  Response attributes: {dir(response)}"
+                    )
+
+                    # Convert parsed output to JSON string, with fallback to raw response
+                    if response.output_parsed:
+                        result = response.output_parsed.model_dump_json()
+                        self.logger.debug(
+                            f"GPT-5 parsed result ({len(result)} chars): {result[:300]}..."
+                        )
+                    else:
+                        # output_parsed is None - try to get raw response for troubleshooting
+                        self.logger.error(
+                            f"GPT-5 output_parsed is None in decision engine! Attempting to extract raw response.\n"
+                            f"  Response object: {response}\n"
+                            f"  Available attributes: {[attr for attr in dir(response) if not attr.startswith('_')]}"
+                        )
+
+                        # Try to get any text content from the response
+                        raw_content: str | None = None
+                        if hasattr(response, "output_text"):
+                            raw_text = response.output_text
+                            raw_content = str(raw_text) if raw_text is not None else None
+                            self.logger.error(
+                                f"Found output_text: {raw_content[:500] if raw_content else 'None'}"
+                            )
+                        elif hasattr(response, "content"):
+                            raw_text = response.content
+                            raw_content = str(raw_text) if raw_text is not None else None
+                            self.logger.error(
+                                f"Found content: {raw_content[:500] if raw_content else 'None'}"
+                            )
+                        elif hasattr(response, "text"):
+                            raw_text = response.text
+                            raw_content = str(raw_text) if raw_text is not None else None
+                            self.logger.error(
+                                f"Found text: {raw_content[:500] if raw_content else 'None'}"
+                            )
+
+                        # Log the full response object as JSON if possible
+                        try:
+                            import json as json_lib
+
+                            response_dict = (
+                                response.model_dump()
+                                if hasattr(response, "model_dump")
+                                else str(response)
+                            )
+                            self.logger.error(
+                                f"Full response object: {json_lib.dumps(response_dict, indent=2, default=str)[:1000]}"
+                            )
+                        except Exception as e:
+                            self.logger.error(f"Could not serialize response: {e}")
+
+                        # Use raw content as fallback if available, otherwise empty string
+                        result = raw_content if raw_content else ""
+
+                        if result:
+                            self.logger.warning(
+                                f"Using raw unparsed content as fallback ({len(result)} chars): {result[:300]}..."
+                            )
+                        else:
+                            self.logger.error(
+                                "No content available in response - will trigger empty response error"
+                            )
+                else:
+                    # Fallback to unstructured output
+                    response = client.responses.create(
+                        model=self.llm_config.model,
+                        input=[{"role": "user", "content": prompt}],
+                        max_output_tokens=self.llm_config.max_tokens,
+                        text={"format": {"type": "text"}},
+                    )
+                    result = response.output_text or ""
+
+                # Extract usage info
                 input_tokens = getattr(response, "input_tokens", 0)
                 output_tokens = getattr(response, "output_tokens", 0)
             else:
-                # GPT-4 and earlier models use completions API
-                self.logger.debug("non gpt-5 model selected, using completions api")
-                response = client.chat.completions.create(
-                    model=self.llm_config.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self.llm_config.temperature,
-                    max_tokens=self.llm_config.max_tokens,
-                )
-                result = response.choices[0].message.content or ""
+                # GPT-4 and earlier models use chat completions API
+                self.logger.debug("non gpt-5 model selected, using chat completions API")
+
+                if schema is not None:
+                    # Use structured outputs with chat.completions.parse()
+                    response = client.beta.chat.completions.parse(
+                        model=self.llm_config.model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=self.llm_config.temperature,
+                        max_tokens=self.llm_config.max_tokens,
+                        response_format=schema,
+                    )
+                    # Convert parsed output back to JSON string for compatibility
+                    parsed = response.choices[0].message.parsed
+                    result = parsed.model_dump_json() if parsed else ""
+                else:
+                    # Fallback to unstructured output
+                    response = client.chat.completions.create(
+                        model=self.llm_config.model,
+                        messages=[{"role": "user", "content": prompt}],
+                        temperature=self.llm_config.temperature,
+                        max_tokens=self.llm_config.max_tokens,
+                    )
+                    result = response.choices[0].message.content or ""
+
                 input_tokens = response.usage.prompt_tokens if response.usage else 0
                 output_tokens = response.usage.completion_tokens if response.usage else 0
 
@@ -528,7 +674,9 @@ class DecisionEngine:
             prompt = self._format_governance_prompt(
                 account_state, active_plan, current_regime, can_review
             )
-            response, input_tokens, output_tokens, cost_usd = self._query_llm(prompt)
+            # Use structured outputs for OpenAI, fallback to manual parsing for Anthropic
+            schema = GovernanceDecisionSchema if self.llm_config.provider == "openai" else None
+            response, input_tokens, output_tokens, cost_usd = self._query_llm(prompt, schema=schema)
             maintain_plan, proposed_plan, micro_adjustments, reasoning = (
                 self._parse_governance_response(response)
             )

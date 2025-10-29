@@ -1,27 +1,56 @@
-"""Regime detection and classification data models."""
+"""Regime detection and classification using LLM-based analysis."""
 
 import logging
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
+
+if TYPE_CHECKING:
+    from hyperliquid_agent.config import LLMConfig
+
+
+@dataclass
+class PriceContext:
+    """Price action context for regime classification.
+
+    Multi-timeframe price returns and market structure indicators.
+    These are the PRIMARY signals for LLM-based regime detection.
+    """
+
+    # Current price info
+    current_price: float
+
+    # Multi-timeframe returns (PRIMARY SIGNALS)
+    return_1d: float  # 1-day return %
+    return_7d: float  # 7-day return %
+    return_30d: float  # 30-day return %
+    return_90d: float  # 90-day return %
+
+    # SMA distances (supporting signals)
+    sma20_distance: float  # % distance from 20-SMA
+    sma50_distance: float  # % distance from 50-SMA
+
+    # Market structure (supporting signals)
+    higher_highs: bool  # Making higher highs?
+    higher_lows: bool  # Making higher lows?
 
 
 @dataclass
 class RegimeSignals:
     """Market signals used for regime classification.
 
-    Core signals are from Hyperliquid API (MVP).
-    Enhanced signals are optional for future versions with external data.
+    Technical indicators serve as CONFIRMING signals for the LLM.
+    Price context (returns, structure) are the PRIMARY signals.
     """
 
-    # Core signals (from Hyperliquid API - MVP)
-    # Trend indicators
+    # Price context (PRIMARY - added for LLM approach)
+    price_context: PriceContext
+
+    # Technical indicators (CONFIRMING)
     price_sma_20: float
     price_sma_50: float
     adx: float  # Average Directional Index
-
-    # Volatility
     realized_vol_24h: float
 
     # Funding/Carry
@@ -31,21 +60,24 @@ class RegimeSignals:
     bid_ask_spread_bps: float
     order_book_depth: float
 
-    # Enhanced signals (optional - for future versions)
-    cross_asset_correlation: float | None = None  # BTC/SPX, BTC/ETH correlation
-    macro_risk_score: float | None = None  # Composite risk-on/risk-off score
-    sentiment_index: float | None = None  # Crypto Fear & Greed or similar
-    volatility_regime: str | None = None  # "low", "medium", "high" from VIX-like metric
+    # Enhanced signals (optional)
+    cross_asset_correlation: float | None = None
+    macro_risk_score: float | None = None
+    sentiment_index: float | None = None
+    volatility_regime: str | None = None
 
 
 @dataclass
 class RegimeClassification:
     """Classification of current market regime."""
 
-    regime: Literal["trending", "range-bound", "carry-friendly", "event-risk", "unknown"]
+    regime: Literal[
+        "trending-bull", "trending-bear", "range-bound", "carry-friendly", "event-risk", "unknown"
+    ]
     confidence: float  # 0.0 to 1.0
     timestamp: datetime
     signals: RegimeSignals
+    reasoning: str = ""  # LLM reasoning for classification
 
 
 class ExternalDataProvider(Protocol):
@@ -94,6 +126,12 @@ class RegimeDetectorConfig:
     event_lock_window_hours_after: int = 1
     use_enhanced_signals: bool = False  # Enable external data sources
 
+    # Optional LLM override for regime classification
+    # If not provided, will use main application LLM config
+    llm_provider: str | None = None
+    llm_model: str | None = None
+    llm_temperature: float | None = None
+
 
 class RegimeDetector:
     """Detects and classifies market regimes with hysteresis.
@@ -111,6 +149,7 @@ class RegimeDetector:
     def __init__(
         self,
         config: RegimeDetectorConfig,
+        llm_config: "LLMConfig",  # Main application LLM config
         external_data_provider: ExternalDataProvider | None = None,
         logger: logging.Logger | None = None,
     ):
@@ -118,107 +157,74 @@ class RegimeDetector:
 
         Args:
             config: Configuration for regime detection
+            llm_config: Main application LLM config (used unless overridden)
             external_data_provider: Optional external data source for enhanced signals
             logger: Optional logger instance for governance event logging
         """
         self.config = config
+        self.llm_config = llm_config
         self.current_regime: str = "unknown"
         self.regime_history: deque = deque(maxlen=config.confirmation_cycles_required)
         self.macro_calendar: list[dict] = []
         self.external_data = external_data_provider
         self.logger = logger or logging.getLogger(__name__)
 
-    def classify_regime(self, signals: RegimeSignals) -> RegimeClassification:
-        """Classify current market regime based on signals.
+        # Initialize centralized LLM client
+        self.llm_client = self._init_llm_client()
 
-        MVP: Uses only Hyperliquid-native signals (price, funding, volatility)
-        Enhanced: Incorporates external data when available to improve classification accuracy
+    def _init_llm_client(self):
+        """Initialize centralized LLM client for regime classification.
 
-        Args:
-            signals: Market signals for regime classification
+        Uses main application LLM config by default, with optional overrides
+        from regime detector config for using a different/cheaper model.
 
         Returns:
-            RegimeClassification with regime type, confidence, and timestamp
+            Initialized LLMClient from centralized utility
         """
-        base_confidence = 1.0
+        from hyperliquid_agent.config import LLMConfig
+        from hyperliquid_agent.llm_client import create_llm_client
 
-        # Enhanced: Adjust confidence based on external signals if available
-        if self.config.use_enhanced_signals and self.external_data:
-            base_confidence = self._adjust_confidence_with_external_data(signals)
+        # Create effective config (main config + regime detector overrides)
+        provider = self.config.llm_provider or self.llm_config.provider
+        # Ensure provider is a valid Literal type
+        if provider not in ("openai", "anthropic"):
+            provider = "anthropic"  # Default fallback
 
-        # Trending: Strong directional movement
-        if (
-            signals.adx > 25
-            and abs(signals.price_sma_20 - signals.price_sma_50) / signals.price_sma_50 > 0.02
-        ):
-            confidence = min(signals.adx / 40, 1.0) * base_confidence
-            classification = RegimeClassification(
-                regime="trending",
-                confidence=confidence,
-                timestamp=datetime.now(),
-                signals=signals,
-            )
-            self.logger.debug(
-                f"Regime classified: trending (confidence: {confidence:.2f})",
-                extra={
-                    "governance_event": "regime_classified",
-                    "regime": "trending",
-                    "confidence": confidence,
-                    "adx": signals.adx,
-                    "sma_20": signals.price_sma_20,
-                    "sma_50": signals.price_sma_50,
-                    "realized_vol_24h": signals.realized_vol_24h,
-                },
-            )
-            return classification
+        effective_config = LLMConfig(
+            provider=provider,  # type: ignore[arg-type]
+            model=self.config.llm_model or self.llm_config.model,
+            api_key=self.llm_config.api_key,  # Always use main API key
+            temperature=self.config.llm_temperature
+            if self.config.llm_temperature is not None
+            else 0.0,  # Default to 0.0 for deterministic regime classification
+            max_tokens=2000,  # Regime classification is concise
+        )
 
-        # Range-bound: Low volatility, tight range
-        if signals.realized_vol_24h < 0.3 and signals.adx < 20:
-            confidence = 0.8 * base_confidence
-            classification = RegimeClassification(
-                regime="range-bound",
-                confidence=confidence,
-                timestamp=datetime.now(),
-                signals=signals,
-            )
-            self.logger.debug(
-                f"Regime classified: range-bound (confidence: {confidence:.2f})",
-                extra={
-                    "governance_event": "regime_classified",
-                    "regime": "range-bound",
-                    "confidence": confidence,
-                    "adx": signals.adx,
-                    "realized_vol_24h": signals.realized_vol_24h,
-                },
-            )
-            return classification
+        return create_llm_client(effective_config, logger=self.logger)
 
-        # Carry-friendly: Positive funding, low volatility
-        if signals.avg_funding_rate > 0.01 and signals.realized_vol_24h < 0.4:
-            confidence = 0.75 * base_confidence
-            classification = RegimeClassification(
-                regime="carry-friendly",
-                confidence=confidence,
-                timestamp=datetime.now(),
-                signals=signals,
-            )
-            self.logger.debug(
-                f"Regime classified: carry-friendly (confidence: {confidence:.2f})",
-                extra={
-                    "governance_event": "regime_classified",
-                    "regime": "carry-friendly",
-                    "confidence": confidence,
-                    "avg_funding_rate": signals.avg_funding_rate,
-                    "realized_vol_24h": signals.realized_vol_24h,
-                },
-            )
-            return classification
+    def classify_regime(self, signals: RegimeSignals) -> RegimeClassification:
+        """Classify current market regime using LLM-based analysis.
 
-        # Event-risk: Near scheduled macro event
+        Uses multi-timeframe price returns as primary signals and technical
+        indicators as confirming signals. The LLM naturally handles:
+        - Direction awareness (bull vs bear trends)
+        - "Steady grind" bull markets that boolean logic missed
+        - Ambiguous scenarios without strict thresholds
+
+        Args:
+            signals: Market signals including price context
+
+        Returns:
+            RegimeClassification with regime type, confidence, reasoning, and timestamp
+        """
+        from hyperliquid_agent.governance.llm_regime_classifier import classify_regime_with_llm
+
+        # Check for event-risk first (overrides LLM classification)
         if self._is_near_macro_event():
             classification = RegimeClassification(
                 regime="event-risk",
                 confidence=1.0,
+                reasoning="Near scheduled macro event",
                 timestamp=datetime.now(),
                 signals=signals,
             )
@@ -233,58 +239,12 @@ class RegimeDetector:
             )
             return classification
 
-        classification = RegimeClassification(
-            regime="unknown",
-            confidence=0.5,
-            timestamp=datetime.now(),
+        # Use LLM for classification (centralized client handles all details)
+        return classify_regime_with_llm(
             signals=signals,
+            llm_client=self.llm_client,
+            logger=self.logger,
         )
-        self.logger.debug(
-            "Regime classified: unknown (no clear regime detected)",
-            extra={
-                "governance_event": "regime_classified",
-                "regime": "unknown",
-                "confidence": 0.5,
-                "adx": signals.adx,
-                "realized_vol_24h": signals.realized_vol_24h,
-                "avg_funding_rate": signals.avg_funding_rate,
-            },
-        )
-        return classification
-
-    def _adjust_confidence_with_external_data(self, signals: RegimeSignals) -> float:
-        """Adjust regime classification confidence using external data (enhanced version).
-
-        Examples:
-        - High cross-asset correlation during trending regime → increase confidence
-        - Risk-off macro environment during carry regime → decrease confidence
-        - Extreme sentiment during range-bound → decrease confidence
-
-        Args:
-            signals: Market signals including optional enhanced signals
-
-        Returns:
-            Confidence adjustment multiplier (capped at 1.2 for 20% boost)
-        """
-        if not self.external_data:
-            return 1.0
-
-        adjustment = 1.0
-
-        # Example: Cross-asset correlation confirmation
-        if (
-            signals.cross_asset_correlation is not None
-            and abs(signals.cross_asset_correlation) > 0.7
-        ):
-            adjustment *= 1.1  # Strong correlation increases confidence
-
-        # Example: Macro risk alignment
-        if signals.macro_risk_score is not None:
-            # Risk-on environment supports trending/carry, risk-off supports range/defensive
-            # Implementation would check alignment with current regime classification
-            pass
-
-        return min(adjustment, 1.2)  # Cap at 20% confidence boost
 
     def update_and_confirm(self, classification: RegimeClassification) -> tuple[bool, str]:
         """Update regime history and check if regime change is confirmed.
