@@ -254,6 +254,11 @@ def backtest_command(
         "-c",
         help="Path to configuration file",
     ),
+    clear_cache: bool = typer.Option(
+        False,
+        "--clear-cache",
+        help="Clear cached historical data before running backtest",
+    ),
 ) -> None:
     """Run regime detection backtest on historical Hyperliquid data.
 
@@ -267,9 +272,22 @@ def backtest_command(
 
       # Run backtest for specific assets
       degen backtest --start-date 2024-01-01 --end-date 2024-03-31 --assets BTC,ETH,SOL
+
+      # Clear cache before running (useful if data seems stale or corrupt)
+      degen backtest --start-date 2024-06-01 --end-date 2024-07-01 --clear-cache
     """
     # Load config first to get log level
     cfg = load_config(config)
+
+    # Clear cache if requested
+    if clear_cache:
+        cache_db_path = cfg.signals.db_path if cfg.signals else "state/signal_cache.db"
+        cache_path = Path(cache_db_path)
+        if cache_path.exists():
+            cache_path.unlink()
+            print(f"✓ Cache cleared: {cache_path}")
+        else:
+            print(f"ℹ No cache found at: {cache_path}")
 
     # Setup logging with level from config
     log_level = getattr(logging, cfg.agent.log_level.upper(), logging.INFO)
