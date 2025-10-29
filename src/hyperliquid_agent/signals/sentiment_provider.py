@@ -110,66 +110,66 @@ class SentimentProvider(DataProvider):
     async def _fetch_fear_greed_impl(self) -> ProviderResponse[float]:
         """Implementation of fear & greed index fetching.
 
-        This is a placeholder implementation that returns neutral sentiment (0.0).
-        In production, this would integrate with the Alternative.me Fear & Greed Index API.
-
+        Integrates with the Alternative.me Fear & Greed Index API.
         The API is free and doesn't require authentication:
         https://api.alternative.me/fng/
 
         Returns:
             ProviderResponse with normalized sentiment score
+
+        Implements requirements 2.1, 2.2, 2.3, 2.4
         """
-        # Default to neutral sentiment as fallback (requirement 7.5)
+        import json
+        import urllib.error
+        import urllib.request
+
+        # Default to neutral sentiment as fallback (requirement 2.3)
         normalized_score = 0.0
+        confidence = 0.3  # Degraded confidence for fallback
 
-        # TODO: Integrate with actual Fear & Greed Index API
-        # For now, return neutral value as placeholder
-        #
-        # Example integration code (when ready to enable):
-        # import urllib.request
-        # import json
-        #
-        # try:
-        #     url = f"{self.fear_greed_api_url}?limit=1"
-        #     req = urllib.request.Request(url)
-        #
-        #     with urllib.request.urlopen(req, timeout=self.timeout_seconds) as response:
-        #         data = json.loads(response.read())
-        #
-        #         if data.get('data') and len(data['data']) > 0:
-        #             # Extract the fear & greed value (0-100)
-        #             raw_value = int(data['data'][0]['value'])
-        #
-        #             # Normalize to -1.0 to +1.0 range (requirement 7.2)
-        #             # 0 (extreme fear) -> -1.0
-        #             # 50 (neutral) -> 0.0
-        #             # 100 (extreme greed) -> +1.0
-        #             normalized_score = (raw_value - 50) / 50.0
-        #
-        #             # Clamp to valid range
-        #             normalized_score = max(-1.0, min(1.0, normalized_score))
-        #
-        #             logger.info(
-        #                 f"Fear & Greed Index: {raw_value}/100 "
-        #                 f"(normalized: {normalized_score:.2f})"
-        #             )
-        #         else:
-        #             logger.warning("No fear & greed data in API response")
-        #
-        # except Exception as e:
-        #     logger.warning(f"Failed to fetch fear & greed index: {e}")
-        #     # Fall through to return neutral value
+        try:
+            url = f"{self.fear_greed_api_url}?limit=1"
+            req = urllib.request.Request(url)
 
-        logger.debug(
-            "Placeholder implementation - returning neutral sentiment (0.0). "
-            "Enable API integration to fetch real Fear & Greed Index."
-        )
+            with urllib.request.urlopen(req, timeout=self.timeout_seconds) as response:
+                data = json.loads(response.read())
+
+                if data.get("data") and len(data["data"]) > 0:
+                    # Extract the fear & greed value (0-100)
+                    raw_value = int(data["data"][0]["value"])
+
+                    # Normalize to -1.0 to +1.0 range (requirement 2.2)
+                    # 0 (extreme fear) -> -1.0
+                    # 50 (neutral) -> 0.0
+                    # 100 (extreme greed) -> +1.0
+                    normalized_score = (raw_value - 50) / 50.0
+
+                    # Clamp to valid range
+                    normalized_score = max(-1.0, min(1.0, normalized_score))
+
+                    logger.info(
+                        f"Fear & Greed Index: {raw_value}/100 (normalized: {normalized_score:.2f})"
+                    )
+
+                    # Full confidence for successful fetch
+                    confidence = 1.0
+                else:
+                    logger.warning("No fear & greed data in API response")
+
+        except urllib.error.URLError as e:
+            logger.warning(f"Network error fetching fear & greed index: {e}")
+        except json.JSONDecodeError as e:
+            logger.warning(f"Invalid JSON response from fear & greed API: {e}")
+        except (KeyError, ValueError, IndexError) as e:
+            logger.warning(f"Missing or invalid data fields in fear & greed response: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to fetch fear & greed index: {e}")
 
         return ProviderResponse(
             data=normalized_score,
             timestamp=datetime.now(),
             source=self.provider_name,
-            confidence=1.0,  # High confidence for neutral fallback
+            confidence=confidence,
             is_cached=False,
             cache_age_seconds=None,
         )
