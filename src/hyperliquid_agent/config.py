@@ -49,7 +49,14 @@ class HyperliquidProviderConfig:
 
 @dataclass
 class OnChainConfig:
-    """On-chain data provider configuration."""
+    """On-chain data provider configuration.
+
+    Providers:
+    - token_unlocks: Token unlock schedule data (requires API key)
+    - nansen: On-chain analytics (requires API key)
+    - dune: Blockchain query data (requires API key)
+    - None: Disabled (no on-chain data collection)
+    """
 
     enabled: bool = True
     provider: str | None = None  # e.g., "token_unlocks", "nansen", "dune"
@@ -67,7 +74,13 @@ class OnChainConfig:
 
 @dataclass
 class ExternalMarketConfig:
-    """External market data provider configuration."""
+    """External market data provider configuration.
+
+    Providers:
+    - CoinGecko: Crypto price data (FREE tier available, API key optional for higher limits)
+    - yfinance: Traditional market data via Yahoo Finance (FREE - no API key required)
+    - TradingView: Advanced charting data (requires API key)
+    """
 
     enabled: bool = True
     use_coingecko: bool = True
@@ -80,7 +93,12 @@ class ExternalMarketConfig:
 
 @dataclass
 class SentimentConfig:
-    """Sentiment data provider configuration."""
+    """Sentiment data provider configuration.
+
+    Providers:
+    - Fear & Greed Index: Alternative.me API (FREE - no API key required)
+    - Social Sentiment: Twitter/X sentiment analysis (requires API key)
+    """
 
     enabled: bool = True
     use_fear_greed_index: bool = True
@@ -235,6 +253,7 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
             fast_loop_interval_seconds=gov_data.get("fast_loop_interval_seconds", 10),
             medium_loop_interval_minutes=gov_data.get("medium_loop_interval_minutes", 30),
             slow_loop_interval_hours=gov_data.get("slow_loop_interval_hours", 24),
+            emergency_reduction_pct=gov_data.get("emergency_reduction_pct", 100.0),
         )
 
     # Parse Signal config (optional)
@@ -263,9 +282,14 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
             if api_key == "":
                 api_key = None
 
+            # Get provider, treating empty string as None
+            provider = onchain_data.get("provider")
+            if provider == "":
+                provider = None
+
             onchain_config = OnChainConfig(
                 enabled=onchain_data.get("enabled", True),
-                provider=onchain_data.get("provider", "placeholder"),
+                provider=provider,
                 api_key=api_key,
                 cache_ttl_seconds=onchain_data.get("cache_ttl_seconds", 3600),
             )
