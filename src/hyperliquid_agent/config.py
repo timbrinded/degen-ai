@@ -64,6 +64,8 @@ class ExternalMarketConfig:
     enabled: bool = True
     use_coingecko: bool = True
     coingecko_api_key: str | None = None
+    use_yfinance: bool = True
+    jblanked_api_key: str | None = None
     use_tradingview: bool = False
     cache_ttl_seconds: int = 900
 
@@ -272,10 +274,19 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
             if coingecko_api_key == "":
                 coingecko_api_key = None
 
+            jblanked_api_key = ext_data.get("jblanked_api_key") or os.environ.get(
+                "JBLANKED_API_KEY"
+            )
+            # Empty string should be treated as None
+            if jblanked_api_key == "":
+                jblanked_api_key = None
+
             external_market_config = ExternalMarketConfig(
                 enabled=ext_data.get("enabled", True),
                 use_coingecko=ext_data.get("use_coingecko", True),
                 coingecko_api_key=coingecko_api_key,
+                use_yfinance=ext_data.get("use_yfinance", True),
+                jblanked_api_key=jblanked_api_key,
                 use_tradingview=ext_data.get("use_tradingview", False),
                 cache_ttl_seconds=ext_data.get("cache_ttl_seconds", 900),
             )

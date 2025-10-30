@@ -1,7 +1,9 @@
 """External market data provider for cross-asset prices and macro calendar."""
 
+import json
 import logging
 import os
+import urllib.request
 from datetime import datetime, timedelta
 
 from hyperliquid_agent.signals.cache import SQLiteCacheLayer
@@ -23,16 +25,26 @@ class ExternalMarketProvider(DataProvider):
 
     CACHE_TTL_SECONDS = 900  # 15 minutes as per requirement and design
 
-    def __init__(self, cache: SQLiteCacheLayer, coingecko_api_key: str | None = None):
+    def __init__(
+        self,
+        cache: SQLiteCacheLayer,
+        coingecko_api_key: str | None = None,
+        use_yfinance: bool = True,
+        jblanked_api_key: str | None = None,
+    ):
         """Initialize external market data provider.
 
         Args:
             cache: Cache layer for storing fetched data
             coingecko_api_key: Optional API key for CoinGecko Pro API
+            use_yfinance: Whether to use yfinance for SPX data
+            jblanked_api_key: Optional API key for JBlanked macro calendar API
         """
         super().__init__()
         self.cache = cache
         self.coingecko_api_key = coingecko_api_key or os.environ.get("COINGECKO_API_KEY")
+        self.use_yfinance = use_yfinance
+        self.jblanked_api_key = jblanked_api_key or os.environ.get("JBLANKED_API_KEY")
 
         # Provider configuration
         self.provider_name = "external_market"
@@ -120,10 +132,7 @@ class ExternalMarketProvider(DataProvider):
     ) -> ProviderResponse[dict[str, list[float]]]:
         """Implementation of asset price fetching.
 
-        This is a placeholder implementation that returns empty price data.
-        In production, this would integrate with:
-        - CoinGecko API for BTC and ETH prices
-        - Yahoo Finance or similar for SPX index data
+        Integrates with CoinGecko API for BTC and ETH prices, and yfinance for SPX data.
 
         Args:
             assets: List of asset symbols
@@ -132,70 +141,72 @@ class ExternalMarketProvider(DataProvider):
         Returns:
             ProviderResponse with price data
         """
-        # Calculate time window for API requests (used in future integration)
-        now = datetime.now()
-        _start_date = now - timedelta(days=days_back)  # Will be used when API is integrated
-
         price_data: dict[str, list[float]] = {}
+        successful_fetches = 0
+        total_assets = len(assets)
 
-        # TODO: Integrate with actual external market data APIs
-        # For now, return empty dict as placeholder
-        # In production, this would make HTTP requests to CoinGecko and other services
-        #
-        # Example integration pattern for CoinGecko:
-        # 1. Map asset symbols to CoinGecko IDs (BTC -> bitcoin, ETH -> ethereum)
-        # 2. Make HTTP request to /coins/{id}/market_chart endpoint
-        # 3. Parse JSON response and extract daily closing prices
-        # 4. For SPX, use Yahoo Finance or similar service
-        #
-        # Example code (when API is available):
-        # import urllib.request
-        # import json
-        #
-        # coingecko_ids = {
-        #     'BTC': 'bitcoin',
-        #     'ETH': 'ethereum'
-        # }
-        #
-        # for asset in assets:
-        #     if asset in coingecko_ids:
-        #         coin_id = coingecko_ids[asset]
-        #         url = f"{self.coingecko_base_url}/coins/{coin_id}/market_chart"
-        #         params = f"?vs_currency=usd&days={days_back}&interval=daily"
-        #         headers = {}
-        #         if self.coingecko_api_key:
-        #             headers["x-cg-pro-api-key"] = self.coingecko_api_key
-        #
-        #         req = urllib.request.Request(url + params, headers=headers)
-        #         with urllib.request.urlopen(req, timeout=self.timeout_seconds) as response:
-        #             data = json.loads(response.read())
-        #             prices = [price[1] for price in data.get('prices', [])]
-        #             price_data[asset] = prices
-        #
-        #     elif asset == 'SPX':
-        #         # Fetch SPX data from Yahoo Finance or similar
-        #         # price_data[asset] = self._fetch_spx_prices(days_back)
-        #         pass
+        # Map asset symbols to CoinGecko IDs
+        coingecko_ids = {"BTC": "bitcoin", "ETH": "ethereum"}
 
-        # Initialize empty lists for requested assets
         for asset in assets:
-            price_data[asset] = []
+            if asset in coingecko_ids:
+                # Fetch from CoinGecko
+                try:
+                    coin_id = coingecko_ids[asset]
+                    url = f"{self.coingecko_base_url}/coins/{coin_id}/market_chart"
+                    params = f"?vs_currency=usd&days={days_back}&interval=daily"
 
-        if self.coingecko_api_key:
-            logger.debug(
-                f"API key configured but placeholder implementation - "
-                f"would fetch prices for {assets} over {days_back} days"
-            )
-        else:
-            logger.debug(
-                "No API key configured for external market provider, returning empty prices"
-            )
+                    headers = {}
+                    if self.coingecko_api_key:
+                        headers["x-cg-pro-api-key"] = self.coingecko_api_key
+
+                    req = urllib.request.Request(url + params, headers=headers)
+
+                    with urllib.request.urlopen(req, timeout=self.timeout_seconds) as response:
+                        data = json.loads(response.read())
+                        # Extract closing prices from response
+                        prices = [point[1] for point in data.get("prices", [])]
+                        price_data[asset] = prices
+                        successful_fetches += 1
+                        logger.debug(f"Fetched {len(prices)} prices for {asset} from CoinGecko")
+
+                except Exception as e:
+                    logger.warning(f"Failed to fetch {asset} prices from CoinGecko: {e}")
+                    price_data[asset] = []
+
+            elif asset == "SPX" and self.use_yfinance:
+                # Fetch SPX data from Yahoo Finance using yfinance
+                try:
+                    import yfinance as yf
+
+                    spx = yf.Ticker("^GSPC")
+                    hist = spx.history(period=f"{days_back}d")
+                    prices = hist["Close"].tolist()
+                    price_data[asset] = prices
+                    successful_fetches += 1
+                    logger.debug(f"Fetched {len(prices)} prices for SPX from yfinance")
+
+                except Exception as e:
+                    logger.warning(f"Failed to fetch SPX data from yfinance: {e}")
+                    price_data[asset] = []
+
+            else:
+                # Unknown asset or SPX without yfinance
+                logger.debug(f"No data source configured for asset: {asset}")
+                price_data[asset] = []
+
+        # Calculate confidence based on successful fetches
+        confidence = successful_fetches / total_assets if total_assets > 0 else 0.0
+
+        # Adjust confidence for partial data
+        if confidence < 1.0 and confidence > 0.0:
+            confidence = 0.7  # Partial data gets 0.7 confidence
 
         return ProviderResponse(
             data=price_data,
             timestamp=datetime.now(),
             source=self.provider_name,
-            confidence=1.0 if self.coingecko_api_key else 0.5,  # Lower confidence without API key
+            confidence=confidence,
             is_cached=False,
             cache_age_seconds=None,
         )
@@ -247,12 +258,8 @@ class ExternalMarketProvider(DataProvider):
     ) -> ProviderResponse[list[MacroEvent]]:
         """Implementation of macro calendar fetching.
 
-        This is a placeholder implementation that returns empty event list.
-        In production, this would integrate with services like:
-        - Trading Economics API
-        - Forex Factory
-        - Investing.com Economic Calendar
-        - Federal Reserve Economic Data (FRED)
+        Fetches economic calendar events from Forex Factory via JBlanked API.
+        Falls back to local JSON file if API is unavailable.
 
         Args:
             days_ahead: Days ahead to look for events
@@ -260,78 +267,121 @@ class ExternalMarketProvider(DataProvider):
         Returns:
             ProviderResponse with macro events
         """
-        # Calculate time window for filtering (used in future API integration)
         now = datetime.now()
         end_date = now + timedelta(days=days_ahead)
 
         events: list[MacroEvent] = []
 
-        # TODO: Integrate with actual macro calendar API
-        # For now, return empty list as placeholder
-        # In production, this would make HTTP requests to economic calendar services
-        #
-        # Example integration pattern:
-        # 1. Make HTTP request to economic calendar API
-        # 2. Parse JSON/XML response
-        # 3. Filter for high-impact events only (FOMC, CPI, NFP, GDP, etc.)
-        # 4. Parse event timestamps and convert to UTC (requirement 9.3)
-        # 5. Filter for events within time window (requirement 9.4)
-        # 6. Create MacroEvent objects
-        #
-        # High-impact event categories to filter for:
-        # - FOMC: Federal Open Market Committee meetings
-        # - CPI: Consumer Price Index releases
-        # - NFP: Non-Farm Payrolls
-        # - GDP: Gross Domestic Product
-        # - Unemployment Rate
-        # - Interest Rate Decisions
-        # - Inflation Reports
-        #
-        # Example code (when API is available):
-        # import urllib.request
-        # import json
-        #
-        # url = "https://api.example.com/economic-calendar"
-        # params = f"?start_date={now.isoformat()}&end_date={end_date.isoformat()}"
-        # headers = {"Authorization": f"Bearer {self.api_key}"}
-        #
-        # req = urllib.request.Request(url + params, headers=headers)
-        # with urllib.request.urlopen(req, timeout=self.timeout_seconds) as response:
-        #     data = json.loads(response.read())
-        #
-        #     # Filter for high-impact events
-        #     high_impact_categories = ['FOMC', 'CPI', 'NFP', 'GDP', 'Interest Rate']
-        #
-        #     for event_data in data.get('events', []):
-        #         if event_data.get('impact') == 'high':
-        #             category = event_data.get('category', '')
-        #             if any(cat in category for cat in high_impact_categories):
-        #                 # Parse timestamp and convert to UTC
-        #                 event_time = datetime.fromisoformat(event_data['datetime'])
-        #                 if event_time.tzinfo is None:
-        #                     # Assume UTC if no timezone
-        #                     event_time = event_time.replace(tzinfo=timezone.utc)
-        #                 else:
-        #                     # Convert to UTC
-        #                     event_time = event_time.astimezone(timezone.utc)
-        #
-        #                 events.append(MacroEvent(
-        #                     name=event_data['name'],
-        #                     datetime=event_time,
-        #                     impact='high',
-        #                     category=category
-        #                 ))
+        # Try to fetch from JBlanked API (aggregates Forex Factory data)
+        if self.jblanked_api_key:
+            try:
+                # Fetch upcoming events from API
+                url = "https://www.jblanked.com/news/api/mql5/calendar/upcoming/"
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Api-Key {self.jblanked_api_key}",
+                }
 
-        logger.debug(
-            f"Placeholder implementation - would fetch macro events "
-            f"within {days_ahead} days (until {end_date.isoformat()})"
-        )
+                req = urllib.request.Request(url, headers=headers)
+
+                with urllib.request.urlopen(req, timeout=self.timeout_seconds) as response:
+                    data = json.loads(response.read())
+
+                    # Parse events from API response
+                    for event_data in data:
+                        try:
+                            # Parse event datetime (format: "2024.02.08 15:30:00")
+                            date_str = event_data.get("Date", "")
+                            event_time = datetime.strptime(date_str, "%Y.%m.%d %H:%M:%S")
+
+                            # Filter for events within time window
+                            if now <= event_time <= end_date:
+                                # Determine impact level based on currency and category
+                                currency = event_data.get("Currency", "")
+                                category = event_data.get("Category", "")
+
+                                # High impact: USD events, CPI, NFP, FOMC, GDP
+                                impact = "high"
+                                if currency != "USD":
+                                    impact = "medium"
+
+                                high_impact_keywords = [
+                                    "CPI",
+                                    "NFP",
+                                    "FOMC",
+                                    "GDP",
+                                    "Interest Rate",
+                                ]
+                                if not any(keyword in category for keyword in high_impact_keywords):
+                                    impact = "medium"
+
+                                events.append(
+                                    MacroEvent(
+                                        name=event_data.get("Name", "Unknown Event"),
+                                        datetime=event_time,
+                                        impact=impact,
+                                        category=category,
+                                    )
+                                )
+                        except (KeyError, ValueError) as e:
+                            logger.debug(f"Failed to parse macro event from API: {e}")
+                            continue
+
+                    logger.info(
+                        f"Fetched {len(events)} macro events from JBlanked API "
+                        f"within {days_ahead} days"
+                    )
+
+            except Exception as e:
+                logger.warning(f"Failed to fetch macro calendar from API: {e}")
+                # Fall through to file-based fallback
+
+        # Fallback to local JSON file if API unavailable or no API key
+        if not events:
+            calendar_file = os.path.join("data", "macro_calendar.json")
+
+            try:
+                if os.path.exists(calendar_file):
+                    with open(calendar_file) as f:
+                        data = json.load(f)
+
+                    # Parse events from file
+                    for event_data in data.get("events", []):
+                        try:
+                            # Parse event datetime
+                            event_time = datetime.fromisoformat(event_data["date"])
+
+                            # Filter for events within time window
+                            if now <= event_time <= end_date:
+                                events.append(
+                                    MacroEvent(
+                                        name=event_data["name"],
+                                        datetime=event_time,
+                                        impact=event_data.get("impact", "medium"),
+                                        category=event_data.get("category", ""),
+                                    )
+                                )
+                        except (KeyError, ValueError) as e:
+                            logger.debug(f"Failed to parse macro event from file: {e}")
+                            continue
+
+                    logger.debug(
+                        f"Loaded {len(events)} macro events from fallback file "
+                        f"within {days_ahead} days"
+                    )
+                else:
+                    logger.debug(
+                        f"Macro calendar file not found at {calendar_file}, returning empty list"
+                    )
+
+            except Exception as e:
+                logger.warning(f"Failed to load macro calendar from file: {e}")
 
         return ProviderResponse(
             data=events,
             timestamp=datetime.now(),
             source=self.provider_name,
-            confidence=1.0,  # High confidence even without API (empty list is valid)
+            confidence=1.0 if events else 0.5,  # Lower confidence if no events found
             is_cached=False,
             cache_age_seconds=None,
         )
