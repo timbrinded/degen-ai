@@ -7,7 +7,7 @@ import queue
 import threading
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from hyperliquid_agent.monitor import AccountState
 from hyperliquid_agent.signals.models import (
@@ -15,6 +15,9 @@ from hyperliquid_agent.signals.models import (
     MediumLoopSignals,
     SlowLoopSignals,
 )
+
+if TYPE_CHECKING:
+    from hyperliquid_agent.signals.orchestrator import SignalOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,9 @@ class SignalService:
         self.background_thread: threading.Thread | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.shutdown_event = threading.Event()
+        self.orchestrator: SignalOrchestrator | None = (
+            None  # Will be set when background thread starts
+        )
 
     def start(self):
         """Start background thread with async event loop."""
@@ -122,6 +128,7 @@ class SignalService:
         from hyperliquid_agent.signals.orchestrator import SignalOrchestrator
 
         orchestrator = SignalOrchestrator(self.config)
+        self.orchestrator = orchestrator  # Store reference for external access
 
         # Start periodic cache cleanup task
         cleanup_interval = self.config.get("cache_cleanup_interval_seconds", 300)

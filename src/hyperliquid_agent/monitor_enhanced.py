@@ -1,7 +1,7 @@
 """Enhanced position monitoring with time-scale signals for governance."""
 
 import logging
-from typing import Literal
+from typing import Any, Literal
 
 from hyperliquid_agent.monitor import PositionMonitor
 from hyperliquid_agent.signals import EnhancedAccountState
@@ -50,6 +50,43 @@ class EnhancedPositionMonitor(PositionMonitor):
             logger.info("Shutting down signal service")
             self.signal_service.stop()
             logger.info("Signal service shutdown complete")
+
+    def get_cache_metrics(self) -> dict[str, Any]:
+        """Get cache performance metrics from orchestrator.
+
+        Returns:
+            Dictionary with cache metrics including:
+            - status: "success", "orchestrator_not_available", or "error"
+            - providers: Dict of provider-specific cache metrics (if successful)
+            - error: Error message (if failed)
+        """
+        if not hasattr(self, "signal_service") or self.signal_service is None:
+            return {
+                "status": "orchestrator_not_available",
+                "error": "Signal service not initialized",
+            }
+
+        try:
+            # Get orchestrator from signal service
+            orchestrator = self.signal_service.orchestrator
+
+            if orchestrator is None:
+                return {
+                    "status": "orchestrator_not_available",
+                    "error": "Orchestrator not available in signal service",
+                }
+
+            # Request cache metrics from orchestrator
+            cache_stats = orchestrator.get_cache_metrics()
+
+            return {
+                "status": "success",
+                "cache": cache_stats,
+            }
+
+        except Exception as e:
+            logger.warning(f"Failed to get cache metrics: {e}")
+            return {"status": "error", "error": str(e)}
 
     def get_current_state_with_signals(
         self, loop_type: Literal["fast", "medium", "slow"], timeout_seconds: float = 30.0
