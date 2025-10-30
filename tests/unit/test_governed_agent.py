@@ -924,3 +924,238 @@ class TestEmergencyPositionReduction:
 
         # Verify warning was logged
         assert mock_governed_agent.logger.warning.call_count == 1
+
+
+class TestAsyncLoopExecution:
+    """Test async loop execution functionality."""
+
+    @pytest.fixture
+    def mock_async_agent(self):
+        """Create a mock governed agent for testing async execution."""
+        from unittest.mock import Mock
+
+        from hyperliquid_agent.governed_agent import GovernedAgentConfig
+
+        agent = Mock()
+        agent.logger = Mock()
+        agent.tick_count = 0
+        agent.governance_config = Mock(spec=GovernedAgentConfig)
+        agent.governance_config.fast_loop_interval_seconds = 10
+        agent.governance_config.medium_loop_interval_minutes = 5
+        agent.governance_config.slow_loop_interval_hours = 1
+        agent.last_medium_loop = None
+        agent.last_slow_loop = None
+
+        # Mock the loop execution methods
+        agent._execute_slow_loop = Mock()
+        agent._execute_medium_loop = Mock()
+        agent._execute_fast_loop = Mock()
+
+        # Bind the async wrapper methods
+        agent._execute_slow_loop_async = GovernedTradingAgent._execute_slow_loop_async.__get__(
+            agent, GovernedTradingAgent
+        )
+        agent._execute_medium_loop_async = GovernedTradingAgent._execute_medium_loop_async.__get__(
+            agent, GovernedTradingAgent
+        )
+        agent._execute_fast_loop_async = GovernedTradingAgent._execute_fast_loop_async.__get__(
+            agent, GovernedTradingAgent
+        )
+
+        # Bind the should_run methods
+        agent._should_run_medium_loop = GovernedTradingAgent._should_run_medium_loop.__get__(
+            agent, GovernedTradingAgent
+        )
+        agent._should_run_slow_loop = GovernedTradingAgent._should_run_slow_loop.__get__(
+            agent, GovernedTradingAgent
+        )
+
+        return agent
+
+    @pytest.mark.asyncio
+    async def test_concurrent_loop_execution(self, mock_async_agent):
+        """Test that multiple loops execute concurrently."""
+        import asyncio
+
+        current_time = datetime.now()
+
+        # All loops should run on first tick
+        mock_async_agent.last_medium_loop = None
+        mock_async_agent.last_slow_loop = None
+
+        # Create tasks for concurrent execution
+        tasks = [
+            mock_async_agent._execute_slow_loop_async(current_time),
+            mock_async_agent._execute_medium_loop_async(current_time),
+            mock_async_agent._execute_fast_loop_async(current_time),
+        ]
+
+        # Execute concurrently
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Verify all loops executed
+        assert mock_async_agent._execute_slow_loop.call_count == 1
+        assert mock_async_agent._execute_medium_loop.call_count == 1
+        assert mock_async_agent._execute_fast_loop.call_count == 1
+
+        # Verify no exceptions
+        for result in results:
+            assert not isinstance(result, Exception)
+
+    @pytest.mark.asyncio
+    async def test_exception_isolation(self, mock_async_agent):
+        """Test that one loop failure doesn't stop other loops."""
+        import asyncio
+
+        current_time = datetime.now()
+
+        # Make medium loop raise an exception
+        mock_async_agent._execute_medium_loop.side_effect = Exception("Medium loop error")
+
+        # Create tasks for concurrent execution
+        tasks = [
+            mock_async_agent._execute_slow_loop_async(current_time),
+            mock_async_agent._execute_medium_loop_async(current_time),
+            mock_async_agent._execute_fast_loop_async(current_time),
+        ]
+
+        # Execute concurrently with return_exceptions=True
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Verify slow and fast loops still executed
+        assert mock_async_agent._execute_slow_loop.call_count == 1
+        assert mock_async_agent._execute_fast_loop.call_count == 1
+
+        # Verify medium loop was attempted
+        assert mock_async_agent._execute_medium_loop.call_count == 1
+
+        # Verify one result is an exception
+        exceptions = [r for r in results if isinstance(r, Exception)]
+        assert len(exceptions) == 1
+        assert "Medium loop error" in str(exceptions[0])
+
+    @pytest.mark.asyncio
+    async def test_timing_and_scheduling(self, mock_async_agent):
+        """Test that loop scheduling logic works correctly."""
+        from datetime import timedelta
+
+        current_time = datetime.now()
+
+        # Set last execution times
+        mock_async_agent.last_medium_loop = current_time - timedelta(minutes=6)
+        mock_async_agent.last_slow_loop = current_time - timedelta(hours=2)
+
+        # Check which loops should run
+        should_run_medium = mock_async_agent._should_run_medium_loop(current_time)
+        should_run_slow = mock_async_agent._should_run_slow_loop(current_time)
+
+        # Both should run (elapsed time exceeds intervals)
+        assert should_run_medium is True
+        assert should_run_slow is True
+
+        # Update last execution times
+        mock_async_agent.last_medium_loop = current_time
+        mock_async_agent.last_slow_loop = current_time
+
+        # Check again immediately
+        should_run_medium = mock_async_agent._should_run_medium_loop(current_time)
+        should_run_slow = mock_async_agent._should_run_slow_loop(current_time)
+
+        # Neither should run (no time elapsed)
+        assert should_run_medium is False
+        assert should_run_slow is False
+
+    @pytest.mark.asyncio
+    async def test_fast_loop_not_blocked_by_slow_loop(self, mock_async_agent):
+        """Test that fast loop executes even when slow loop is running."""
+        import asyncio
+        import time
+
+        current_time = datetime.now()
+
+        # Make slow loop take a long time
+        def slow_execution(*args):
+            time.sleep(0.1)  # Simulate slow operation
+
+        # Replace the slow loop with our delayed version
+        mock_async_agent._execute_slow_loop = Mock(side_effect=slow_execution)
+
+        # Create tasks for concurrent execution
+        tasks = [
+            mock_async_agent._execute_slow_loop_async(current_time),
+            mock_async_agent._execute_fast_loop_async(current_time),
+        ]
+
+        # Execute concurrently
+        start_time = asyncio.get_event_loop().time()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        end_time = asyncio.get_event_loop().time()
+
+        # Verify both loops executed
+        assert mock_async_agent._execute_slow_loop.call_count == 1
+        assert mock_async_agent._execute_fast_loop.call_count == 1
+
+        # Verify execution was concurrent (total time should be ~0.1s, not 0.2s)
+        total_time = end_time - start_time
+        assert total_time < 0.15  # Allow some overhead
+
+        # Verify no exceptions
+        for result in results:
+            assert not isinstance(result, Exception)
+
+    @pytest.mark.asyncio
+    async def test_multiple_exceptions_handled(self, mock_async_agent):
+        """Test that multiple loop failures are all caught and logged."""
+        import asyncio
+
+        current_time = datetime.now()
+
+        # Make all loops raise exceptions
+        mock_async_agent._execute_slow_loop.side_effect = Exception("Slow loop error")
+        mock_async_agent._execute_medium_loop.side_effect = Exception("Medium loop error")
+        mock_async_agent._execute_fast_loop.side_effect = Exception("Fast loop error")
+
+        # Create tasks for concurrent execution
+        tasks = [
+            mock_async_agent._execute_slow_loop_async(current_time),
+            mock_async_agent._execute_medium_loop_async(current_time),
+            mock_async_agent._execute_fast_loop_async(current_time),
+        ]
+
+        # Execute concurrently with return_exceptions=True
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Verify all loops were attempted
+        assert mock_async_agent._execute_slow_loop.call_count == 1
+        assert mock_async_agent._execute_medium_loop.call_count == 1
+        assert mock_async_agent._execute_fast_loop.call_count == 1
+
+        # Verify all results are exceptions
+        exceptions = [r for r in results if isinstance(r, Exception)]
+        assert len(exceptions) == 3
+
+        # Verify exception messages
+        exception_messages = [str(e) for e in exceptions]
+        assert "Slow loop error" in exception_messages
+        assert "Medium loop error" in exception_messages
+        assert "Fast loop error" in exception_messages
+
+    @pytest.mark.asyncio
+    async def test_async_wrapper_methods(self, mock_async_agent):
+        """Test that async wrapper methods correctly call sync methods."""
+        current_time = datetime.now()
+
+        # Test slow loop wrapper
+        await mock_async_agent._execute_slow_loop_async(current_time)
+        assert mock_async_agent._execute_slow_loop.call_count == 1
+        mock_async_agent._execute_slow_loop.assert_called_with(current_time)
+
+        # Test medium loop wrapper
+        await mock_async_agent._execute_medium_loop_async(current_time)
+        assert mock_async_agent._execute_medium_loop.call_count == 1
+        mock_async_agent._execute_medium_loop.assert_called_with(current_time)
+
+        # Test fast loop wrapper
+        await mock_async_agent._execute_fast_loop_async(current_time)
+        assert mock_async_agent._execute_fast_loop.call_count == 1
+        mock_async_agent._execute_fast_loop.assert_called_with(current_time)

@@ -1,5 +1,6 @@
 """Governed Trading Agent orchestration with multi-timescale decision-making."""
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -120,9 +121,9 @@ class GovernedTradingAgent:
         self.constants = TradingConstants()
 
     def run(self) -> NoReturn:
-        """Run the main governed loop indefinitely."""
+        """Run the main governed loop indefinitely (synchronous version for backward compatibility)."""
         self.logger.info(
-            "Starting governed trading agent",
+            "Starting governed trading agent (sync mode)",
             extra={
                 "fast_loop_interval": self.governance_config.fast_loop_interval_seconds,
                 "medium_loop_interval": self.governance_config.medium_loop_interval_minutes,
@@ -135,7 +136,6 @@ class GovernedTradingAgent:
             current_time = datetime.now()
 
             try:
-                # TODO: Turn this into async parallel processes
                 # Determine which loops to run
                 run_fast = True
                 run_medium = self._should_run_medium_loop(current_time)
@@ -162,6 +162,101 @@ class GovernedTradingAgent:
 
             # Sleep until next fast loop iteration
             time.sleep(self.governance_config.fast_loop_interval_seconds)
+
+    async def run_async(self) -> NoReturn:
+        """Run the main governed loop indefinitely with async concurrent execution.
+
+        This method executes fast, medium, and slow loops concurrently using asyncio.gather,
+        preventing slow loop operations from blocking time-sensitive fast loop execution.
+        """
+        self.logger.info(
+            "Starting governed trading agent (async mode)",
+            extra={
+                "fast_loop_interval": self.governance_config.fast_loop_interval_seconds,
+                "medium_loop_interval": self.governance_config.medium_loop_interval_minutes,
+                "slow_loop_interval": self.governance_config.slow_loop_interval_hours,
+            },
+        )
+
+        while True:
+            self.tick_count += 1
+            current_time = datetime.now()
+
+            # Determine which loops to run
+            run_fast = True
+            run_medium = self._should_run_medium_loop(current_time)
+            run_slow = self._should_run_slow_loop(current_time)
+
+            # Build task list for concurrent execution
+            tasks = []
+
+            if run_slow:
+                tasks.append(self._execute_slow_loop_async(current_time))
+
+            if run_medium:
+                tasks.append(self._execute_medium_loop_async(current_time))
+
+            if run_fast:
+                tasks.append(self._execute_fast_loop_async(current_time))
+
+            # Execute all loops concurrently
+            # return_exceptions=True prevents one loop failure from stopping others
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Log any exceptions
+                loop_types = []
+                if run_slow:
+                    loop_types.append("slow")
+                if run_medium:
+                    loop_types.append("medium")
+                if run_fast:
+                    loop_types.append("fast")
+
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        loop_type = loop_types[i] if i < len(loop_types) else "unknown"
+                        self.logger.error(
+                            f"{loop_type} loop failed",
+                            exc_info=result,
+                            extra={"tick": self.tick_count, "loop_type": loop_type},
+                        )
+
+            # Update last execution times
+            if run_slow:
+                self.last_slow_loop = current_time
+            if run_medium:
+                self.last_medium_loop = current_time
+
+            # Sleep until next fast loop tick
+            await asyncio.sleep(self.governance_config.fast_loop_interval_seconds)
+
+    async def _execute_slow_loop_async(self, current_time: datetime):
+        """Async wrapper for slow loop execution.
+
+        Args:
+            current_time: Current timestamp
+        """
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._execute_slow_loop, current_time)
+
+    async def _execute_medium_loop_async(self, current_time: datetime):
+        """Async wrapper for medium loop execution.
+
+        Args:
+            current_time: Current timestamp
+        """
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._execute_medium_loop, current_time)
+
+    async def _execute_fast_loop_async(self, current_time: datetime):
+        """Async wrapper for fast loop execution.
+
+        Args:
+            current_time: Current timestamp
+        """
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._execute_fast_loop, current_time)
 
     def _should_run_medium_loop(self, current_time: datetime) -> bool:
         """Check if medium loop should run based on elapsed time.
