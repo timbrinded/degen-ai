@@ -52,9 +52,17 @@ class OnChainConfig:
     """On-chain data provider configuration."""
 
     enabled: bool = True
-    provider: str = "placeholder"  # e.g., "token_unlocks", "nansen", "dune"
+    provider: str | None = None  # e.g., "token_unlocks", "nansen", "dune"
     api_key: str | None = None
     cache_ttl_seconds: int = 3600
+
+    def __post_init__(self):
+        """Validate configuration."""
+        if self.enabled and self.provider and not self.api_key:
+            raise ValueError(
+                f"On-chain provider '{self.provider}' is enabled but no API key provided. "
+                f"Set api_key in config or disable the provider."
+            )
 
 
 @dataclass
