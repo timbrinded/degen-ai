@@ -178,7 +178,9 @@ class MediumLoopSignals:
 
     # Enhanced fields from task 8
     technical_indicators: dict[str, TechnicalIndicators | None]  # Coin -> technical indicators
-    open_interest_change_24h: dict[str, float]  # Coin -> 24h OI change percentage
+    open_interest_change_24h: dict[
+        str, float | None
+    ]  # Coin -> 24h OI change percentage (None if insufficient data)
     oi_to_volume_ratio: dict[str, float]  # Coin -> OI-to-volume ratio for leverage assessment
     funding_rate_trend: dict[
         str, Literal["increasing", "decreasing", "stable"]

@@ -194,6 +194,54 @@ class PriceHistory:
         return None
 
 
+class OpenInterestHistory:
+    """Track historical open interest for change calculations.
+
+    Maintains a rolling buffer of open interest values with timestamps to enable
+    accurate 24-hour change calculations.
+    """
+
+    def __init__(self, lookback_hours: int = 24):
+        """Initialize open interest history with specified lookback period.
+
+        Args:
+            lookback_hours: Number of hours to maintain in history (default 24)
+        """
+        # 4-hour candles: lookback_hours / 4 + 1 for accurate 24h lookback
+        max_len = (lookback_hours // 4) + 1
+        self.values: deque[float] = deque(maxlen=max_len)
+        self.timestamps: deque[datetime] = deque(maxlen=max_len)
+        self.lookback_hours = lookback_hours
+
+    def add_value(self, oi: float, timestamp: datetime):
+        """Add new OI data point to history.
+
+        Args:
+            oi: Open interest value
+            timestamp: Data point timestamp
+        """
+        self.values.append(oi)
+        self.timestamps.append(timestamp)
+
+    def calculate_24h_change(self) -> float | None:
+        """Calculate 24-hour OI change percentage.
+
+        Returns:
+            Percentage change from 24h ago to current, or None if insufficient data
+        """
+        if len(self.values) < 7:  # Need at least 24h of data (6 * 4h candles + current)
+            return None
+
+        current_oi = self.values[-1]
+        oi_24h_ago = self.values[0]
+
+        if oi_24h_ago == 0:
+            return None
+
+        change_pct = ((current_oi - oi_24h_ago) / abs(oi_24h_ago)) * 100
+        return change_pct
+
+
 class SignalCollectorBase:
     """Base class for signal collectors."""
 
@@ -423,6 +471,8 @@ class MediumSignalCollector(SignalCollectorBase):
         self.computed_processor = computed_processor
         # Price history tracking for each coin
         self.price_history: dict[str, PriceHistory] = {}
+        # Open interest history tracking for each coin
+        self.oi_history: dict[str, OpenInterestHistory] = {}
 
     async def collect(self, account_state: AccountState) -> MediumLoopSignals:
         """Collect medium-loop signals asynchronously with concurrent data fetching.
@@ -438,7 +488,7 @@ class MediumSignalCollector(SignalCollectorBase):
         concentration_ratios: dict[str, float] = {}
         drift_from_targets: dict[str, float] = {}
         funding_rate_trend: dict[str, Literal["increasing", "decreasing", "stable"]] = {}
-        open_interest_change_24h: dict[str, float] = {}
+        open_interest_change_24h: dict[str, float | None] = {}
         oi_to_volume_ratio: dict[str, float] = {}
         technical_indicators: dict[str, TechnicalIndicators | None] = {}
 
@@ -525,9 +575,17 @@ class MediumSignalCollector(SignalCollectorBase):
                 if not isinstance(oi_response, BaseException):
                     oi_data = oi_response.data
 
-                    # Calculate 24h OI change (would need historical OI data)
-                    # For now, use placeholder - in production, fetch historical OI
-                    open_interest_change_24h[coin] = 0.0
+                    # Update OI history for this coin
+                    if coin not in self.oi_history:
+                        self.oi_history[coin] = OpenInterestHistory()
+
+                    # Use actual data timestamp instead of datetime.now() to prevent drift
+                    self.oi_history[coin].add_value(oi_data.open_interest, oi_data.timestamp)
+
+                    # Calculate 24h OI change from historical data
+                    # Preserve None to indicate insufficient data for transparency
+                    oi_change = self.oi_history[coin].calculate_24h_change()
+                    open_interest_change_24h[coin] = oi_change
 
                     # Calculate OI-to-volume ratio
                     # Fetch 24h volume from candles
@@ -549,7 +607,7 @@ class MediumSignalCollector(SignalCollectorBase):
                     successful_fetches += 1
                     total_confidence += oi_response.confidence
                 else:
-                    open_interest_change_24h[coin] = 0.0
+                    open_interest_change_24h[coin] = None
                     oi_to_volume_ratio[coin] = 0.0
 
                 # Process candles for technical indicators
@@ -672,6 +730,17 @@ class MediumSignalCollector(SignalCollectorBase):
             PriceHistory object or None if not available
         """
         return self.price_history.get(coin)
+
+    def get_oi_history(self, coin: str) -> OpenInterestHistory | None:
+        """Get open interest history for a specific coin.
+
+        Args:
+            coin: Coin symbol
+
+        Returns:
+            OpenInterestHistory object or None if not available
+        """
+        return self.oi_history.get(coin)
 
     async def _calculate_volatility_and_trend(
         self, positions: list[Position]
