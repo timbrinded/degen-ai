@@ -41,6 +41,7 @@ class GovernedAgentConfig:
     fast_loop_interval_seconds: int = 10
     medium_loop_interval_minutes: int = 30
     slow_loop_interval_hours: int = 24
+    emergency_reduction_pct: float = 100.0  # Percentage of positions to close in emergency
 
 
 @dataclass
@@ -239,7 +240,7 @@ class GovernedTradingAgent:
                         "Cut size to floor triggered - emergency risk reduction needed",
                         extra={"tick": self.tick_count},
                     )
-                    # TODO: Implement emergency position reduction
+                    self._handle_tripwire_action(event.action)
                     return True
 
                 case TripwireAction.ESCALATE_TO_SLOW_LOOP:
@@ -250,6 +251,111 @@ class GovernedTradingAgent:
                     self.last_slow_loop = None  # Force slow loop next iteration
 
         return False
+
+    def _handle_tripwire_action(self, action: TripwireAction) -> bool:
+        """Handle tripwire action for emergency position reduction.
+
+        Args:
+            action: Tripwire action to handle
+
+        Returns:
+            True if action was handled successfully, False otherwise
+        """
+        if action != TripwireAction.CUT_SIZE_TO_FLOOR:
+            self.logger.warning(
+                f"Unhandled tripwire action: {action}",
+                extra={"tick": self.tick_count, "action": action.value},
+            )
+            return False
+
+        self.logger.critical(
+            "Executing emergency position reduction",
+            extra={
+                "tick": self.tick_count,
+                "reduction_pct": self.governance_config.emergency_reduction_pct,
+            },
+        )
+
+        # Get current positions
+        try:
+            account_state = self.monitor.get_current_state()
+        except Exception as e:
+            self.logger.critical(
+                "Failed to retrieve account state for emergency reduction",
+                exc_info=e,
+                extra={"tick": self.tick_count},
+            )
+            return False
+
+        # Calculate reduction percentage from config
+        reduction_pct = self.governance_config.emergency_reduction_pct
+
+        # Generate emergency exit orders
+        exit_results = []
+        for position in account_state.positions:
+            if position.size <= 0:
+                continue
+
+            # Calculate size to close
+            size_to_close = position.size * (reduction_pct / 100.0)
+
+            # Create emergency exit action
+            exit_action = TradeAction(
+                action_type="sell",
+                coin=position.coin,
+                market_type=position.market_type,
+                size=size_to_close,
+                price=None,  # Market order for immediate execution
+                reasoning=f"Emergency risk reduction (tripwire: {reduction_pct}% reduction)",
+            )
+
+            try:
+                result = self.base_agent.executor.execute_action(exit_action)
+                exit_results.append(
+                    {
+                        "coin": exit_action.coin,
+                        "size": size_to_close,
+                        "success": result.success,
+                        "error": result.error if not result.success else None,
+                    }
+                )
+
+                self.logger.critical(
+                    f"Emergency exit: {exit_action.coin} - "
+                    f"{'SUCCESS' if result.success else 'FAILED'}",
+                    extra={
+                        "tick": self.tick_count,
+                        "coin": exit_action.coin,
+                        "size": size_to_close,
+                        "success": result.success,
+                        "error": result.error if not result.success else None,
+                    },
+                )
+
+            except Exception as e:
+                self.logger.critical(
+                    f"Emergency exit exception for {exit_action.coin}: {e}",
+                    exc_info=True,
+                    extra={"tick": self.tick_count, "coin": exit_action.coin},
+                )
+                exit_results.append(
+                    {
+                        "coin": exit_action.coin,
+                        "size": size_to_close,
+                        "success": False,
+                        "error": str(e),
+                    }
+                )
+
+        # Log summary
+        successful = sum(1 for r in exit_results if r["success"])
+        total = len(exit_results)
+        self.logger.critical(
+            f"Emergency position reduction complete: {successful}/{total} successful",
+            extra={"tick": self.tick_count, "results": exit_results},
+        )
+
+        return successful > 0
 
     def _generate_rebalance_actions(
         self,

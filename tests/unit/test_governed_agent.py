@@ -557,3 +557,370 @@ class TestCalculateAverageSpreadAndDepth:
 
         assert avg_spread == 0.0
         assert avg_depth == 0.0
+
+
+class TestEmergencyPositionReduction:
+    """Test the emergency position reduction functionality."""
+
+    @pytest.fixture
+    def mock_governed_agent(self):
+        """Create a mock governed agent for testing emergency reduction."""
+        from unittest.mock import Mock
+
+        from hyperliquid_agent.governed_agent import GovernedAgentConfig
+
+        agent = Mock()
+        agent.logger = Mock()
+        agent.tick_count = 1
+        agent.governance_config = Mock(spec=GovernedAgentConfig)
+        agent.governance_config.emergency_reduction_pct = 100.0
+        agent.monitor = Mock()
+        agent.base_agent = Mock()
+        agent.base_agent.executor = Mock()
+
+        # Bind the actual method
+        agent._handle_tripwire_action = GovernedTradingAgent._handle_tripwire_action.__get__(
+            agent, GovernedTradingAgent
+        )
+
+        return agent
+
+    def test_full_liquidation_100_percent(self, mock_governed_agent):
+        """Test emergency reduction with 100% liquidation."""
+        from hyperliquid_agent.governance.tripwire import TripwireAction
+        from hyperliquid_agent.monitor import AccountState
+
+        # Setup account state with positions
+        account_state = AccountState(
+            portfolio_value=50000.0,
+            available_balance=10000.0,
+            positions=[
+                Position(
+                    coin="BTC",
+                    size=0.5,
+                    entry_price=94000.0,
+                    current_price=95000.0,
+                    unrealized_pnl=500.0,
+                    market_type="perp",
+                ),
+                Position(
+                    coin="ETH",
+                    size=10.0,
+                    entry_price=3400.0,
+                    current_price=3500.0,
+                    unrealized_pnl=1000.0,
+                    market_type="perp",
+                ),
+            ],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+        )
+
+        mock_governed_agent.monitor.get_current_state.return_value = account_state
+
+        # Mock successful execution
+        mock_result = Mock()
+        mock_result.success = True
+        mock_result.error = None
+        mock_governed_agent.base_agent.executor.execute_action.return_value = mock_result
+
+        # Execute emergency reduction
+        result = mock_governed_agent._handle_tripwire_action(TripwireAction.CUT_SIZE_TO_FLOOR)
+
+        # Verify result
+        assert result is True
+
+        # Verify executor was called twice (once per position)
+        assert mock_governed_agent.base_agent.executor.execute_action.call_count == 2
+
+        # Verify the actions
+        calls = mock_governed_agent.base_agent.executor.execute_action.call_args_list
+
+        # First call should be for BTC
+        btc_action = calls[0][0][0]
+        assert btc_action.action_type == "sell"
+        assert btc_action.coin == "BTC"
+        assert btc_action.size == 0.5  # 100% of 0.5
+        assert btc_action.price is None  # Market order
+        assert "Emergency risk reduction" in btc_action.reasoning
+
+        # Second call should be for ETH
+        eth_action = calls[1][0][0]
+        assert eth_action.action_type == "sell"
+        assert eth_action.coin == "ETH"
+        assert eth_action.size == 10.0  # 100% of 10.0
+        assert eth_action.price is None  # Market order
+
+    def test_partial_liquidation_50_percent(self, mock_governed_agent):
+        """Test emergency reduction with 50% partial liquidation."""
+        from hyperliquid_agent.governance.tripwire import TripwireAction
+        from hyperliquid_agent.monitor import AccountState
+
+        # Set to 50% reduction
+        mock_governed_agent.governance_config.emergency_reduction_pct = 50.0
+
+        # Setup account state with positions
+        account_state = AccountState(
+            portfolio_value=50000.0,
+            available_balance=10000.0,
+            positions=[
+                Position(
+                    coin="BTC",
+                    size=1.0,
+                    entry_price=94000.0,
+                    current_price=95000.0,
+                    unrealized_pnl=1000.0,
+                    market_type="perp",
+                ),
+            ],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+        )
+
+        mock_governed_agent.monitor.get_current_state.return_value = account_state
+
+        # Mock successful execution
+        mock_result = Mock()
+        mock_result.success = True
+        mock_result.error = None
+        mock_governed_agent.base_agent.executor.execute_action.return_value = mock_result
+
+        # Execute emergency reduction
+        result = mock_governed_agent._handle_tripwire_action(TripwireAction.CUT_SIZE_TO_FLOOR)
+
+        # Verify result
+        assert result is True
+
+        # Verify the action
+        calls = mock_governed_agent.base_agent.executor.execute_action.call_args_list
+        assert len(calls) == 1
+
+        btc_action = calls[0][0][0]
+        assert btc_action.coin == "BTC"
+        assert btc_action.size == 0.5  # 50% of 1.0
+
+    def test_error_handling_individual_position_failure(self, mock_governed_agent):
+        """Test that individual position failures don't stop other positions from closing."""
+        from hyperliquid_agent.governance.tripwire import TripwireAction
+        from hyperliquid_agent.monitor import AccountState
+
+        # Setup account state with multiple positions
+        account_state = AccountState(
+            portfolio_value=50000.0,
+            available_balance=10000.0,
+            positions=[
+                Position(
+                    coin="BTC",
+                    size=0.5,
+                    entry_price=94000.0,
+                    current_price=95000.0,
+                    unrealized_pnl=500.0,
+                    market_type="perp",
+                ),
+                Position(
+                    coin="ETH",
+                    size=10.0,
+                    entry_price=3400.0,
+                    current_price=3500.0,
+                    unrealized_pnl=1000.0,
+                    market_type="perp",
+                ),
+                Position(
+                    coin="SOL",
+                    size=100.0,
+                    entry_price=100.0,
+                    current_price=110.0,
+                    unrealized_pnl=1000.0,
+                    market_type="perp",
+                ),
+            ],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+        )
+
+        mock_governed_agent.monitor.get_current_state.return_value = account_state
+
+        # Mock execution: first succeeds, second fails, third succeeds
+        mock_result_success = Mock()
+        mock_result_success.success = True
+        mock_result_success.error = None
+
+        mock_result_failure = Mock()
+        mock_result_failure.success = False
+        mock_result_failure.error = "Network timeout"
+
+        mock_governed_agent.base_agent.executor.execute_action.side_effect = [
+            mock_result_success,
+            mock_result_failure,
+            mock_result_success,
+        ]
+
+        # Execute emergency reduction
+        result = mock_governed_agent._handle_tripwire_action(TripwireAction.CUT_SIZE_TO_FLOOR)
+
+        # Should still return True because at least one succeeded
+        assert result is True
+
+        # Verify all three positions were attempted
+        assert mock_governed_agent.base_agent.executor.execute_action.call_count == 3
+
+        # Verify critical logging was called for each position
+        assert mock_governed_agent.logger.critical.call_count >= 4  # 3 individual + 1 summary
+
+    def test_error_handling_exception_during_execution(self, mock_governed_agent):
+        """Test that exceptions during execution are caught and logged."""
+        from hyperliquid_agent.governance.tripwire import TripwireAction
+        from hyperliquid_agent.monitor import AccountState
+
+        # Setup account state
+        account_state = AccountState(
+            portfolio_value=50000.0,
+            available_balance=10000.0,
+            positions=[
+                Position(
+                    coin="BTC",
+                    size=0.5,
+                    entry_price=94000.0,
+                    current_price=95000.0,
+                    unrealized_pnl=500.0,
+                    market_type="perp",
+                ),
+            ],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+        )
+
+        mock_governed_agent.monitor.get_current_state.return_value = account_state
+
+        # Mock execution to raise exception
+        mock_governed_agent.base_agent.executor.execute_action.side_effect = Exception(
+            "Connection error"
+        )
+
+        # Execute emergency reduction
+        result = mock_governed_agent._handle_tripwire_action(TripwireAction.CUT_SIZE_TO_FLOOR)
+
+        # Should return False because no positions were successfully closed
+        assert result is False
+
+        # Verify exception was logged
+        assert mock_governed_agent.logger.critical.call_count >= 2  # Exception + summary
+
+    def test_logging_and_audit_trail(self, mock_governed_agent):
+        """Test that comprehensive logging is performed for audit trail."""
+        from hyperliquid_agent.governance.tripwire import TripwireAction
+        from hyperliquid_agent.monitor import AccountState
+
+        # Setup account state
+        account_state = AccountState(
+            portfolio_value=50000.0,
+            available_balance=10000.0,
+            positions=[
+                Position(
+                    coin="BTC",
+                    size=0.5,
+                    entry_price=94000.0,
+                    current_price=95000.0,
+                    unrealized_pnl=500.0,
+                    market_type="perp",
+                ),
+            ],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+        )
+
+        mock_governed_agent.monitor.get_current_state.return_value = account_state
+
+        # Mock successful execution
+        mock_result = Mock()
+        mock_result.success = True
+        mock_result.error = None
+        mock_governed_agent.base_agent.executor.execute_action.return_value = mock_result
+
+        # Execute emergency reduction
+        mock_governed_agent._handle_tripwire_action(TripwireAction.CUT_SIZE_TO_FLOOR)
+
+        # Verify logging calls
+        critical_calls = mock_governed_agent.logger.critical.call_args_list
+
+        # Should have at least 3 critical logs:
+        # 1. "Executing emergency position reduction"
+        # 2. "Emergency exit: BTC - SUCCESS"
+        # 3. "Emergency position reduction complete: 1/1 successful"
+        assert len(critical_calls) >= 3
+
+        # Verify first log contains reduction percentage
+        first_call_msg = critical_calls[0][0][0]
+        assert "Executing emergency position reduction" in first_call_msg
+
+        # Verify individual position log contains coin and success status
+        second_call_msg = critical_calls[1][0][0]
+        assert "BTC" in second_call_msg
+        assert "SUCCESS" in second_call_msg
+
+        # Verify summary log
+        summary_call_msg = critical_calls[2][0][0]
+        assert "Emergency position reduction complete" in summary_call_msg
+        assert "1/1 successful" in summary_call_msg
+
+    def test_no_positions_to_close(self, mock_governed_agent):
+        """Test behavior when there are no positions to close."""
+        from hyperliquid_agent.governance.tripwire import TripwireAction
+        from hyperliquid_agent.monitor import AccountState
+
+        # Setup account state with no positions
+        account_state = AccountState(
+            portfolio_value=10000.0,
+            available_balance=10000.0,
+            positions=[],
+            timestamp=datetime.now().timestamp(),
+            spot_balances={},
+            is_stale=False,
+        )
+
+        mock_governed_agent.monitor.get_current_state.return_value = account_state
+
+        # Execute emergency reduction
+        result = mock_governed_agent._handle_tripwire_action(TripwireAction.CUT_SIZE_TO_FLOOR)
+
+        # Should return False because no positions were closed
+        assert result is False
+
+        # Verify executor was never called
+        assert mock_governed_agent.base_agent.executor.execute_action.call_count == 0
+
+    def test_account_state_retrieval_failure(self, mock_governed_agent):
+        """Test handling of account state retrieval failure."""
+        from hyperliquid_agent.governance.tripwire import TripwireAction
+
+        # Mock account state retrieval to fail
+        mock_governed_agent.monitor.get_current_state.side_effect = Exception(
+            "API connection failed"
+        )
+
+        # Execute emergency reduction
+        result = mock_governed_agent._handle_tripwire_action(TripwireAction.CUT_SIZE_TO_FLOOR)
+
+        # Should return False
+        assert result is False
+
+        # Verify critical error was logged
+        assert mock_governed_agent.logger.critical.call_count >= 1
+
+    def test_unhandled_tripwire_action(self, mock_governed_agent):
+        """Test that unhandled tripwire actions are logged and return False."""
+        from hyperliquid_agent.governance.tripwire import TripwireAction
+
+        # Try to handle a different action
+        result = mock_governed_agent._handle_tripwire_action(TripwireAction.FREEZE_NEW_RISK)
+
+        # Should return False
+        assert result is False
+
+        # Verify warning was logged
+        assert mock_governed_agent.logger.warning.call_count == 1

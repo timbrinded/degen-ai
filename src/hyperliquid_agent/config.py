@@ -123,6 +123,7 @@ class GovernanceConfig:
     fast_loop_interval_seconds: int = 10
     medium_loop_interval_minutes: int = 30
     slow_loop_interval_hours: int = 24
+    emergency_reduction_pct: float = 100.0  # Percentage of positions to close in emergency
 
 
 @dataclass
