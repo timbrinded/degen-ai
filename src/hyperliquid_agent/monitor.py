@@ -99,7 +99,7 @@ class PositionMonitor:
         # Calculate total spot value (for now, just USDC since it's 1:1)
         spot_value = spot_balances.get("USDC", 0.0)
 
-        # Parse positions from assetPositions
+        # Parse positions from assetPositions (perp positions)
         positions = []
         asset_positions = raw_state.get("assetPositions", [])
 
@@ -134,6 +134,26 @@ class PositionMonitor:
                     current_price=current_price,
                     unrealized_pnl=unrealized_pnl,
                     market_type=market_type,
+                )
+            )
+
+        # Add spot balances as Position objects (excluding USDC which is cash)
+        for coin, size in spot_balances.items():
+            if coin == "USDC":
+                continue  # USDC is cash, not a position
+
+            # For spot positions, we need to fetch current price
+            # For now, use a simple approach: spot positions have no unrealized PnL tracking
+            # The agent will see the position and can make decisions based on it
+            # Entry price is unknown for existing balances, so we use 0.0
+            positions.append(
+                Position(
+                    coin=coin,
+                    size=size,
+                    entry_price=0.0,  # Unknown for existing spot balances
+                    current_price=0.0,  # Will be fetched by monitor_enhanced if needed
+                    unrealized_pnl=0.0,  # Unknown without entry price
+                    market_type="spot",
                 )
             )
 

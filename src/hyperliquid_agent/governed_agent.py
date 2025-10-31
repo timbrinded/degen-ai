@@ -598,7 +598,7 @@ class GovernedTradingAgent:
     def _generate_rebalance_actions(
         self,
         target_allocations_data: list[dict],
-        current_allocations: dict[str, float],
+        current_allocations: dict[tuple[str, str], float],
         total_value: float,
         account_state: EnhancedAccountState,
     ) -> list[TradeAction]:
@@ -606,7 +606,7 @@ class GovernedTradingAgent:
 
         Args:
             target_allocations_data: List of target allocation dicts
-            current_allocations: Current allocation percentages by coin
+            current_allocations: Current allocation percentages by (coin, market_type) tuple
             total_value: Total portfolio value
             account_state: Current account state with positions
 
@@ -620,7 +620,9 @@ class GovernedTradingAgent:
             target_pct = float(target_data["target_pct"])
             market_type = str(target_data["market_type"])
 
-            current_pct = current_allocations.get(coin, 0.0)
+            # Use tuple key to distinguish spot from perp
+            allocation_key = (coin, market_type)
+            current_pct = current_allocations.get(allocation_key, 0.0)
             gap_pct = target_pct - current_pct
 
             # Only trade if gap exceeds threshold
@@ -682,15 +684,17 @@ class GovernedTradingAgent:
                     )
 
                     self.logger.info(
-                        f"Generated {action_type} action for {coin}: {size:.4f} (gap: {gap_pct:.1f}%)",
+                        f"Generated {action_type} action for {coin} on {market_type.upper()}: {size:.4f} (gap: {gap_pct:.1f}%)",
                         extra={
                             "tick": self.tick_count,
                             "coin": coin,
+                            "market_type": market_type,
                             "action_type": action_type,
                             "size": size,
                             "current_pct": current_pct,
                             "target_pct": target_pct,
                             "gap_pct": gap_pct,
+                            "allocation_key": f"{coin}/{market_type}",
                         },
                     )
 
@@ -1210,14 +1214,38 @@ class GovernedTradingAgent:
                 for alloc in plan.target_allocations
             ]
 
-        # Calculate current allocations
-        current_allocations = {}
+        # Calculate current allocations - key by (coin, market_type) to separate spot and perp
+        current_allocations: dict[tuple[str, str], float] = {}
         total_value = account_state.portfolio_value
 
         for position in account_state.positions:
             position_value = position.size * position.current_price
             current_pct = (position_value / total_value * 100) if total_value > 0 else 0.0
-            current_allocations[position.coin] = current_pct
+            allocation_key = (position.coin, position.market_type)
+            current_allocations[allocation_key] = current_pct
+
+        # Log current allocations for visibility
+        self.logger.info(
+            "Current portfolio allocations:",
+            extra={
+                "tick": self.tick_count,
+                "total_value": total_value,
+                "allocations": {
+                    f"{coin}/{mkt}": f"{pct:.2f}%"
+                    for (coin, mkt), pct in current_allocations.items()
+                },
+            },
+        )
+
+        # Log target allocations for comparison
+        target_summary = {
+            f"{t['coin']}/{t['market_type']}": f"{t['target_pct']:.2f}%"
+            for t in target_allocations_data
+        }
+        self.logger.info(
+            "Target portfolio allocations:",
+            extra={"tick": self.tick_count, "targets": target_summary},
+        )
 
         # Generate trade actions to close allocation gaps
         actions = self._generate_rebalance_actions(

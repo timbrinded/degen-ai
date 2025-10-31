@@ -69,9 +69,8 @@ class TradeExecutor:
             # Handle transfer action
             if action.action_type == "transfer":
                 result = self._submit_transfer(action)
-                self.logger.info(
-                    f"Transfer executed: {action.size} {action.coin} to {action.market_type}"
-                )
+                direction = "TO SPOT" if action.market_type == "spot" else "TO PERP"
+                self.logger.info(f"Transfer executed: {action.size} {action.coin} [{direction}]")
                 return ExecutionResult(action=action, success=True)
 
             # Submit order to Hyperliquid
@@ -87,8 +86,8 @@ class TradeExecutor:
                         order_id = resting.get("oid")
 
             self.logger.info(
-                f"Order executed: {action.action_type} {action.size} {action.coin} "
-                f"on {action.market_type} market, order_id={order_id}"
+                f"Order executed: {action.action_type.upper()} {action.size} {action.coin} "
+                f"[{action.market_type.upper()} MARKET], order_id={order_id}"
             )
 
             return ExecutionResult(action=action, success=True, order_id=order_id)
