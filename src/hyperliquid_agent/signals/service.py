@@ -214,6 +214,34 @@ class SignalService:
             logger.error(f"Signal collection timeout after {timeout_seconds}s")
             return self._get_fallback_signals(signal_type)
 
+    def run_coroutine_sync(self, coro):
+        """Execute an async coroutine in the signal service's event loop synchronously.
+
+        This method allows synchronous code to run async operations in the background
+        thread's event loop and wait for the result.
+
+        Args:
+            coro: Async coroutine to execute
+
+        Returns:
+            Result from the coroutine
+
+        Raises:
+            RuntimeError: If signal service is not running
+            Exception: Any exception raised by the coroutine
+        """
+        if not self.background_thread or not self.background_thread.is_alive():
+            raise RuntimeError("Signal service not running")
+
+        if self.loop is None:
+            raise RuntimeError("Signal service event loop not initialized")
+
+        # Use asyncio.run_coroutine_threadsafe to submit the coroutine to the background loop
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+        # Wait for result with a reasonable timeout (30 seconds by default)
+        return future.result(timeout=30.0)
+
     def get_cache_metrics(self) -> dict | None:
         """Get cache performance metrics for monitoring.
 

@@ -120,6 +120,37 @@ class GovernedTradingAgent:
         # Trading constants
         self.constants = TradingConstants()
 
+        # Pre-warm watchlist prices for faster startup
+        self._prewarm_watchlist_prices()
+
+    def _prewarm_watchlist_prices(self):
+        """Pre-warm watchlist prices on startup to avoid cold-start warnings.
+
+        Fetches initial prices for major coins (BTC, ETH) and any coins in the
+        active plan's target allocations to ensure price_map is populated before
+        the first trading loop.
+        """
+        try:
+            # Get current account state (without signals for speed)
+            base_state = self.monitor.get_current_state()
+
+            # Build initial watchlist
+            watchlist = self.monitor.build_watchlist(base_state, self.governor.active_plan)
+
+            # Fetch prices
+            price_map = self.monitor.fetch_watchlist_prices(watchlist)
+
+            self.logger.info(
+                f"Pre-warmed {len(price_map)} prices for watchlist: {sorted(price_map.keys())}",
+                extra={"watchlist_size": len(watchlist), "prices_fetched": len(price_map)},
+            )
+        except Exception as e:
+            # Non-critical failure - system will fetch prices on first loop
+            self.logger.warning(
+                f"Failed to pre-warm watchlist prices: {e}. Prices will be fetched on first loop.",
+                exc_info=True,
+            )
+
     def run(self) -> NoReturn:
         """Run the main governed loop indefinitely (synchronous version for backward compatibility)."""
         self.logger.info(
@@ -492,15 +523,31 @@ class GovernedTradingAgent:
                     # USDC is the margin/collateral, not a tradeable asset - skip it
                     continue
 
+                # Try to get price from position first, then fall back to price_map
                 matching_pos = next((p for p in account_state.positions if p.coin == coin), None)
                 if matching_pos:
                     current_price = matching_pos.current_price
-                else:
-                    self.logger.warning(
-                        f"Cannot determine price for {coin} - no existing position",
-                        extra={"tick": self.tick_count, "coin": coin},
+                elif account_state.price_map and coin in account_state.price_map:
+                    # Use price from watchlist for new positions
+                    current_price = account_state.price_map[coin]
+                    self.logger.info(
+                        f"Using watchlist price for {coin}: {current_price}",
+                        extra={"tick": self.tick_count, "coin": coin, "price": current_price},
                     )
-                    continue
+                else:
+                    # Final fallback: try to fetch price on-demand
+                    current_price = self.monitor.get_market_price(coin)
+                    if current_price:
+                        self.logger.info(
+                            f"Fetched on-demand price for {coin}: {current_price}",
+                            extra={"tick": self.tick_count, "coin": coin, "price": current_price},
+                        )
+                    else:
+                        self.logger.warning(
+                            f"Cannot determine price for {coin} - not in positions or watchlist",
+                            extra={"tick": self.tick_count, "coin": coin},
+                        )
+                        continue
 
                 # Calculate size to trade
                 size = abs(value_gap / current_price) if current_price > 0 else 0.0
@@ -557,7 +604,9 @@ class GovernedTradingAgent:
 
         # Get account state with fast signals
         try:
-            account_state = self.monitor.get_current_state_with_signals("fast")
+            account_state = self.monitor.get_current_state_with_signals(
+                "fast", active_plan=self.governor.active_plan
+            )
         except Exception as e:
             self.logger.error(
                 "Failed to retrieve account state in fast loop",
@@ -632,7 +681,9 @@ class GovernedTradingAgent:
 
         # Get account state with medium signals
         try:
-            account_state = self.monitor.get_current_state_with_signals("medium")
+            account_state = self.monitor.get_current_state_with_signals(
+                "medium", active_plan=self.governor.active_plan
+            )
         except Exception as e:
             self.logger.error(
                 "Failed to retrieve account state in medium loop",
@@ -799,7 +850,9 @@ class GovernedTradingAgent:
 
         # Get account state with slow signals
         try:
-            account_state = self.monitor.get_current_state_with_signals("slow")
+            account_state = self.monitor.get_current_state_with_signals(
+                "slow", active_plan=self.governor.active_plan
+            )
         except Exception as e:
             self.logger.error(
                 "Failed to retrieve account state in slow loop",

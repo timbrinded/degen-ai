@@ -429,6 +429,70 @@ class HyperliquidProvider(DataProvider):
 
         return await self.fetch_with_circuit_breaker(_fetch)
 
+    async def fetch_mid_price(self, coin: str) -> ProviderResponse[float]:
+        """Fetch current mid-price for a coin using order book.
+
+        This lightweight method fetches just the mid-price (average of best bid/ask)
+        for use in the price_map watchlist. Uses aggressive caching since prices
+        are fetched frequently.
+
+        Args:
+            coin: Trading pair symbol (e.g., "BTC", "ETH")
+
+        Returns:
+            ProviderResponse containing mid-price as float
+
+        Raises:
+            Exception: If fetch fails after all retries
+        """
+        cache_key = f"midprice:{coin}"
+
+        # Check cache first (30 second TTL for watchlist prices)
+        cached = await self.cache.get(cache_key)
+        if cached:
+            logger.debug(f"Mid-price cache hit for {coin} (age: {cached.age_seconds:.1f}s)")
+            return ProviderResponse(
+                data=cached.value,
+                timestamp=datetime.now(),
+                source=self.get_provider_name(),
+                confidence=self._calculate_confidence(cached.age_seconds, 30),
+                is_cached=True,
+                cache_age_seconds=cached.age_seconds,
+            )
+
+        # Fetch order book and extract mid-price
+        async def _fetch():
+            l2_data = self.info.l2_snapshot(coin)
+            levels = l2_data.get("levels", [[], []])
+
+            if not levels or len(levels) != 2:
+                raise ValueError(f"Invalid order book data for {coin}")
+
+            bids_raw = levels[0]
+            asks_raw = levels[1]
+
+            if not bids_raw or not asks_raw:
+                raise ValueError(f"Invalid order book data for {coin}: empty bids or asks")
+
+            # Calculate mid-price from best bid/ask
+            best_bid = float(bids_raw[0]["px"])
+            best_ask = float(asks_raw[0]["px"])
+            mid_price = (best_bid + best_ask) / 2.0
+
+            # Cache the result (30s TTL)
+            await self.cache.set(cache_key, mid_price, 30)
+
+            return ProviderResponse(
+                data=mid_price,
+                timestamp=datetime.now(),
+                source=self.get_provider_name(),
+                confidence=1.0,
+                is_cached=False,
+                cache_age_seconds=None,
+            )
+
+        return await self.fetch_with_circuit_breaker(_fetch)
+
     def _calculate_confidence(self, age_seconds: float, ttl_seconds: int) -> float:
         """Calculate confidence score based on data age.
 

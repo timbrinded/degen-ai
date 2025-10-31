@@ -283,3 +283,4 @@ class EnhancedAccountState(AccountState):
     fast_signals: FastLoopSignals | None = None
     medium_signals: MediumLoopSignals | None = None
     slow_signals: SlowLoopSignals | None = None
+    price_map: dict[str, float] | None = None  # Watchlist prices for new positions
