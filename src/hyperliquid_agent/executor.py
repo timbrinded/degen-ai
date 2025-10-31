@@ -162,6 +162,20 @@ class TradeExecutor:
             self.logger.warning(f"Failed to round size for {coin}, using original value: {e}")
             return size
 
+    def _get_market_name(self, coin: str, market_type: str) -> str:
+        """Format market name according to Hyperliquid conventions.
+
+        Args:
+            coin: Base coin symbol (e.g., 'ETH', 'BTC')
+            market_type: 'spot' or 'perp'
+
+        Returns:
+            Formatted market name for Hyperliquid API
+        """
+        if market_type == "spot":
+            return f"{coin}/USDC"
+        return coin
+
     def _validate_action(self, action: TradeAction) -> bool:
         """Validate action parameters before submission.
 
@@ -215,6 +229,13 @@ class TradeExecutor:
         """
         is_buy = action.action_type in ["buy", "close"]
 
+        # Format market name based on market type (SPOT: "ETH/USDC", PERP: "ETH")
+        market_name = self._get_market_name(action.coin, action.market_type)
+
+        self.logger.debug(
+            f"Submitting {action.market_type.upper()} {action.action_type} order for '{market_name}'"
+        )
+
         # Handle close action
         if action.action_type == "close":
             # Close position by selling (for long) or buying (for short)
@@ -228,7 +249,7 @@ class TradeExecutor:
 
             # Submit market order to close
             return self.exchange.market_open(
-                name=action.coin,
+                name=market_name,
                 is_buy=is_buy,
                 sz=rounded_size,
                 px=None,  # Market order
@@ -244,7 +265,7 @@ class TradeExecutor:
         # Market order (price is None)
         if action.price is None:
             return self.exchange.market_open(
-                name=action.coin,
+                name=market_name,
                 is_buy=is_buy,
                 sz=rounded_size,
                 px=None,
@@ -252,7 +273,7 @@ class TradeExecutor:
 
         # Limit order
         return self.exchange.order(
-            name=action.coin,
+            name=market_name,
             is_buy=is_buy,
             sz=rounded_size,
             limit_px=action.price,
