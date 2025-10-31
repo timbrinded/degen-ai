@@ -1,5 +1,6 @@
 """Async Hyperliquid data provider with retry logic and caching."""
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -174,7 +175,7 @@ class HyperliquidProvider(DataProvider):
 
         # Fetch from API with circuit breaker and retry
         async def _fetch():
-            l2_data = self.info.l2_snapshot(coin)
+            l2_data = await asyncio.to_thread(self.info.l2_snapshot, coin)
             levels = l2_data.get("levels", [[], []])
 
             # Validate structure: levels should be [bids_list, asks_list]
@@ -251,7 +252,9 @@ class HyperliquidProvider(DataProvider):
 
         # Fetch from API with circuit breaker and retry
         async def _fetch():
-            funding_history_raw = self.info.funding_history(coin, start_time, end_time)
+            funding_history_raw = await asyncio.to_thread(
+                self.info.funding_history, coin, start_time, end_time
+            )
 
             if not funding_history_raw:
                 logger.warning(f"No funding history data for {coin}")
@@ -321,7 +324,9 @@ class HyperliquidProvider(DataProvider):
 
         # Fetch from API with circuit breaker and retry
         async def _fetch():
-            candles_raw = self.info.candles_snapshot(coin, interval, start_time, end_time)
+            candles_raw = await asyncio.to_thread(
+                self.info.candles_snapshot, coin, interval, start_time, end_time
+            )
 
             if not candles_raw:
                 logger.warning(f"No candle data for {coin} {interval}")
@@ -387,7 +392,7 @@ class HyperliquidProvider(DataProvider):
         # Fetch from API with circuit breaker and retry
         async def _fetch():
             # Get meta info which includes open interest
-            meta = self.info.meta()
+            meta = await asyncio.to_thread(self.info.meta)
             universe = meta.get("universe", [])
 
             # Find the coin in the universe
@@ -462,7 +467,7 @@ class HyperliquidProvider(DataProvider):
 
         # Fetch order book and extract mid-price
         async def _fetch():
-            l2_data = self.info.l2_snapshot(coin)
+            l2_data = await asyncio.to_thread(self.info.l2_snapshot, coin)
             levels = l2_data.get("levels", [[], []])
 
             if not levels or len(levels) != 2:
