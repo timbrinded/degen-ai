@@ -161,10 +161,12 @@ class SignalService:
         try:
             while not self.shutdown_event.is_set():
                 try:
-                    # Non-blocking queue check with timeout
+                    # Non-blocking queue check
                     try:
-                        request = self.request_queue.get(timeout=0.1)
+                        request = self.request_queue.get_nowait()
                     except queue.Empty:
+                        # Yield control to event loop to process other tasks
+                        await asyncio.sleep(0.01)
                         continue
 
                     # Process request asynchronously
