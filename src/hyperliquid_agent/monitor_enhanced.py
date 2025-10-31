@@ -47,6 +47,9 @@ class EnhancedPositionMonitor(PositionMonitor):
                 "Signal collection may fail until orchestrator initializes."
             )
 
+        # Initialize valid perpetual markets from exchange metadata
+        self.valid_perp_markets = self._fetch_valid_perp_markets()
+
         logger.info("Enhanced position monitor initialized with signal service")
 
     def __del__(self):
@@ -59,6 +62,39 @@ class EnhancedPositionMonitor(PositionMonitor):
             logger.info("Shutting down signal service")
             self.signal_service.stop()
             logger.info("Signal service shutdown complete")
+
+    def _fetch_valid_perp_markets(self) -> set[str]:
+        """Fetch and cache valid perpetual markets from exchange metadata.
+
+        Returns:
+            Set of valid perpetual market symbols (e.g., {"BTC", "ETH", "SOL"})
+        """
+        try:
+            orchestrator = self.signal_service.orchestrator
+            if not orchestrator:
+                logger.warning(
+                    "Orchestrator not available for fetching valid markets, "
+                    "using fallback majors only"
+                )
+                return {"BTC", "ETH"}
+
+            # Fetch metadata synchronously via the signal service
+            async def _fetch_meta():
+                assert orchestrator is not None
+                meta = orchestrator.hl_provider.info.meta()
+                return meta
+
+            meta = self.signal_service.run_coroutine_sync(_fetch_meta())
+            valid_markets = {asset["name"] for asset in meta.get("universe", [])}
+
+            logger.info(f"Cached {len(valid_markets)} valid perpetual markets from exchange")
+            return valid_markets
+
+        except Exception as e:
+            logger.warning(
+                f"Failed to fetch valid perpetual markets: {e}, using fallback majors only"
+            )
+            return {"BTC", "ETH"}
 
     def get_cache_metrics(self) -> dict[str, Any]:
         """Get cache performance metrics from orchestrator.
@@ -100,29 +136,46 @@ class EnhancedPositionMonitor(PositionMonitor):
     def build_watchlist(self, account_state, active_plan=None) -> list[str]:
         """Build watchlist of coins needing price data.
 
-        Combines current positions, plan target allocations, and major coins
-        to create a comprehensive watchlist for price fetching.
+        Only includes tradeable perpetual contracts from:
+        - Active perpetual positions (not spot balances)
+        - Plan target allocations (perp market type only)
+        - Major coins for regime detection (BTC, ETH)
+
+        Spot balances are explicitly excluded as they represent settlement capital,
+        not tradeable instruments on the perpetual exchange.
 
         Args:
             account_state: Current account state with positions
             active_plan: Optional active governance plan with target allocations
 
         Returns:
-            List of coin symbols to fetch prices for
+            List of valid perpetual contract symbols to fetch prices for
         """
         watchlist = set()
 
-        # Add current positions
+        # Add ONLY perpetual positions (not spot balances)
+        # Positions are already perp contracts, but validate against known markets
         for position in account_state.positions:
-            watchlist.add(position.coin)
+            if position.coin in self.valid_perp_markets:
+                watchlist.add(position.coin)
 
-        # Add plan target allocations if available
+        # Add plan target allocations (perp only)
         if active_plan and hasattr(active_plan, "target_allocations"):
             for allocation in active_plan.target_allocations:
-                watchlist.add(allocation.coin)
+                # Only include perpetual market types
+                if allocation.market_type == "perp":
+                    if allocation.coin in self.valid_perp_markets:
+                        watchlist.add(allocation.coin)
+                    else:
+                        logger.warning(
+                            f"Configuration warning: Asset '{allocation.coin}' in plan "
+                            f"is not a tradable perpetual market and will be ignored."
+                        )
 
-        # Always include majors for regime detection
-        watchlist.update(["BTC", "ETH"])
+        # Always include majors for regime detection (if they're valid)
+        for coin in ["BTC", "ETH"]:
+            if coin in self.valid_perp_markets:
+                watchlist.add(coin)
 
         logger.debug(f"Built watchlist with {len(watchlist)} coins: {sorted(watchlist)}")
         return list(watchlist)
@@ -173,7 +226,7 @@ class EnhancedPositionMonitor(PositionMonitor):
             logger.debug(f"Fetched {len(price_map)}/{len(watchlist)} prices for watchlist")
             return price_map
         except Exception as e:
-            logger.warning(f"Error fetching watchlist prices: {e}")
+            logger.warning(f"Error fetching watchlist prices: {e}", exc_info=True)
             return {}
 
     def get_market_price(self, coin: str) -> float | None:
