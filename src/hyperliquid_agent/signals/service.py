@@ -59,6 +59,7 @@ class SignalService:
         self.background_thread: threading.Thread | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.shutdown_event = threading.Event()
+        self.orchestrator_ready = threading.Event()  # Synchronization barrier
         self.orchestrator: SignalOrchestrator | None = (
             None  # Will be set when background thread starts
         )
@@ -70,11 +71,28 @@ class SignalService:
             return
 
         self.shutdown_event.clear()
+        self.orchestrator_ready.clear()  # Reset ready flag
         self.background_thread = threading.Thread(
             target=self._run_async_loop, daemon=True, name="SignalCollectionThread"
         )
         self.background_thread.start()
         logger.info("Signal service started")
+
+    def wait_until_ready(self, timeout: float = 10.0) -> bool:
+        """Wait for orchestrator to be initialized and ready.
+
+        Args:
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if orchestrator became ready, False if timeout
+        """
+        ready = self.orchestrator_ready.wait(timeout=timeout)
+        if ready:
+            logger.info(f"Signal service orchestrator ready after waiting up to {timeout}s")
+        else:
+            logger.warning(f"Signal service orchestrator not ready after {timeout}s timeout")
+        return ready
 
     def stop(self):
         """Gracefully stop background thread."""
@@ -129,6 +147,10 @@ class SignalService:
 
         orchestrator = SignalOrchestrator(self.config)
         self.orchestrator = orchestrator  # Store reference for external access
+
+        # Signal that orchestrator is ready
+        self.orchestrator_ready.set()
+        logger.info("Signal orchestrator initialized and ready")
 
         # Start periodic cache cleanup task
         cleanup_interval = self.config.get("cache_cleanup_interval_seconds", 300)

@@ -39,6 +39,14 @@ class EnhancedPositionMonitor(PositionMonitor):
 
         # Start background signal collection thread
         self.signal_service.start()
+
+        # Wait for orchestrator to be ready before proceeding
+        if not self.signal_service.wait_until_ready(timeout=10.0):
+            logger.warning(
+                "Signal service orchestrator did not become ready within timeout. "
+                "Signal collection may fail until orchestrator initializes."
+            )
+
         logger.info("Enhanced position monitor initialized with signal service")
 
     def __del__(self):

@@ -120,34 +120,140 @@ class GovernedTradingAgent:
         # Trading constants
         self.constants = TradingConstants()
 
-        # Pre-warm watchlist prices for faster startup
-        self._prewarm_watchlist_prices()
+        # Note: _startup_hydration() is called explicitly in run() and run_async()
+        # BEFORE the main loop starts to ensure proper initialization sequence
 
-    def _prewarm_watchlist_prices(self):
-        """Pre-warm watchlist prices on startup to avoid cold-start warnings.
+    def _startup_hydration(self):
+        """Hydrate system with initial data before starting trading loops.
 
-        Fetches initial prices for major coins (BTC, ETH) and any coins in the
-        active plan's target allocations to ensure price_map is populated before
-        the first trading loop.
+        Performs comprehensive startup initialization:
+        1. Pre-warms watchlist prices
+        2. Collects initial signals (fast, medium) to populate caches
+        3. Performs initial regime classification
+        4. Ensures all components are ready before trading begins
+
+        This prevents race conditions and ensures regime/signals are available
+        on first trading decision.
         """
+        self.logger.info("Starting startup hydration sequence...")
+
         try:
-            # Get current account state (without signals for speed)
+            # Step 1: Get base account state
             base_state = self.monitor.get_current_state()
+            self.logger.info(
+                "Step 1/4: Retrieved base account state",
+                extra={"portfolio_value": base_state.portfolio_value},
+            )
 
-            # Build initial watchlist
+            # Step 2: Pre-warm watchlist prices
             watchlist = self.monitor.build_watchlist(base_state, self.governor.active_plan)
-
-            # Fetch prices
             price_map = self.monitor.fetch_watchlist_prices(watchlist)
+            self.logger.info(
+                f"Step 2/4: Pre-warmed {len(price_map)}/{len(watchlist)} watchlist prices",
+                extra={"watchlist": sorted(watchlist), "prices_fetched": len(price_map)},
+            )
+
+            # Step 3: Hydrate signal caches (fast and medium)
+            # This populates technical indicators, funding rates, etc.
+            self.logger.info("Step 3/4: Hydrating signal caches...")
+            account_state_medium = None  # Initialize to avoid unbound variable
+            try:
+                # Collect fast signals to warm cache
+                account_state_fast = self.monitor.get_current_state_with_signals(
+                    "fast", active_plan=self.governor.active_plan
+                )
+                self.logger.info(
+                    "  - Fast signals collected",
+                    extra={
+                        "has_fast_signals": account_state_fast.fast_signals is not None,
+                        "is_cached": (
+                            account_state_fast.fast_signals.metadata.is_cached
+                            if account_state_fast.fast_signals
+                            else None
+                        ),
+                        "staleness_seconds": (
+                            account_state_fast.fast_signals.metadata.staleness_seconds
+                            if account_state_fast.fast_signals
+                            else None
+                        ),
+                    },
+                )
+
+                # Collect medium signals to warm cache and populate technical indicators
+                account_state_medium = self.monitor.get_current_state_with_signals(
+                    "medium", active_plan=self.governor.active_plan
+                )
+                self.logger.info(
+                    "  - Medium signals collected",
+                    extra={
+                        "has_medium_signals": account_state_medium.medium_signals is not None,
+                        "technical_indicators_count": (
+                            len(account_state_medium.medium_signals.technical_indicators)
+                            if account_state_medium.medium_signals
+                            else 0
+                        ),
+                        "is_cached": (
+                            account_state_medium.medium_signals.metadata.is_cached
+                            if account_state_medium.medium_signals
+                            else None
+                        ),
+                        "staleness_seconds": (
+                            account_state_medium.medium_signals.metadata.staleness_seconds
+                            if account_state_medium.medium_signals
+                            else None
+                        ),
+                    },
+                )
+            except Exception as e:
+                self.logger.warning(
+                    f"Signal hydration encountered errors (non-critical): {e}",
+                    exc_info=True,
+                )
+
+            # Step 4: Perform initial regime classification
+            self.logger.info("Step 4/4: Performing initial regime classification...")
+            try:
+                # Use medium signals from hydration
+                if account_state_medium and account_state_medium.medium_signals:
+                    regime_signals = self._extract_regime_signals(account_state_medium)
+                    classification = self.regime_detector.classify_regime(regime_signals)
+
+                    self.logger.info(
+                        f"  - Initial regime: {classification.regime} "
+                        f"(confidence: {classification.confidence:.2f})",
+                        extra={
+                            "regime": classification.regime,
+                            "confidence": classification.confidence,
+                            "reasoning": classification.reasoning,
+                        },
+                    )
+
+                    # Update regime detector with initial classification
+                    self.regime_detector.update_and_confirm(classification)
+                else:
+                    self.logger.warning(
+                        "  - Could not perform initial regime classification "
+                        "(medium signals unavailable)"
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    f"Initial regime classification failed (non-critical): {e}",
+                    exc_info=True,
+                )
 
             self.logger.info(
-                f"Pre-warmed {len(price_map)} prices for watchlist: {sorted(price_map.keys())}",
-                extra={"watchlist_size": len(watchlist), "prices_fetched": len(price_map)},
+                "✓ Startup hydration complete - system ready for trading",
+                extra={
+                    "watchlist_size": len(watchlist),
+                    "prices_available": len(price_map),
+                    "current_regime": self.regime_detector.current_regime,
+                },
             )
+
         except Exception as e:
-            # Non-critical failure - system will fetch prices on first loop
-            self.logger.warning(
-                f"Failed to pre-warm watchlist prices: {e}. Prices will be fetched on first loop.",
+            # Log error but don't crash - system can recover during first loop
+            self.logger.error(
+                f"Startup hydration failed: {e}. System will attempt to initialize during first loop.",
                 exc_info=True,
             )
 
@@ -161,6 +267,9 @@ class GovernedTradingAgent:
                 "slow_loop_interval": self.governance_config.slow_loop_interval_hours,
             },
         )
+
+        # Perform startup hydration before entering main loop
+        self._startup_hydration()
 
         while True:
             self.tick_count += 1
@@ -208,6 +317,9 @@ class GovernedTradingAgent:
                 "slow_loop_interval": self.governance_config.slow_loop_interval_hours,
             },
         )
+
+        # Perform startup hydration before entering main loop
+        self._startup_hydration()
 
         while True:
             self.tick_count += 1
