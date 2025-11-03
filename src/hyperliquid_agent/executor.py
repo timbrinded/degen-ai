@@ -12,6 +12,7 @@ from hyperliquid.info import Info
 
 from hyperliquid_agent.config import HyperliquidConfig
 from hyperliquid_agent.decision import TradeAction
+from hyperliquid_agent.market_registry import MarketRegistry
 
 
 @dataclass
@@ -27,21 +28,30 @@ class ExecutionResult:
 class TradeExecutor:
     """Executes trades on Hyperliquid platform."""
 
-    def __init__(self, config: HyperliquidConfig) -> None:
+    def __init__(self, config: HyperliquidConfig, registry: MarketRegistry) -> None:
         """Initialize the trade executor.
 
         Args:
             config: Hyperliquid configuration with credentials
+            registry: Market registry for symbol resolution (must be hydrated)
         """
         self.config = config
+        self.registry = registry
         account: LocalAccount = eth_account.Account.from_key(config.secret_key)  # type: ignore[misc]
+
+        # Initialize Info first to get spot metadata
+        self.info = Info(config.base_url, skip_ws=True)
+
+        # Get spot metadata for Exchange to support spot trading
+        spot_meta = self.info.spot_meta()
+
         self.exchange = Exchange(
             account_address=config.account_address,
             wallet=account,
             base_url=config.base_url,
+            spot_meta=spot_meta,  # Pass spot metadata
         )
 
-        self.info = Info(config.base_url, skip_ws=True)
         self.logger = logging.getLogger(__name__)
         self._asset_metadata_cache: dict[str, Any] = {}
 
@@ -129,19 +139,20 @@ class TradeExecutor:
             self.logger.error(f"Failed to get metadata for {coin}: {e}")
             raise
 
-    def _round_size(self, size: float, coin: str) -> float:
+    def _round_size(self, size: float, coin: str, market_type: str) -> float:
         """Round size to conform to asset's szDecimals requirement.
 
         Args:
             size: Raw size value
             coin: Asset symbol
+            market_type: "spot" or "perp"
 
         Returns:
             Rounded size that conforms to exchange requirements
         """
         try:
-            metadata = self._get_asset_metadata(coin)
-            sz_decimals = metadata.get("szDecimals", 0)
+            # Use registry to get sz_decimals
+            sz_decimals = self.registry.get_sz_decimals(coin, market_type)  # type: ignore
 
             # Use Decimal for precise rounding
             size_decimal = Decimal(str(size))
@@ -163,18 +174,23 @@ class TradeExecutor:
             return size
 
     def _get_market_name(self, coin: str, market_type: str) -> str:
-        """Format market name according to Hyperliquid conventions.
+        """Get market name using the centralized registry.
 
         Args:
             coin: Base coin symbol (e.g., 'ETH', 'BTC')
             market_type: 'spot' or 'perp'
 
         Returns:
-            Formatted market name for Hyperliquid API
+            Market identifier for Hyperliquid SDK
+
+        Raises:
+            ValueError: If market not found in registry
         """
-        if market_type == "spot":
-            return f"{coin}/USDC"
-        return coin
+        try:
+            return self.registry.get_market_name(coin, market_type)  # type: ignore
+        except ValueError as e:
+            self.logger.error(f"Market name resolution failed: {e}")
+            raise
 
     def _validate_action(self, action: TradeAction) -> bool:
         """Validate action parameters before submission.
@@ -229,7 +245,8 @@ class TradeExecutor:
         """
         is_buy = action.action_type in ["buy", "close"]
 
-        # Format market name based on market type (SPOT: "ETH/USDC", PERP: "ETH")
+        # Format market name based on market type
+        # SPOT: "ETH/USDC", PERP: "ETH"
         market_name = self._get_market_name(action.coin, action.market_type)
 
         self.logger.debug(
@@ -245,7 +262,7 @@ class TradeExecutor:
                 raise ValueError("Size must be specified for close action")
 
             # Round size to conform to exchange requirements
-            rounded_size = self._round_size(action.size, action.coin)
+            rounded_size = self._round_size(action.size, action.coin, action.market_type)
 
             # Submit market order to close
             return self.exchange.market_open(
@@ -260,7 +277,7 @@ class TradeExecutor:
             raise ValueError(f"Size must be specified for {action.action_type} action")
 
         # Round size to conform to exchange requirements
-        rounded_size = self._round_size(action.size, action.coin)
+        rounded_size = self._round_size(action.size, action.coin, action.market_type)
 
         # Market order (price is None)
         if action.price is None:

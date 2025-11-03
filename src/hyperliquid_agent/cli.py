@@ -438,12 +438,23 @@ def test_executor(
     price: float | None = typer.Option(None, "--price", help="Limit price (None for market)"),
 ) -> None:
     """Test the trade executor with a single action on testnet."""
+    import asyncio
+
+    from hyperliquid.info import Info
+
     from hyperliquid_agent.config import load_config
     from hyperliquid_agent.decision import TradeAction
     from hyperliquid_agent.executor import TradeExecutor
+    from hyperliquid_agent.market_registry import MarketRegistry
 
     cfg = load_config(str(config))
-    executor = TradeExecutor(cfg.hyperliquid)
+
+    # Initialize and hydrate market registry
+    info = Info(cfg.hyperliquid.base_url, skip_ws=True)
+    registry = MarketRegistry(info)
+    asyncio.run(registry.hydrate())
+
+    executor = TradeExecutor(cfg.hyperliquid, registry)
 
     # Create test action
     action = TradeAction(

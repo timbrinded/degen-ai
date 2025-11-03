@@ -7,9 +7,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import NoReturn
 
+from hyperliquid.info import Info
+
 from hyperliquid_agent.agent import TradingAgent
 from hyperliquid_agent.config import Config
 from hyperliquid_agent.decision import TradeAction
+from hyperliquid_agent.executor import TradeExecutor
 from hyperliquid_agent.governance.governor import (
     GovernorConfig,
     PlanChangeProposal,
@@ -28,6 +31,7 @@ from hyperliquid_agent.governance.tripwire import (
     TripwireConfig,
     TripwireService,
 )
+from hyperliquid_agent.market_registry import MarketRegistry
 from hyperliquid_agent.monitor_enhanced import EnhancedPositionMonitor
 from hyperliquid_agent.signals import EnhancedAccountState, MediumLoopSignals, TechnicalIndicators
 
@@ -92,6 +96,13 @@ class GovernedTradingAgent:
         # Initialize base agent components (but don't use its run loop)
         self.base_agent = TradingAgent(config)
 
+        # Initialize market registry (will be hydrated during startup)
+        self.info = Info(config.hyperliquid.base_url, skip_ws=True)
+        self.registry = MarketRegistry(self.info)
+
+        # Initialize executor with registry
+        self.executor = TradeExecutor(config.hyperliquid, self.registry)
+
         # Initialize governance components with logger
         self.governor = StrategyGovernor(governance_config.governor, logger=self.base_agent.logger)
         self.regime_detector = RegimeDetector(
@@ -127,6 +138,7 @@ class GovernedTradingAgent:
         """Hydrate system with initial data before starting trading loops.
 
         Performs comprehensive startup initialization:
+        0. Hydrate market registry with all available markets
         1. Pre-warms watchlist prices
         2. Collects initial signals (fast, medium) to populate caches
         3. Performs initial regime classification
@@ -138,10 +150,15 @@ class GovernedTradingAgent:
         self.logger.info("Starting startup hydration sequence...")
 
         try:
+            # Step 0: Hydrate market registry
+            self.logger.info("Step 0/5: Hydrating market registry...")
+            asyncio.run(self.registry.hydrate())
+            self.logger.info("Step 0/5: Market registry hydrated successfully")
+
             # Step 1: Get base account state
             base_state = self.monitor.get_current_state()
             self.logger.info(
-                "Step 1/4: Retrieved base account state",
+                "Step 1/5: Retrieved base account state",
                 extra={"portfolio_value": base_state.portfolio_value},
             )
 
@@ -149,13 +166,13 @@ class GovernedTradingAgent:
             watchlist = self.monitor.build_watchlist(base_state, self.governor.active_plan)
             price_map = self.monitor.fetch_watchlist_prices(watchlist)
             self.logger.info(
-                f"Step 2/4: Pre-warmed {len(price_map)}/{len(watchlist)} watchlist prices",
+                f"Step 2/5: Pre-warmed {len(price_map)}/{len(watchlist)} watchlist prices",
                 extra={"watchlist": sorted(watchlist), "prices_fetched": len(price_map)},
             )
 
             # Step 3: Hydrate signal caches (fast and medium)
             # This populates technical indicators, funding rates, etc.
-            self.logger.info("Step 3/4: Hydrating signal caches...")
+            self.logger.info("Step 3/5: Hydrating signal caches...")
             account_state_medium = None  # Initialize to avoid unbound variable
             try:
                 # Collect fast signals to warm cache
@@ -211,7 +228,7 @@ class GovernedTradingAgent:
                 )
 
             # Step 4: Perform initial regime classification
-            self.logger.info("Step 4/4: Performing initial regime classification...")
+            self.logger.info("Step 4/5: Performing initial regime classification...")
             try:
                 # Use medium signals from hydration
                 if account_state_medium and account_state_medium.medium_signals:
@@ -548,7 +565,7 @@ class GovernedTradingAgent:
             )
 
             try:
-                result = self.base_agent.executor.execute_action(exit_action)
+                result = self.executor.execute_action(exit_action)
                 exit_results.append(
                     {
                         "coin": exit_action.coin,
@@ -910,7 +927,7 @@ class GovernedTradingAgent:
 
                 for action in decision.micro_adjustments:
                     try:
-                        result = self.base_agent.executor.execute_action(action)
+                        result = self.executor.execute_action(action)
                         log_level = logging.INFO if result.success else logging.ERROR
                         self.logger.log(
                             log_level,
@@ -1261,7 +1278,7 @@ class GovernedTradingAgent:
 
             for action in actions:
                 try:
-                    result = self.base_agent.executor.execute_action(action)
+                    result = self.executor.execute_action(action)
 
                     # Log execution result
                     log_level = logging.INFO if result.success else logging.ERROR

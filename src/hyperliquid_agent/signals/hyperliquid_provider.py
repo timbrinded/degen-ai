@@ -7,6 +7,7 @@ from datetime import datetime
 
 from hyperliquid.info import Info
 
+from hyperliquid_agent.market_registry import MarketRegistry
 from hyperliquid_agent.signals.cache import SQLiteCacheLayer
 from hyperliquid_agent.signals.providers import DataProvider, ProviderResponse
 
@@ -101,16 +102,18 @@ class HyperliquidProvider(DataProvider):
     CACHE_TTL_CANDLES = 60  # Candles are relatively stable
     CACHE_TTL_OPEN_INTEREST = 30  # OI updates frequently
 
-    def __init__(self, info: Info, cache: SQLiteCacheLayer):
+    def __init__(self, info: Info, cache: SQLiteCacheLayer, registry: MarketRegistry | None = None):
         """Initialize Hyperliquid provider.
 
         Args:
             info: Hyperliquid Info API client
             cache: SQLite cache layer for data persistence
+            registry: Optional market registry for symbol validation
         """
         super().__init__()
         self.info = info
         self.cache = cache
+        self.registry = registry
 
     def get_provider_name(self) -> str:
         """Return provider identifier.
@@ -127,6 +130,20 @@ class HyperliquidProvider(DataProvider):
             Default cache TTL (60 seconds)
         """
         return 60
+
+    def _validate_symbol(self, coin: str) -> None:
+        """Validate that a symbol exists in the registry.
+
+        Args:
+            coin: Symbol to validate
+
+        Raises:
+            ValueError: If symbol not found and registry is available
+        """
+        if self.registry and self.registry.is_ready:
+            asset_info = self.registry.get_asset_info(coin)
+            if not asset_info:
+                raise ValueError(f"Unknown symbol: {coin}. Not found in market registry.")
 
     async def fetch(self, **kwargs) -> ProviderResponse:
         """Generic fetch method (not used directly).
@@ -156,6 +173,9 @@ class HyperliquidProvider(DataProvider):
         Raises:
             Exception: If fetch fails after all retries
         """
+        # Validate symbol if registry available
+        self._validate_symbol(coin)
+
         cache_key = f"orderbook:{coin}"
 
         # Check cache first
@@ -372,6 +392,9 @@ class HyperliquidProvider(DataProvider):
         Raises:
             Exception: If fetch fails after all retries
         """
+        # Validate symbol if registry available
+        self._validate_symbol(coin)
+
         cache_key = f"open_interest:{coin}"
 
         # Check cache first
