@@ -311,6 +311,11 @@ class MarketRegistry:
             RuntimeError: If registry not hydrated
             ValueError: If asset or market type not available
         """
+        self._logger.debug(
+            f"MarketRegistry.get_market_name called: symbol='{symbol}', "
+            f"market_type='{market_type}', quote='{quote}'"
+        )
+
         if not self._ready:
             raise RuntimeError(
                 "MarketRegistry not ready. Call await registry.hydrate() during startup."
@@ -318,31 +323,55 @@ class MarketRegistry:
 
         # Normalize symbol
         normalized = self._normalize_symbol(symbol)
+        self._logger.debug(f"Normalized symbol '{symbol}' -> '{normalized}'")
 
         asset = self._assets.get(normalized)
         if not asset:
+            self._logger.debug(
+                f"Asset '{symbol}' (normalized: '{normalized}') not found in registry. "
+                f"Available assets: {list(self._assets.keys())[:10]}"
+            )
             raise ValueError(f"Unknown asset: {symbol}")
+
+        self._logger.debug(
+            f"Asset '{normalized}' found: has_perp={asset.has_perp}, "
+            f"has_spot={asset.has_spot}, spot_markets={len(asset.spot_markets)}"
+        )
 
         if market_type == "perp":
             if not asset.perp:
+                self._logger.debug(f"Asset '{symbol}' does not have perpetual market")
                 raise ValueError(f"{symbol} not available on perpetual market")
-            return asset.perp.market_name
+
+            market_name = asset.perp.market_name
+            self._logger.debug(f"Returning perp market name: '{market_name}'")
+            return market_name
 
         # Spot market: find best match based on quote currency
         if not asset.spot_markets:
+            self._logger.debug(f"Asset '{symbol}' does not have any spot markets")
             raise ValueError(f"{symbol} not available on spot market")
+
+        self._logger.debug(
+            f"Searching for spot market with quote '{quote}' among "
+            f"{[s.market_name for s in asset.spot_markets]}"
+        )
 
         # Prefer requested quote currency
         quote_upper = quote.upper()
         for spot in asset.spot_markets:
             if quote_upper in spot.market_name.upper():
+                self._logger.debug(
+                    f"Found matching spot market: '{spot.market_name}' (contains quote '{quote}')"
+                )
                 return spot.market_name
 
         # Fallback to first available spot market
+        fallback_market = asset.spot_markets[0].market_name
         self._logger.debug(
-            f"Quote {quote} not found for {symbol}, using {asset.spot_markets[0].market_name}"
+            f"Quote '{quote}' not found for {symbol}, using fallback: '{fallback_market}'"
         )
-        return asset.spot_markets[0].market_name
+        return fallback_market
 
     def resolve_symbol(self, raw_symbol: str) -> tuple[str, Literal["spot", "perp"]] | None:
         """Resolve ambiguous input to (base_symbol, market_type).

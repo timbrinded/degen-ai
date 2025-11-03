@@ -35,6 +35,7 @@ class TradeExecutor:
             config: Hyperliquid configuration with credentials
             registry: Market registry for symbol resolution (must be hydrated)
         """
+        self.logger = logging.getLogger(__name__)
         self.config = config
         self.registry = registry
         account: LocalAccount = eth_account.Account.from_key(config.secret_key)  # type: ignore[misc]
@@ -45,14 +46,53 @@ class TradeExecutor:
         # Get spot metadata for Exchange to support spot trading
         spot_meta = self.info.spot_meta()
 
+        # Validate spot_meta structure
+        if not spot_meta:
+            raise RuntimeError("Failed to fetch spot metadata from Hyperliquid: spot_meta is empty")
+
+        if not isinstance(spot_meta, dict):
+            raise RuntimeError(
+                f"Invalid spot metadata format: expected dict, got {type(spot_meta).__name__}"
+            )
+
+        # Check for universe data
+        universe = spot_meta.get("universe")
+        if universe is None:
+            raise RuntimeError(
+                "Spot metadata is malformed: missing 'universe' field. "
+                f"Available fields: {list(spot_meta.keys())}"
+            )
+
+        if not isinstance(universe, list):
+            raise RuntimeError(
+                f"Spot metadata is malformed: 'universe' should be a list, got {type(universe).__name__}"
+            )
+
+        # Log spot metadata structure for debugging
+        self.logger.debug(f"Spot metadata structure: {list(spot_meta.keys())}")
+        self.logger.debug(f"Spot metadata universe length: {len(universe)}")
+
+        # Log number of spot markets loaded
+        num_spot_markets = len(universe)
+        self.logger.info(f"Loaded {num_spot_markets} spot markets from Hyperliquid")
+
+        if num_spot_markets == 0:
+            self.logger.warning(
+                "No spot markets found in metadata - spot trading may not be available"
+            )
+
+        # Log sample of available spot markets for debugging
+        if num_spot_markets > 0:
+            sample_markets = [market.get("name", "unknown") for market in universe[:5]]
+            self.logger.debug(f"Sample spot markets: {sample_markets}")
+
         self.exchange = Exchange(
             account_address=config.account_address,
             wallet=account,
             base_url=config.base_url,
-            spot_meta=spot_meta,  # Pass spot metadata
+            spot_meta=spot_meta,  # type: ignore[arg-type]  # Pass spot metadata
         )
 
-        self.logger = logging.getLogger(__name__)
         self._asset_metadata_cache: dict[str, Any] = {}
 
     def execute_action(self, action: TradeAction) -> ExecutionResult:
@@ -186,8 +226,14 @@ class TradeExecutor:
         Raises:
             ValueError: If market not found in registry
         """
+        self.logger.debug(f"Resolving market name for coin='{coin}', market_type='{market_type}'")
+
         try:
-            return self.registry.get_market_name(coin, market_type)  # type: ignore
+            market_name = self.registry.get_market_name(coin, market_type)  # type: ignore
+            self.logger.debug(
+                f"Market name resolved: coin='{coin}', market_type='{market_type}' -> '{market_name}'"
+            )
+            return market_name
         except ValueError as e:
             self.logger.error(f"Market name resolution failed: {e}")
             raise
