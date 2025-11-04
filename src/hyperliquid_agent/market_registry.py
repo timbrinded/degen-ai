@@ -121,6 +121,7 @@ class MarketRegistry:
         self._assets: dict[str, AssetMarketInfo] = {}
         self._perp_by_name: dict[str, AssetMarketInfo] = {}
         self._spot_by_name: dict[str, AssetMarketInfo] = {}
+        self._spot_market_by_identifier: dict[str, SpotMarketInfo] = {}
         self._ready = False
         self._logger = logging.getLogger(__name__)
 
@@ -296,8 +297,23 @@ class MarketRegistry:
             asset_info.spot_markets.append(spot_info)
 
             # Add to reverse lookup
-            for identifier in unique_aliases:
+            lookup_identifiers = set(unique_aliases)
+            if spot_info.native_symbol:
+                lookup_identifiers.add(spot_info.native_symbol)
+
+            for identifier in lookup_identifiers:
+                if not identifier:
+                    continue
+
+                normalized_identifier = identifier.upper()
+
+                # Preserve original casing for legacy lookups
                 self._spot_by_name[identifier] = asset_info
+                self._spot_market_by_identifier[identifier.upper()] = spot_info
+
+                # Store normalized variant to allow case-insensitive matching
+                self._spot_by_name[normalized_identifier] = asset_info
+                self._spot_market_by_identifier[normalized_identifier] = spot_info
 
             spot_count += 1
 
@@ -405,6 +421,72 @@ class MarketRegistry:
         )
         return fallback_market
 
+    def get_spot_market_info(
+        self,
+        symbol: str,
+        quote: str = "USDC",
+        market_identifier: str | None = None,
+    ) -> SpotMarketInfo:
+        """Retrieve detailed spot metadata for a symbol.
+
+        Args:
+            symbol: Asset symbol (e.g., "ETH").
+            quote: Desired quote currency for spot markets.
+            market_identifier: Optional market identifier (alias or native symbol).
+
+        Returns:
+            SpotMarketInfo describing the resolved market.
+
+        Raises:
+            RuntimeError: If the registry has not been hydrated.
+            ValueError: If the requested spot market is unavailable.
+        """
+
+        if not self._ready:
+            raise RuntimeError(
+                "MarketRegistry not ready. Call await registry.hydrate() during startup."
+            )
+
+        normalized_symbol = self._normalize_symbol(symbol)
+        asset = self._assets.get(normalized_symbol)
+
+        if not asset or not asset.spot_markets:
+            raise ValueError(f"{symbol} not available on spot market")
+
+        # 1) Direct lookup by provided identifier (alias or native)
+        if market_identifier:
+            lookup_key = market_identifier.upper()
+            spot_info = self._spot_market_by_identifier.get(lookup_key)
+            if spot_info and spot_info in asset.spot_markets:
+                return spot_info
+
+        quote_upper = quote.upper()
+
+        # 2) Prefer markets whose aliases explicitly include the desired quote
+        for spot in asset.spot_markets:
+            identifiers = [spot.market_name, *(spot.aliases or [])]
+            for identifier in identifiers:
+                if not identifier or "/" not in identifier:
+                    continue
+
+                try:
+                    _, identifier_quote = identifier.rsplit("/", 1)
+                except ValueError:
+                    continue
+
+                if identifier_quote.upper() == quote_upper:
+                    return spot
+
+        # 3) Fallback to the first available market
+        self._logger.debug(
+            "Quote '%s' not explicitly found for %s; falling back to first spot market '%s'",
+            quote,
+            symbol,
+            asset.spot_markets[0].market_name,
+        )
+
+        return asset.spot_markets[0]
+
     def resolve_symbol(self, raw_symbol: str) -> tuple[str, Literal["spot", "perp"]] | None:
         """Resolve ambiguous input to (base_symbol, market_type).
 
@@ -481,6 +563,7 @@ class MarketRegistry:
         old_assets = self._assets
         old_perp = self._perp_by_name
         old_spot = self._spot_by_name
+        old_spot_market_lookup = self._spot_market_by_identifier
         old_ready = self._ready
 
         try:
@@ -488,6 +571,7 @@ class MarketRegistry:
             self._assets = {}
             self._perp_by_name = {}
             self._spot_by_name = {}
+            self._spot_market_by_identifier = {}
             self._ready = False
 
             # Reload
@@ -501,6 +585,7 @@ class MarketRegistry:
             self._assets = old_assets
             self._perp_by_name = old_perp
             self._spot_by_name = old_spot
+            self._spot_market_by_identifier = old_spot_market_lookup
             self._ready = old_ready
             raise
 

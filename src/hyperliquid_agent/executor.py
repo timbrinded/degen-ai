@@ -2,7 +2,7 @@
 
 import logging
 from dataclasses import dataclass
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from typing import Any
 
 import eth_account
@@ -27,6 +27,8 @@ class ExecutionResult:
 
 class TradeExecutor:
     """Executes trades on Hyperliquid platform."""
+
+    MIN_NOTIONAL_USDC = Decimal("5")
 
     def __init__(self, config: HyperliquidConfig, registry: MarketRegistry) -> None:
         """Initialize the trade executor.
@@ -213,6 +215,149 @@ class TradeExecutor:
             self.logger.warning(f"Failed to round size for {coin}, using original value: {e}")
             return size
 
+    def _get_reference_price(self, coin: str, market_type: str, market_name: str) -> Decimal:
+        """Fetch reference price for notional enforcement.
+
+        Args:
+            coin: Base asset symbol
+            market_type: "spot" or "perp"
+            market_name: Resolved market identifier (used for spot markets)
+
+        Returns:
+            Decimal price in USDC terms
+
+        Raises:
+            ValueError: If the price cannot be determined
+        """
+
+        try:
+            if market_type == "spot":
+                identifier_candidates: set[str] = {market_name.upper()}
+                spot_info = None
+
+                try:
+                    spot_info = self.registry.get_spot_market_info(  # type: ignore[attr-defined]
+                        coin,
+                        market_identifier=market_name,
+                    )
+                except Exception as resolver_err:
+                    self.logger.debug(
+                        "Failed to resolve spot market info for %s (%s): %s",
+                        coin,
+                        market_name,
+                        resolver_err,
+                    )
+
+                if spot_info:
+                    identifier_candidates.add(spot_info.market_name.upper())
+
+                    if spot_info.native_symbol:
+                        identifier_candidates.add(spot_info.native_symbol.upper())
+
+                    for alias in spot_info.aliases:
+                        if alias:
+                            identifier_candidates.add(alias.upper())
+
+                _, spot_ctxs = self.info.spot_meta_and_asset_ctxs()
+                ctx_lookup = {
+                    ctx_coin.upper(): ctx
+                    for ctx in spot_ctxs
+                    if (ctx_coin := ctx.get("coin")) and isinstance(ctx_coin, str)
+                }
+
+                for identifier in identifier_candidates:
+                    ctx = ctx_lookup.get(identifier)
+                    if not ctx:
+                        continue
+
+                    price_str = ctx.get("markPx") or ctx.get("midPx")
+                    if price_str is None:
+                        continue
+
+                    price = Decimal(price_str)
+                    if price <= 0:
+                        continue
+
+                    return price
+
+                self.logger.warning(
+                    "Spot reference price lookup failed for %s (%s). Candidates: %s."
+                    " Available spot context keys: %s",
+                    coin,
+                    market_name,
+                    sorted(identifier_candidates),
+                    sorted(ctx_lookup.keys())[:10],
+                )
+
+                raise ValueError(f"Spot reference price not found for market {market_name}")
+
+            meta, perp_ctxs = self.info.meta_and_asset_ctxs()
+            universe = meta.get("universe", [])
+            for asset, ctx in zip(universe, perp_ctxs, strict=False):
+                if asset.get("name") == coin:
+                    price_str = ctx.get("markPx") or ctx.get("midPx")
+                    if price_str is None:
+                        break
+                    price = Decimal(price_str)
+                    if price <= 0:
+                        break
+                    return price
+
+            raise ValueError(f"Perp reference price not found for coin {coin}")
+
+        except Exception as exc:
+            raise ValueError(
+                f"Unable to determine reference price for {coin} ({market_type})"
+            ) from exc
+
+    def _ensure_min_notional(
+        self, size: float, reference_price: Decimal, coin: str, market_type: str
+    ) -> float:
+        """Ensure order notional meets exchange minimum requirements.
+
+        Args:
+            size: Current order size after rounding
+            reference_price: Price estimate in USDC terms
+            coin: Base asset symbol
+            market_type: "spot" or "perp"
+
+        Returns:
+            Adjusted size respecting minimum notional
+
+        Raises:
+            ValueError: If a valid adjustment cannot be made
+        """
+
+        if reference_price <= 0:
+            raise ValueError(f"Invalid reference price {reference_price} for {coin}")
+
+        size_decimal = Decimal(str(size))
+        notional = size_decimal * reference_price
+
+        if notional >= self.MIN_NOTIONAL_USDC:
+            return size
+
+        sz_decimals = self.registry.get_sz_decimals(coin, market_type)  # type: ignore
+        quantizer = Decimal(10) ** -sz_decimals
+
+        min_size = (self.MIN_NOTIONAL_USDC / reference_price).quantize(quantizer, rounding=ROUND_UP)
+
+        adjusted_size = max(min_size, size_decimal).quantize(quantizer, rounding=ROUND_UP)
+
+        if adjusted_size <= 0:
+            raise ValueError(f"Adjusted order size is non-positive for {coin}")
+
+        if adjusted_size != size_decimal:
+            self.logger.info(
+                "Adjusted %s order size from %s to %s to satisfy %s USDC minimum notional",
+                market_type,
+                size_decimal,
+                adjusted_size,
+                self.MIN_NOTIONAL_USDC,
+            )
+
+        return float(adjusted_size)
+
     def _get_market_name(self, coin: str, market_type: str) -> str:
         """Get market name using the centralized registry.
 
@@ -337,6 +482,22 @@ class TradeExecutor:
 
         # Round size to conform to exchange requirements
         rounded_size = self._round_size(action.size, action.coin, action.market_type)
+
+        if action.action_type in ["buy", "sell"]:
+            # Determine reference price for notional calculation
+            if action.price is not None:
+                reference_price = Decimal(str(action.price))
+            else:
+                reference_price = self._get_reference_price(
+                    action.coin, action.market_type, market_name
+                )
+
+            rounded_size = self._ensure_min_notional(
+                rounded_size,
+                reference_price,
+                action.coin,
+                action.market_type,
+            )
 
         # Market order (price is None)
         if action.price is None:
