@@ -300,15 +300,36 @@ class FastSignalCollector(SignalCollectorBase):
         slippage_estimates = {}
         partial_fill_rates = {}
         order_book_depth = {}
-        micro_pnl = sum(p.unrealized_pnl for p in account_state.positions)
 
-        # Track API latency
+        # Only request market data for perpetual positions; spot balances share the AccountState
+        perp_positions = [p for p in account_state.positions if p.market_type == "perp"]
+        micro_pnl = sum(p.unrealized_pnl for p in perp_positions)
+
+        if not perp_positions:
+            metadata = SignalQualityMetadata(
+                timestamp=datetime.now(),
+                confidence=0.0,
+                staleness_seconds=0.0,
+                sources=["hyperliquid"],
+                is_cached=False,
+            )
+
+            return FastLoopSignals(
+                spreads=spreads,
+                slippage_estimates=slippage_estimates,
+                short_term_volatility=0.0,
+                micro_pnl=micro_pnl,
+                partial_fill_rates=partial_fill_rates,
+                order_book_depth=order_book_depth,
+                api_latency_ms=0.0,
+                metadata=metadata,
+            )
+
+        # Track API latency for perp positions only
         api_start_time = time.time()
 
-        # Collect order books for all positions concurrently
-        tasks = [
-            self.hyperliquid_provider.fetch_order_book(pos.coin) for pos in account_state.positions
-        ]
+        # Collect order books for perpetual positions concurrently
+        tasks = [self.hyperliquid_provider.fetch_order_book(pos.coin) for pos in perp_positions]
 
         order_book_responses = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -319,7 +340,7 @@ class FastSignalCollector(SignalCollectorBase):
         successful_fetches = 0
         total_confidence = 0.0
 
-        for pos, ob_response in zip(account_state.positions, order_book_responses, strict=True):
+        for pos, ob_response in zip(perp_positions, order_book_responses, strict=True):
             coin = pos.coin
 
             if isinstance(ob_response, BaseException):
@@ -375,7 +396,7 @@ class FastSignalCollector(SignalCollectorBase):
             partial_fill_rates[coin] = 0.95
 
         # Calculate short-term volatility from recent price changes
-        short_term_vol = await self._calculate_short_term_volatility(account_state.positions)
+        short_term_vol = await self._calculate_short_term_volatility(perp_positions)
 
         # Build quality metadata
         avg_confidence = total_confidence / successful_fetches if successful_fetches > 0 else 0.0
@@ -494,6 +515,33 @@ class MediumSignalCollector(SignalCollectorBase):
 
         total_value = account_state.portfolio_value
 
+        # Focus medium-loop analytics on perpetual markets; spot balances lack required data
+        perp_positions = [p for p in account_state.positions if p.market_type == "perp"]
+
+        if not perp_positions:
+            metadata = SignalQualityMetadata(
+                timestamp=datetime.now(),
+                confidence=0.0,
+                staleness_seconds=0.0,
+                sources=["hyperliquid"],
+                is_cached=False,
+            )
+
+            return MediumLoopSignals(
+                realized_vol_1h=0.0,
+                realized_vol_24h=0.0,
+                trend_score=0.0,
+                funding_basis=funding_basis,
+                perp_spot_basis=perp_spot_basis,
+                concentration_ratios=concentration_ratios,
+                drift_from_targets=drift_from_targets,
+                technical_indicators=technical_indicators,
+                open_interest_change_24h=open_interest_change_24h,
+                oi_to_volume_ratio=oi_to_volume_ratio,
+                funding_rate_trend={},
+                metadata=metadata,
+            )
+
         # Initialize tracking variables
         successful_fetches = 0
         total_confidence = 0.0
@@ -502,13 +550,13 @@ class MediumSignalCollector(SignalCollectorBase):
         candles_responses: Any = []
 
         # Collect data for all positions concurrently
-        if account_state.positions:
+        if perp_positions:
             # Create concurrent tasks for each position
             funding_tasks = []
             oi_tasks = []
             candles_tasks = []
 
-            for position in account_state.positions:
+            for position in perp_positions:
                 coin = position.coin
 
                 # Funding rate history (last 24 hours)
@@ -533,7 +581,7 @@ class MediumSignalCollector(SignalCollectorBase):
             oi_responses = await asyncio.gather(*oi_tasks, return_exceptions=True)
             candles_responses = await asyncio.gather(*candles_tasks, return_exceptions=True)
 
-            for i, position in enumerate(account_state.positions):  # type: ignore[assignment]
+            for i, position in enumerate(perp_positions):  # type: ignore[assignment]
                 coin = position.coin
 
                 # Calculate concentration
@@ -610,39 +658,46 @@ class MediumSignalCollector(SignalCollectorBase):
                     open_interest_change_24h[coin] = None
                     oi_to_volume_ratio[coin] = 0.0
 
-                # Process candles for technical indicators
+                # Process candles for technical indicators and price history
                 candles_response = candles_responses[i]
                 if not isinstance(candles_response, BaseException):
                     candles = candles_response.data
-                    if candles and len(candles) >= 50:
-                        try:
-                            # Update price history with latest candle
-                            if coin not in self.price_history:
-                                self.price_history[coin] = PriceHistory()
+                    if candles:
+                        if coin not in self.price_history:
+                            self.price_history[coin] = PriceHistory()
 
-                            # Add the most recent candle to price history
-                            latest_candle = candles[-1]
-                            self.price_history[coin].add_candle(
-                                close=latest_candle.close,
-                                high=latest_candle.high,
-                                low=latest_candle.low,
-                                timestamp=latest_candle.timestamp,
+                        history = self.price_history[coin]
+                        last_timestamp = history.timestamps[-1] if history.timestamps else None
+
+                        for candle in candles:
+                            if last_timestamp and candle.timestamp <= last_timestamp:
+                                continue
+
+                            history.add_candle(
+                                close=candle.close,
+                                high=candle.high,
+                                low=candle.low,
+                                timestamp=candle.timestamp,
                             )
+                            last_timestamp = candle.timestamp
 
-                            # Calculate technical indicators using ComputedSignalProcessor
-                            indicators = (
-                                await self.computed_processor.calculate_technical_indicators(
-                                    candles
+                        if len(candles) >= 50:
+                            try:
+                                indicators = (
+                                    await self.computed_processor.calculate_technical_indicators(
+                                        candles
+                                    )
                                 )
-                            )
-                            technical_indicators[coin] = indicators
+                                technical_indicators[coin] = indicators
 
-                            successful_fetches += 1
-                            total_confidence += candles_response.confidence
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to calculate technical indicators for {coin}: {e}"
-                            )
+                                successful_fetches += 1
+                                total_confidence += candles_response.confidence
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to calculate technical indicators for {coin}: {e}"
+                                )
+                                technical_indicators[coin] = None
+                        else:
                             technical_indicators[coin] = None
                     else:
                         technical_indicators[coin] = None
@@ -651,7 +706,7 @@ class MediumSignalCollector(SignalCollectorBase):
 
         # Calculate realized volatility and trend using the largest position
         realized_vol_1h, realized_vol_24h, trend_score = await self._calculate_volatility_and_trend(
-            account_state.positions
+            perp_positions
         )
 
         # Build quality metadata
@@ -665,7 +720,9 @@ class MediumSignalCollector(SignalCollectorBase):
                 not isinstance(r, BaseException) and r.is_cached
                 for responses in [funding_responses, oi_responses, candles_responses]
                 for r in responses
-            ),
+            )
+            if perp_positions
+            else False,
         )
 
         # Type cast for funding_rate_trend to satisfy type checker

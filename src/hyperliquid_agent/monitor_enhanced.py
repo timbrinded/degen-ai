@@ -156,6 +156,9 @@ class EnhancedPositionMonitor(PositionMonitor):
         # Add ONLY perpetual positions (not spot balances)
         # Positions are already perp contracts, but validate against known markets
         for position in account_state.positions:
+            if position.market_type != "perp":
+                continue
+
             if position.coin in self.valid_perp_markets:
                 watchlist.add(position.coin)
 

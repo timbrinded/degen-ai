@@ -134,7 +134,7 @@ class GovernedTradingAgent:
         # Note: _startup_hydration() is called explicitly in run() and run_async()
         # BEFORE the main loop starts to ensure proper initialization sequence
 
-    def _startup_hydration(self):
+    async def _startup_hydration_async(self):
         """Hydrate system with initial data before starting trading loops.
 
         Performs comprehensive startup initialization:
@@ -152,7 +152,7 @@ class GovernedTradingAgent:
         try:
             # Step 0: Hydrate market registry
             self.logger.info("Step 0/5: Hydrating market registry...")
-            asyncio.run(self.registry.hydrate())
+            await self.registry.hydrate()
             self.logger.info("Step 0/5: Market registry hydrated successfully")
 
             # Step 1: Get base account state
@@ -274,6 +274,19 @@ class GovernedTradingAgent:
                 exc_info=True,
             )
 
+    def _startup_hydration(self) -> None:
+        """Synchronously hydrate startup state, guarding against nested event loops."""
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self._startup_hydration_async())
+        else:
+            raise RuntimeError(
+                "GovernedTradingAgent.run() cannot be invoked while an event loop is running. "
+                "Use run_async() instead."
+            )
+
     def run(self) -> NoReturn:
         """Run the main governed loop indefinitely (synchronous version for backward compatibility)."""
         self.logger.info(
@@ -336,7 +349,7 @@ class GovernedTradingAgent:
         )
 
         # Perform startup hydration before entering main loop
-        self._startup_hydration()
+        await self._startup_hydration_async()
 
         while True:
             self.tick_count += 1
@@ -1760,7 +1773,7 @@ class GovernedTradingAgent:
         if hasattr(self.monitor, "signal_service") and representative_coin:
             try:
                 # Access the orchestrator's medium collector to get price history
-                orchestrator = self.monitor.signal_service.loop
+                orchestrator = getattr(self.monitor.signal_service, "orchestrator", None)
                 if orchestrator and hasattr(orchestrator, "medium_collector"):
                     price_history = orchestrator.medium_collector.get_price_history(
                         representative_coin
