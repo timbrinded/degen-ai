@@ -1,14 +1,18 @@
 """Governed Trading Agent orchestration with multi-timescale decision-making."""
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import NoReturn
 
+from hyperliquid.info import Info
+
 from hyperliquid_agent.agent import TradingAgent
 from hyperliquid_agent.config import Config
 from hyperliquid_agent.decision import TradeAction
+from hyperliquid_agent.executor import TradeExecutor
 from hyperliquid_agent.governance.governor import (
     GovernorConfig,
     PlanChangeProposal,
@@ -27,6 +31,7 @@ from hyperliquid_agent.governance.tripwire import (
     TripwireConfig,
     TripwireService,
 )
+from hyperliquid_agent.market_registry import MarketRegistry
 from hyperliquid_agent.monitor_enhanced import EnhancedPositionMonitor
 from hyperliquid_agent.signals import EnhancedAccountState, MediumLoopSignals, TechnicalIndicators
 
@@ -41,6 +46,7 @@ class GovernedAgentConfig:
     fast_loop_interval_seconds: int = 10
     medium_loop_interval_minutes: int = 30
     slow_loop_interval_hours: int = 24
+    emergency_reduction_pct: float = 100.0  # Percentage of positions to close in emergency
 
 
 @dataclass
@@ -90,6 +96,13 @@ class GovernedTradingAgent:
         # Initialize base agent components (but don't use its run loop)
         self.base_agent = TradingAgent(config)
 
+        # Initialize market registry (will be hydrated during startup)
+        self.info = Info(config.hyperliquid.base_url, skip_ws=True)
+        self.registry = MarketRegistry(self.info)
+
+        # Initialize executor with registry
+        self.executor = TradeExecutor(config.hyperliquid, self.registry)
+
         # Initialize governance components with logger
         self.governor = StrategyGovernor(governance_config.governor, logger=self.base_agent.logger)
         self.regime_detector = RegimeDetector(
@@ -118,10 +131,166 @@ class GovernedTradingAgent:
         # Trading constants
         self.constants = TradingConstants()
 
+        # Note: _startup_hydration() is called explicitly in run() and run_async()
+        # BEFORE the main loop starts to ensure proper initialization sequence
+
+    async def _startup_hydration_async(self):
+        """Hydrate system with initial data before starting trading loops.
+
+        Performs comprehensive startup initialization:
+        0. Hydrate market registry with all available markets
+        1. Pre-warms watchlist prices
+        2. Collects initial signals (fast, medium) to populate caches
+        3. Performs initial regime classification
+        4. Ensures all components are ready before trading begins
+
+        This prevents race conditions and ensures regime/signals are available
+        on first trading decision.
+        """
+        self.logger.info("Starting startup hydration sequence...")
+
+        try:
+            # Step 0: Hydrate market registry
+            self.logger.info("Step 0/5: Hydrating market registry...")
+            await self.registry.hydrate()
+            self.logger.info("Step 0/5: Market registry hydrated successfully")
+
+            # Step 1: Get base account state
+            base_state = self.monitor.get_current_state()
+            self.logger.info(
+                "Step 1/5: Retrieved base account state",
+                extra={"portfolio_value": base_state.portfolio_value},
+            )
+
+            # Step 2: Pre-warm watchlist prices
+            watchlist = self.monitor.build_watchlist(base_state, self.governor.active_plan)
+            price_map = self.monitor.fetch_watchlist_prices(watchlist)
+            self.logger.info(
+                f"Step 2/5: Pre-warmed {len(price_map)}/{len(watchlist)} watchlist prices",
+                extra={"watchlist": sorted(watchlist), "prices_fetched": len(price_map)},
+            )
+
+            # Step 3: Hydrate signal caches (fast and medium)
+            # This populates technical indicators, funding rates, etc.
+            self.logger.info("Step 3/5: Hydrating signal caches...")
+            account_state_medium = None  # Initialize to avoid unbound variable
+            try:
+                # Collect fast signals to warm cache
+                account_state_fast = self.monitor.get_current_state_with_signals(
+                    "fast", active_plan=self.governor.active_plan
+                )
+                self.logger.info(
+                    "  - Fast signals collected",
+                    extra={
+                        "has_fast_signals": account_state_fast.fast_signals is not None,
+                        "is_cached": (
+                            account_state_fast.fast_signals.metadata.is_cached
+                            if account_state_fast.fast_signals
+                            else None
+                        ),
+                        "staleness_seconds": (
+                            account_state_fast.fast_signals.metadata.staleness_seconds
+                            if account_state_fast.fast_signals
+                            else None
+                        ),
+                    },
+                )
+
+                # Collect medium signals to warm cache and populate technical indicators
+                account_state_medium = self.monitor.get_current_state_with_signals(
+                    "medium", active_plan=self.governor.active_plan
+                )
+                self.logger.info(
+                    "  - Medium signals collected",
+                    extra={
+                        "has_medium_signals": account_state_medium.medium_signals is not None,
+                        "technical_indicators_count": (
+                            len(account_state_medium.medium_signals.technical_indicators)
+                            if account_state_medium.medium_signals
+                            else 0
+                        ),
+                        "is_cached": (
+                            account_state_medium.medium_signals.metadata.is_cached
+                            if account_state_medium.medium_signals
+                            else None
+                        ),
+                        "staleness_seconds": (
+                            account_state_medium.medium_signals.metadata.staleness_seconds
+                            if account_state_medium.medium_signals
+                            else None
+                        ),
+                    },
+                )
+            except Exception as e:
+                self.logger.warning(
+                    f"Signal hydration encountered errors (non-critical): {e}",
+                    exc_info=True,
+                )
+
+            # Step 4: Perform initial regime classification
+            self.logger.info("Step 4/5: Performing initial regime classification...")
+            try:
+                # Use medium signals from hydration
+                if account_state_medium and account_state_medium.medium_signals:
+                    regime_signals = self._extract_regime_signals(account_state_medium)
+                    classification = self.regime_detector.classify_regime(regime_signals)
+
+                    self.logger.info(
+                        f"  - Initial regime: {classification.regime} "
+                        f"(confidence: {classification.confidence:.2f})",
+                        extra={
+                            "regime": classification.regime,
+                            "confidence": classification.confidence,
+                            "reasoning": classification.reasoning,
+                        },
+                    )
+
+                    # Update regime detector with initial classification
+                    self.regime_detector.update_and_confirm(classification)
+                else:
+                    self.logger.warning(
+                        "  - Could not perform initial regime classification "
+                        "(medium signals unavailable)"
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    f"Initial regime classification failed (non-critical): {e}",
+                    exc_info=True,
+                )
+
+            self.logger.info(
+                "✓ Startup hydration complete - system ready for trading",
+                extra={
+                    "watchlist_size": len(watchlist),
+                    "prices_available": len(price_map),
+                    "current_regime": self.regime_detector.current_regime,
+                },
+            )
+
+        except Exception as e:
+            # Log error but don't crash - system can recover during first loop
+            self.logger.error(
+                f"Startup hydration failed: {e}. System will attempt to initialize during first loop.",
+                exc_info=True,
+            )
+
+    def _startup_hydration(self) -> None:
+        """Synchronously hydrate startup state, guarding against nested event loops."""
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(self._startup_hydration_async())
+        else:
+            raise RuntimeError(
+                "GovernedTradingAgent.run() cannot be invoked while an event loop is running. "
+                "Use run_async() instead."
+            )
+
     def run(self) -> NoReturn:
-        """Run the main governed loop indefinitely."""
+        """Run the main governed loop indefinitely (synchronous version for backward compatibility)."""
         self.logger.info(
-            "Starting governed trading agent",
+            "Starting governed trading agent (sync mode)",
             extra={
                 "fast_loop_interval": self.governance_config.fast_loop_interval_seconds,
                 "medium_loop_interval": self.governance_config.medium_loop_interval_minutes,
@@ -129,12 +298,14 @@ class GovernedTradingAgent:
             },
         )
 
+        # Perform startup hydration before entering main loop
+        self._startup_hydration()
+
         while True:
             self.tick_count += 1
             current_time = datetime.now()
 
             try:
-                # TODO: Turn this into async parallel processes
                 # Determine which loops to run
                 run_fast = True
                 run_medium = self._should_run_medium_loop(current_time)
@@ -161,6 +332,104 @@ class GovernedTradingAgent:
 
             # Sleep until next fast loop iteration
             time.sleep(self.governance_config.fast_loop_interval_seconds)
+
+    async def run_async(self) -> NoReturn:
+        """Run the main governed loop indefinitely with async concurrent execution.
+
+        This method executes fast, medium, and slow loops concurrently using asyncio.gather,
+        preventing slow loop operations from blocking time-sensitive fast loop execution.
+        """
+        self.logger.info(
+            "Starting governed trading agent (async mode)",
+            extra={
+                "fast_loop_interval": self.governance_config.fast_loop_interval_seconds,
+                "medium_loop_interval": self.governance_config.medium_loop_interval_minutes,
+                "slow_loop_interval": self.governance_config.slow_loop_interval_hours,
+            },
+        )
+
+        # Perform startup hydration before entering main loop
+        await self._startup_hydration_async()
+
+        while True:
+            self.tick_count += 1
+            current_time = datetime.now()
+
+            # Determine which loops to run
+            run_fast = True
+            run_medium = self._should_run_medium_loop(current_time)
+            run_slow = self._should_run_slow_loop(current_time)
+
+            # Build task list for concurrent execution
+            tasks = []
+
+            if run_slow:
+                tasks.append(self._execute_slow_loop_async(current_time))
+
+            if run_medium:
+                tasks.append(self._execute_medium_loop_async(current_time))
+
+            if run_fast:
+                tasks.append(self._execute_fast_loop_async(current_time))
+
+            # Execute all loops concurrently
+            # return_exceptions=True prevents one loop failure from stopping others
+            if tasks:
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Log any exceptions
+                loop_types = []
+                if run_slow:
+                    loop_types.append("slow")
+                if run_medium:
+                    loop_types.append("medium")
+                if run_fast:
+                    loop_types.append("fast")
+
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        loop_type = loop_types[i] if i < len(loop_types) else "unknown"
+                        self.logger.error(
+                            f"{loop_type} loop failed",
+                            exc_info=result,
+                            extra={"tick": self.tick_count, "loop_type": loop_type},
+                        )
+
+            # Update last execution times
+            if run_slow:
+                self.last_slow_loop = current_time
+            if run_medium:
+                self.last_medium_loop = current_time
+
+            # Sleep until next fast loop tick
+            await asyncio.sleep(self.governance_config.fast_loop_interval_seconds)
+
+    async def _execute_slow_loop_async(self, current_time: datetime):
+        """Async wrapper for slow loop execution.
+
+        Args:
+            current_time: Current timestamp
+        """
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._execute_slow_loop, current_time)
+
+    async def _execute_medium_loop_async(self, current_time: datetime):
+        """Async wrapper for medium loop execution.
+
+        Args:
+            current_time: Current timestamp
+        """
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._execute_medium_loop, current_time)
+
+    async def _execute_fast_loop_async(self, current_time: datetime):
+        """Async wrapper for fast loop execution.
+
+        Args:
+            current_time: Current timestamp
+        """
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self._execute_fast_loop, current_time)
 
     def _should_run_medium_loop(self, current_time: datetime) -> bool:
         """Check if medium loop should run based on elapsed time.
@@ -239,7 +508,7 @@ class GovernedTradingAgent:
                         "Cut size to floor triggered - emergency risk reduction needed",
                         extra={"tick": self.tick_count},
                     )
-                    # TODO: Implement emergency position reduction
+                    self._handle_tripwire_action(event.action)
                     return True
 
                 case TripwireAction.ESCALATE_TO_SLOW_LOOP:
@@ -251,10 +520,115 @@ class GovernedTradingAgent:
 
         return False
 
+    def _handle_tripwire_action(self, action: TripwireAction) -> bool:
+        """Handle tripwire action for emergency position reduction.
+
+        Args:
+            action: Tripwire action to handle
+
+        Returns:
+            True if action was handled successfully, False otherwise
+        """
+        if action != TripwireAction.CUT_SIZE_TO_FLOOR:
+            self.logger.warning(
+                f"Unhandled tripwire action: {action}",
+                extra={"tick": self.tick_count, "action": action.value},
+            )
+            return False
+
+        self.logger.critical(
+            "Executing emergency position reduction",
+            extra={
+                "tick": self.tick_count,
+                "reduction_pct": self.governance_config.emergency_reduction_pct,
+            },
+        )
+
+        # Get current positions
+        try:
+            account_state = self.monitor.get_current_state()
+        except Exception as e:
+            self.logger.critical(
+                "Failed to retrieve account state for emergency reduction",
+                exc_info=e,
+                extra={"tick": self.tick_count},
+            )
+            return False
+
+        # Calculate reduction percentage from config
+        reduction_pct = self.governance_config.emergency_reduction_pct
+
+        # Generate emergency exit orders
+        exit_results = []
+        for position in account_state.positions:
+            if position.size <= 0:
+                continue
+
+            # Calculate size to close
+            size_to_close = position.size * (reduction_pct / 100.0)
+
+            # Create emergency exit action
+            exit_action = TradeAction(
+                action_type="sell",
+                coin=position.coin,
+                market_type=position.market_type,
+                size=size_to_close,
+                price=None,  # Market order for immediate execution
+                reasoning=f"Emergency risk reduction (tripwire: {reduction_pct}% reduction)",
+            )
+
+            try:
+                result = self.executor.execute_action(exit_action)
+                exit_results.append(
+                    {
+                        "coin": exit_action.coin,
+                        "size": size_to_close,
+                        "success": result.success,
+                        "error": result.error if not result.success else None,
+                    }
+                )
+
+                self.logger.critical(
+                    f"Emergency exit: {exit_action.coin} - "
+                    f"{'SUCCESS' if result.success else 'FAILED'}",
+                    extra={
+                        "tick": self.tick_count,
+                        "coin": exit_action.coin,
+                        "size": size_to_close,
+                        "success": result.success,
+                        "error": result.error if not result.success else None,
+                    },
+                )
+
+            except Exception as e:
+                self.logger.critical(
+                    f"Emergency exit exception for {exit_action.coin}: {e}",
+                    exc_info=True,
+                    extra={"tick": self.tick_count, "coin": exit_action.coin},
+                )
+                exit_results.append(
+                    {
+                        "coin": exit_action.coin,
+                        "size": size_to_close,
+                        "success": False,
+                        "error": str(e),
+                    }
+                )
+
+        # Log summary
+        successful = sum(1 for r in exit_results if r["success"])
+        total = len(exit_results)
+        self.logger.critical(
+            f"Emergency position reduction complete: {successful}/{total} successful",
+            extra={"tick": self.tick_count, "results": exit_results},
+        )
+
+        return successful > 0
+
     def _generate_rebalance_actions(
         self,
         target_allocations_data: list[dict],
-        current_allocations: dict[str, float],
+        current_allocations: dict[tuple[str, str], float],
         total_value: float,
         account_state: EnhancedAccountState,
     ) -> list[TradeAction]:
@@ -262,7 +636,7 @@ class GovernedTradingAgent:
 
         Args:
             target_allocations_data: List of target allocation dicts
-            current_allocations: Current allocation percentages by coin
+            current_allocations: Current allocation percentages by (coin, market_type) tuple
             total_value: Total portfolio value
             account_state: Current account state with positions
 
@@ -276,7 +650,9 @@ class GovernedTradingAgent:
             target_pct = float(target_data["target_pct"])
             market_type = str(target_data["market_type"])
 
-            current_pct = current_allocations.get(coin, 0.0)
+            # Use tuple key to distinguish spot from perp
+            allocation_key = (coin, market_type)
+            current_pct = current_allocations.get(allocation_key, 0.0)
             gap_pct = target_pct - current_pct
 
             # Only trade if gap exceeds threshold
@@ -291,15 +667,31 @@ class GovernedTradingAgent:
                     # USDC is the margin/collateral, not a tradeable asset - skip it
                     continue
 
+                # Try to get price from position first, then fall back to price_map
                 matching_pos = next((p for p in account_state.positions if p.coin == coin), None)
                 if matching_pos:
                     current_price = matching_pos.current_price
-                else:
-                    self.logger.warning(
-                        f"Cannot determine price for {coin} - no existing position",
-                        extra={"tick": self.tick_count, "coin": coin},
+                elif account_state.price_map and coin in account_state.price_map:
+                    # Use price from watchlist for new positions
+                    current_price = account_state.price_map[coin]
+                    self.logger.info(
+                        f"Using watchlist price for {coin}: {current_price}",
+                        extra={"tick": self.tick_count, "coin": coin, "price": current_price},
                     )
-                    continue
+                else:
+                    # Final fallback: try to fetch price on-demand
+                    current_price = self.monitor.get_market_price(coin)
+                    if current_price:
+                        self.logger.info(
+                            f"Fetched on-demand price for {coin}: {current_price}",
+                            extra={"tick": self.tick_count, "coin": coin, "price": current_price},
+                        )
+                    else:
+                        self.logger.warning(
+                            f"Cannot determine price for {coin} - not in positions or watchlist",
+                            extra={"tick": self.tick_count, "coin": coin},
+                        )
+                        continue
 
                 # Calculate size to trade
                 size = abs(value_gap / current_price) if current_price > 0 else 0.0
@@ -322,15 +714,17 @@ class GovernedTradingAgent:
                     )
 
                     self.logger.info(
-                        f"Generated {action_type} action for {coin}: {size:.4f} (gap: {gap_pct:.1f}%)",
+                        f"Generated {action_type} action for {coin} on {market_type.upper()}: {size:.4f} (gap: {gap_pct:.1f}%)",
                         extra={
                             "tick": self.tick_count,
                             "coin": coin,
+                            "market_type": market_type,
                             "action_type": action_type,
                             "size": size,
                             "current_pct": current_pct,
                             "target_pct": target_pct,
                             "gap_pct": gap_pct,
+                            "allocation_key": f"{coin}/{market_type}",
                         },
                     )
 
@@ -356,7 +750,9 @@ class GovernedTradingAgent:
 
         # Get account state with fast signals
         try:
-            account_state = self.monitor.get_current_state_with_signals("fast")
+            account_state = self.monitor.get_current_state_with_signals(
+                "fast", active_plan=self.governor.active_plan
+            )
         except Exception as e:
             self.logger.error(
                 "Failed to retrieve account state in fast loop",
@@ -431,7 +827,9 @@ class GovernedTradingAgent:
 
         # Get account state with medium signals
         try:
-            account_state = self.monitor.get_current_state_with_signals("medium")
+            account_state = self.monitor.get_current_state_with_signals(
+                "medium", active_plan=self.governor.active_plan
+            )
         except Exception as e:
             self.logger.error(
                 "Failed to retrieve account state in medium loop",
@@ -542,7 +940,7 @@ class GovernedTradingAgent:
 
                 for action in decision.micro_adjustments:
                     try:
-                        result = self.base_agent.executor.execute_action(action)
+                        result = self.executor.execute_action(action)
                         log_level = logging.INFO if result.success else logging.ERROR
                         self.logger.log(
                             log_level,
@@ -598,7 +996,9 @@ class GovernedTradingAgent:
 
         # Get account state with slow signals
         try:
-            account_state = self.monitor.get_current_state_with_signals("slow")
+            account_state = self.monitor.get_current_state_with_signals(
+                "slow", active_plan=self.governor.active_plan
+            )
         except Exception as e:
             self.logger.error(
                 "Failed to retrieve account state in slow loop",
@@ -844,14 +1244,38 @@ class GovernedTradingAgent:
                 for alloc in plan.target_allocations
             ]
 
-        # Calculate current allocations
-        current_allocations = {}
+        # Calculate current allocations - key by (coin, market_type) to separate spot and perp
+        current_allocations: dict[tuple[str, str], float] = {}
         total_value = account_state.portfolio_value
 
         for position in account_state.positions:
             position_value = position.size * position.current_price
             current_pct = (position_value / total_value * 100) if total_value > 0 else 0.0
-            current_allocations[position.coin] = current_pct
+            allocation_key = (position.coin, position.market_type)
+            current_allocations[allocation_key] = current_pct
+
+        # Log current allocations for visibility
+        self.logger.info(
+            "Current portfolio allocations:",
+            extra={
+                "tick": self.tick_count,
+                "total_value": total_value,
+                "allocations": {
+                    f"{coin}/{mkt}": f"{pct:.2f}%"
+                    for (coin, mkt), pct in current_allocations.items()
+                },
+            },
+        )
+
+        # Log target allocations for comparison
+        target_summary = {
+            f"{t['coin']}/{t['market_type']}": f"{t['target_pct']:.2f}%"
+            for t in target_allocations_data
+        }
+        self.logger.info(
+            "Target portfolio allocations:",
+            extra={"tick": self.tick_count, "targets": target_summary},
+        )
 
         # Generate trade actions to close allocation gaps
         actions = self._generate_rebalance_actions(
@@ -867,7 +1291,7 @@ class GovernedTradingAgent:
 
             for action in actions:
                 try:
-                    result = self.base_agent.executor.execute_action(action)
+                    result = self.executor.execute_action(action)
 
                     # Log execution result
                     log_level = logging.INFO if result.success else logging.ERROR
@@ -1313,11 +1737,8 @@ class GovernedTradingAgent:
     ) -> "PriceContext":
         """Extract price context with multi-timeframe returns.
 
-        TODO: This currently uses simplified/placeholder calculations.
-        Proper implementation requires:
-        1. Price history tracking in signal collectors (1d, 7d, 30d, 90d candles)
-        2. Return calculation from historical closes
-        3. Market structure analysis (higher highs/lows over lookback period)
+        Uses real price history from signal collectors when available, otherwise
+        falls back to placeholder calculations.
 
         Args:
             account_state: Enhanced account state
@@ -1347,23 +1768,83 @@ class GovernedTradingAgent:
         if current_price > 0 and sma_50 > 0:
             sma50_distance = ((current_price - sma_50) / sma_50) * 100
 
-        # TODO: Calculate actual returns from price history
-        # For now, use placeholder values based on SMA relationship as rough proxy
-        # This is NOT accurate and should be replaced with proper historical returns
+        # Try to get price history from signal service
+        price_history = None
+        if hasattr(self.monitor, "signal_service") and representative_coin:
+            try:
+                # Access the orchestrator's medium collector to get price history
+                orchestrator = getattr(self.monitor.signal_service, "orchestrator", None)
+                if orchestrator and hasattr(orchestrator, "medium_collector"):
+                    price_history = orchestrator.medium_collector.get_price_history(
+                        representative_coin
+                    )
+            except Exception as e:
+                self.logger.debug(f"Could not access price history: {e}")
+
+        # Use real price history if available
+        if price_history:
+            returns = price_history.calculate_returns()
+            market_structure = price_history.detect_market_structure()
+            data_quality = price_history.get_data_quality()
+            oldest_data = price_history.get_oldest_data_point()
+
+            if returns:
+                self.logger.debug(
+                    f"Using real price history for {representative_coin}",
+                    extra={
+                        "tick": self.tick_count,
+                        "coin": representative_coin,
+                        "data_quality": data_quality,
+                        "oldest_data": oldest_data,
+                    },
+                )
+                return PriceContext(
+                    current_price=current_price,
+                    return_1d=returns.get("return_1d", 0.0),
+                    return_7d=returns.get("return_7d", 0.0),
+                    return_30d=returns.get("return_30d", 0.0),
+                    return_90d=returns.get("return_90d", 0.0),
+                    sma20_distance=sma20_distance,
+                    sma50_distance=sma50_distance,
+                    higher_highs=market_structure.get("higher_highs", False),
+                    higher_lows=market_structure.get("higher_lows", False),
+                    data_quality=data_quality,
+                    oldest_data_point=oldest_data,
+                )
+            else:
+                self.logger.warning(
+                    f"Price history exists but returns calculation failed for {representative_coin}",
+                    extra={
+                        "tick": self.tick_count,
+                        "coin": representative_coin,
+                        "data_quality": data_quality,
+                    },
+                )
+
+        # Price history not available - log warning and use placeholder
+        self.logger.warning(
+            f"Price history not available for {representative_coin} - regime classification will be degraded",
+            extra={
+                "tick": self.tick_count,
+                "coin": representative_coin,
+                "reason": "price_history_missing",
+            },
+        )
+
         return_proxy = sma20_distance  # Very rough approximation
 
         return PriceContext(
             current_price=current_price,
-            # TODO: Replace with actual historical return calculations
             return_1d=return_proxy * 0.2,  # Placeholder
             return_7d=return_proxy * 0.5,  # Placeholder
             return_30d=return_proxy,  # Placeholder
             return_90d=return_proxy * 1.5,  # Placeholder
             sma20_distance=sma20_distance,
             sma50_distance=sma50_distance,
-            # TODO: Calculate from actual price history
             higher_highs=sma20_distance > 0 and sma20_distance > sma50_distance,  # Rough proxy
             higher_lows=sma20_distance > sma50_distance,  # Rough proxy
+            data_quality="insufficient",
+            oldest_data_point=None,
         )
 
     # Status methods for CLI commands

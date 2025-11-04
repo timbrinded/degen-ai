@@ -59,6 +59,42 @@ def testnet_config(testnet_config_content):
 
 
 @pytest.fixture
+def mock_spot_metadata():
+    """Mock spot metadata response."""
+    return {
+        "universe": [
+            {"name": "ETH/USDC", "index": 0},
+            {"name": "BTC/USDC", "index": 1},
+        ],
+        "tokens": [
+            {"name": "USDC", "index": 0},
+            {"name": "ETH", "index": 1},
+            {"name": "BTC", "index": 2},
+        ],
+    }
+
+
+@pytest.fixture(autouse=True)
+def patch_executor_info_spot_meta(mock_spot_metadata, monkeypatch):
+    """Automatically add spot_meta to all executor Info mocks."""
+    # This will be applied after the @patch decorators, so we need to ensure
+    # any MagicMock returned by Info() has spot_meta configured
+    original_magicmock_init = MagicMock.__init__
+
+    def patched_init(self, *args, **kwargs):
+        original_magicmock_init(self, *args, **kwargs)
+        # If this looks like an Info mock, add spot_meta
+        if not hasattr(self, "_spot_meta_configured"):
+            self._spot_meta_configured = True
+            if not self.spot_meta.return_value:
+                self.spot_meta.return_value = mock_spot_metadata
+
+    # Don't actually patch - this approach won't work well
+    # Instead, we'll manually update each test
+    pass
+
+
+@pytest.fixture
 def mock_hyperliquid_responses():
     """Mock responses for Hyperliquid API calls."""
     return {
@@ -125,6 +161,7 @@ def test_agent_logging_setup(testnet_config):
     assert len(agent.logger.handlers) > 0
 
 
+@patch("hyperliquid_agent.agent.MarketRegistry")
 @patch("hyperliquid_agent.monitor.Info")
 @patch("hyperliquid_agent.executor.Exchange")
 @patch("hyperliquid_agent.executor.Info")
@@ -134,9 +171,11 @@ def test_execute_tick_success(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
     mock_llm_response,
+    mock_spot_metadata,
 ):
     """Test successful execution of a single tick."""
     # Setup monitor mock
@@ -146,7 +185,16 @@ def test_execute_tick_success(
 
     # Setup executor mocks
     mock_executor_info_instance = MagicMock()
+    # Setup registry mock
+    mock_registry = MagicMock()
+    mock_registry.is_ready = True
+    mock_registry.get_market_name.side_effect = lambda coin, market_type: coin
+    mock_registry.get_sz_decimals.return_value = 3
+    mock_registry_class.return_value = mock_registry
+
     mock_executor_info_instance.meta.return_value = mock_hyperliquid_responses["meta"]
+    mock_executor_info_instance.spot_meta.return_value = mock_spot_metadata
+    mock_executor_info_instance.spot_meta.return_value = mock_spot_metadata
     mock_executor_info.return_value = mock_executor_info_instance
 
     mock_exchange_instance = MagicMock()
@@ -189,6 +237,7 @@ def test_execute_tick_success(
     mock_exchange_instance.market_open.assert_not_called()
 
 
+@patch("hyperliquid_agent.agent.MarketRegistry")
 @patch("hyperliquid_agent.monitor.Info")
 @patch("hyperliquid_agent.executor.Exchange")
 @patch("hyperliquid_agent.executor.Info")
@@ -198,8 +247,10 @@ def test_execute_tick_with_trade_execution(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
+    mock_spot_metadata,
 ):
     """Test tick execution with actual trade submission."""
     # Setup monitor mock
@@ -209,8 +260,23 @@ def test_execute_tick_with_trade_execution(
 
     # Setup executor mocks
     mock_executor_info_instance = MagicMock()
+    # Setup registry mock
+    mock_registry = MagicMock()
+    mock_registry.is_ready = True
+    mock_registry.get_market_name.side_effect = lambda coin, market_type: coin
+    mock_registry.get_sz_decimals.return_value = 3
+    mock_registry_class.return_value = mock_registry
+
     mock_executor_info_instance.meta.return_value = mock_hyperliquid_responses["meta"]
+    mock_executor_info_instance.spot_meta.return_value = mock_spot_metadata
     mock_executor_info.return_value = mock_executor_info_instance
+
+    # Setup registry mock
+    mock_registry = MagicMock()
+    mock_registry.is_ready = True
+    mock_registry.get_market_name.return_value = "ETH"
+    mock_registry.get_sz_decimals.return_value = 3
+    mock_registry_class.return_value = mock_registry
 
     mock_exchange_instance = MagicMock()
     mock_exchange_instance.order.return_value = {"status": {"resting": {"oid": "0xorder123"}}}
@@ -256,6 +322,7 @@ def test_execute_tick_with_trade_execution(
     assert call_kwargs["limit_px"] == 3000.0
 
 
+@patch("hyperliquid_agent.agent.MarketRegistry")
 @patch("hyperliquid_agent.monitor.Info")
 @patch("hyperliquid_agent.executor.Exchange")
 @patch("hyperliquid_agent.executor.Info")
@@ -265,8 +332,10 @@ def test_execute_tick_monitor_error_recovery(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
+    mock_spot_metadata,
 ):
     """Test tick continues after monitor error with cached state."""
     # Setup monitor mock to fail first, then succeed
@@ -279,7 +348,15 @@ def test_execute_tick_monitor_error_recovery(
 
     # Setup executor mocks
     mock_executor_info_instance = MagicMock()
+    # Setup registry mock
+    mock_registry = MagicMock()
+    mock_registry.is_ready = True
+    mock_registry.get_market_name.side_effect = lambda coin, market_type: coin
+    mock_registry.get_sz_decimals.return_value = 3
+    mock_registry_class.return_value = mock_registry
+
     mock_executor_info_instance.meta.return_value = mock_hyperliquid_responses["meta"]
+    mock_executor_info_instance.spot_meta.return_value = mock_spot_metadata
     mock_executor_info.return_value = mock_executor_info_instance
     mock_executor_exchange.return_value = MagicMock()
 
@@ -311,6 +388,7 @@ def test_execute_tick_monitor_error_recovery(
     assert mock_monitor_instance.user_state.call_count == 2
 
 
+@patch("hyperliquid_agent.agent.MarketRegistry")
 @patch("hyperliquid_agent.monitor.Info")
 @patch("hyperliquid_agent.executor.Exchange")
 @patch("hyperliquid_agent.executor.Info")
@@ -320,8 +398,10 @@ def test_execute_tick_llm_error_recovery(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
+    mock_spot_metadata,
 ):
     """Test tick continues after LLM error without executing trades."""
     # Setup monitor mock
@@ -331,7 +411,15 @@ def test_execute_tick_llm_error_recovery(
 
     # Setup executor mocks
     mock_executor_info_instance = MagicMock()
+    # Setup registry mock
+    mock_registry = MagicMock()
+    mock_registry.is_ready = True
+    mock_registry.get_market_name.side_effect = lambda coin, market_type: coin
+    mock_registry.get_sz_decimals.return_value = 3
+    mock_registry_class.return_value = mock_registry
+
     mock_executor_info_instance.meta.return_value = mock_hyperliquid_responses["meta"]
+    mock_executor_info_instance.spot_meta.return_value = mock_spot_metadata
     mock_executor_info.return_value = mock_executor_info_instance
 
     mock_exchange_instance = MagicMock()
@@ -354,6 +442,7 @@ def test_execute_tick_llm_error_recovery(
     mock_exchange_instance.market_open.assert_not_called()
 
 
+@patch("hyperliquid_agent.agent.MarketRegistry")
 @patch("hyperliquid_agent.monitor.Info")
 @patch("hyperliquid_agent.executor.Exchange")
 @patch("hyperliquid_agent.executor.Info")
@@ -363,8 +452,10 @@ def test_execute_tick_executor_error_recovery(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
+    mock_spot_metadata,
 ):
     """Test tick continues after executor error."""
     # Setup monitor mock
@@ -374,7 +465,15 @@ def test_execute_tick_executor_error_recovery(
 
     # Setup executor mocks
     mock_executor_info_instance = MagicMock()
+    # Setup registry mock
+    mock_registry = MagicMock()
+    mock_registry.is_ready = True
+    mock_registry.get_market_name.side_effect = lambda coin, market_type: coin
+    mock_registry.get_sz_decimals.return_value = 3
+    mock_registry_class.return_value = mock_registry
+
     mock_executor_info_instance.meta.return_value = mock_hyperliquid_responses["meta"]
+    mock_executor_info_instance.spot_meta.return_value = mock_spot_metadata
     mock_executor_info.return_value = mock_executor_info_instance
 
     mock_exchange_instance = MagicMock()
@@ -417,6 +516,7 @@ def test_execute_tick_executor_error_recovery(
     mock_exchange_instance.order.assert_called_once()
 
 
+@patch("hyperliquid_agent.agent.MarketRegistry")
 @patch("hyperliquid_agent.monitor.Info")
 @patch("hyperliquid_agent.executor.Exchange")
 @patch("hyperliquid_agent.executor.Info")
@@ -426,9 +526,11 @@ def test_execute_tick_logs_portfolio_value(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
     mock_llm_response,
+    mock_spot_metadata,
 ):
     """Test tick execution logs portfolio value changes."""
     # Setup monitor mock
@@ -438,7 +540,15 @@ def test_execute_tick_logs_portfolio_value(
 
     # Setup executor mocks
     mock_executor_info_instance = MagicMock()
+    # Setup registry mock
+    mock_registry = MagicMock()
+    mock_registry.is_ready = True
+    mock_registry.get_market_name.side_effect = lambda coin, market_type: coin
+    mock_registry.get_sz_decimals.return_value = 3
+    mock_registry_class.return_value = mock_registry
+
     mock_executor_info_instance.meta.return_value = mock_hyperliquid_responses["meta"]
+    mock_executor_info_instance.spot_meta.return_value = mock_spot_metadata
     mock_executor_info.return_value = mock_executor_info_instance
     mock_executor_exchange.return_value = MagicMock()
 
@@ -466,6 +576,7 @@ def test_execute_tick_logs_portfolio_value(
     assert agent.last_portfolio_value is not None
 
 
+@patch("hyperliquid_agent.agent.MarketRegistry")
 @patch("hyperliquid_agent.monitor.Info")
 @patch("hyperliquid_agent.executor.Exchange")
 @patch("hyperliquid_agent.executor.Info")
@@ -475,8 +586,10 @@ def test_execute_tick_multiple_actions(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
+    mock_spot_metadata,
 ):
     """Test tick execution with multiple trading actions."""
     # Setup monitor mock
@@ -486,7 +599,15 @@ def test_execute_tick_multiple_actions(
 
     # Setup executor mocks
     mock_executor_info_instance = MagicMock()
+    # Setup registry mock
+    mock_registry = MagicMock()
+    mock_registry.is_ready = True
+    mock_registry.get_market_name.side_effect = lambda coin, market_type: coin
+    mock_registry.get_sz_decimals.return_value = 3
+    mock_registry_class.return_value = mock_registry
+
     mock_executor_info_instance.meta.return_value = mock_hyperliquid_responses["meta"]
+    mock_executor_info_instance.spot_meta.return_value = mock_spot_metadata
     mock_executor_info.return_value = mock_executor_info_instance
 
     mock_exchange_instance = MagicMock()
@@ -536,6 +657,7 @@ def test_execute_tick_multiple_actions(
     assert mock_exchange_instance.order.call_count == 2
 
 
+@patch("hyperliquid_agent.agent.MarketRegistry")
 @patch("hyperliquid_agent.monitor.Info")
 @patch("hyperliquid_agent.executor.Exchange")
 @patch("hyperliquid_agent.executor.Info")
@@ -545,9 +667,11 @@ def test_execute_tick_stale_state_handling(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
     mock_llm_response,
+    mock_spot_metadata,
 ):
     """Test tick execution handles stale state indicator."""
     # Setup monitor mock to return stale state
@@ -560,7 +684,15 @@ def test_execute_tick_stale_state_handling(
 
     # Setup executor mocks
     mock_executor_info_instance = MagicMock()
+    # Setup registry mock
+    mock_registry = MagicMock()
+    mock_registry.is_ready = True
+    mock_registry.get_market_name.side_effect = lambda coin, market_type: coin
+    mock_registry.get_sz_decimals.return_value = 3
+    mock_registry_class.return_value = mock_registry
+
     mock_executor_info_instance.meta.return_value = mock_hyperliquid_responses["meta"]
+    mock_executor_info_instance.spot_meta.return_value = mock_spot_metadata
     mock_executor_info.return_value = mock_executor_info_instance
     mock_executor_exchange.return_value = MagicMock()
 
@@ -590,8 +722,31 @@ def test_execute_tick_stale_state_handling(
     # The monitor should have returned cached state with is_stale=True
 
 
-def test_agent_configuration_logging(testnet_config):
+@patch("hyperliquid_agent.agent.MarketRegistry")
+@patch("hyperliquid_agent.monitor.Info")
+@patch("hyperliquid_agent.executor.Exchange")
+@patch("hyperliquid_agent.executor.Info")
+@patch("openai.OpenAI")
+def test_agent_configuration_logging(
+    mock_openai_class,
+    mock_executor_info,
+    mock_executor_exchange,
+    mock_monitor_info,
+    mock_registry_class,
+    testnet_config,
+    mock_spot_metadata,
+):
     """Test agent logs configuration at startup."""
+    mock_openai_class.return_value = MagicMock()
+    mock_monitor_info.return_value = MagicMock()
+    mock_executor_info_instance = MagicMock()
+    mock_executor_info_instance.spot_meta.return_value = mock_spot_metadata
+    mock_executor_info.return_value = mock_executor_info_instance
+    mock_executor_exchange.return_value = MagicMock()
+    mock_registry = MagicMock()
+    mock_registry.is_ready = True
+    mock_registry_class.return_value = mock_registry
+
     agent = TradingAgent(testnet_config)
 
     # Verify logger was configured with correct name
@@ -601,6 +756,7 @@ def test_agent_configuration_logging(testnet_config):
     assert agent.config == testnet_config
 
 
+@patch("hyperliquid_agent.agent.MarketRegistry")
 @patch("hyperliquid_agent.monitor.Info")
 @patch("hyperliquid_agent.executor.Exchange")
 @patch("hyperliquid_agent.executor.Info")
@@ -610,8 +766,10 @@ def test_execute_tick_invalid_llm_response(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
+    mock_spot_metadata,
 ):
     """Test tick handles invalid LLM response gracefully."""
     # Setup monitor mock
@@ -621,7 +779,15 @@ def test_execute_tick_invalid_llm_response(
 
     # Setup executor mocks
     mock_executor_info_instance = MagicMock()
+    # Setup registry mock
+    mock_registry = MagicMock()
+    mock_registry.is_ready = True
+    mock_registry.get_market_name.side_effect = lambda coin, market_type: coin
+    mock_registry.get_sz_decimals.return_value = 3
+    mock_registry_class.return_value = mock_registry
+
     mock_executor_info_instance.meta.return_value = mock_hyperliquid_responses["meta"]
+    mock_executor_info_instance.spot_meta.return_value = mock_spot_metadata
     mock_executor_info.return_value = mock_executor_info_instance
 
     mock_exchange_instance = MagicMock()

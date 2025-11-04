@@ -138,6 +138,12 @@ max_data_staleness_seconds = 300
 # Recommended: 3-5 failures for conservative, 5-10 for aggressive
 max_api_failure_count = 3
 
+# Percentage of positions to close when emergency tripwire triggers (0.0-100.0)
+# 100.0 = full liquidation, 50.0 = half positions, etc.
+# This applies when CUT_SIZE_TO_FLOOR tripwire action is triggered.
+# Recommended: 100.0 for maximum safety, 50.0-75.0 for partial reduction
+emergency_reduction_pct = 100.0
+
 # ============================================================================
 # SIGNAL SYSTEM CONFIGURATION
 # ============================================================================
@@ -179,14 +185,22 @@ initial_delay_seconds = 1.0
 [signals.onchain]
 # Enable on-chain data collection (token unlocks, whale flows)
 # Recommended: true for production, false if no API key available
-enabled = true
+enabled = false
 
-# On-chain data provider: "token_unlocks", "nansen", "dune", "placeholder"
-# Recommended: "token_unlocks" for production
-provider = "placeholder"
+# On-chain data provider: "token_unlocks", "nansen", "dune", or leave empty to disable
+# - token_unlocks: Token unlock schedule data (REQUIRES API KEY)
+# - nansen: On-chain analytics (REQUIRES API KEY)
+# - dune: Blockchain query data (REQUIRES API KEY)
+# - Empty/None: Disabled (no on-chain data collection)
+# Recommended: "token_unlocks" for production when you have an API key
+provider = ""
 
 # API key for on-chain data provider (or set ONCHAIN_API_KEY env var)
-# Leave empty to use environment variable
+# REQUIRED when provider is set. Leave empty to use environment variable.
+# Get API keys from:
+# - token_unlocks: https://token.unlocks.app
+# - nansen: https://nansen.ai
+# - dune: https://dune.com
 api_key = ""
 
 # Cache TTL for on-chain data (in seconds)
@@ -199,14 +213,27 @@ cache_ttl_seconds = 3600
 enabled = true
 
 # Enable CoinGecko API for crypto price data
+# FREE tier available - API key is OPTIONAL (provides higher rate limits)
 # Recommended: true
 use_coingecko = true
 
 # CoinGecko API key (or set COINGECKO_API_KEY env var)
-# Leave empty for free tier or to use environment variable
+# OPTIONAL - Leave empty for free tier or to use environment variable
+# Free tier: 10-50 calls/minute (sufficient for most use cases)
+# Pro tier: Higher limits with API key from https://coingecko.com/api
 coingecko_api_key = ""
 
+# Enable yfinance for traditional market data (SPX, etc.)
+# FREE - No API key required, uses Yahoo Finance
+# Recommended: true
+use_yfinance = true
+
+# JBlanked API key for additional market data (or set JBLANKED_API_KEY env var)
+# OPTIONAL - Leave empty if not using this provider
+jblanked_api_key = ""
+
 # Enable TradingView for traditional market data (SPX, etc.)
+# REQUIRES API KEY - Not available for free
 # Recommended: false unless you have TradingView API access
 use_tradingview = false
 
@@ -219,11 +246,14 @@ cache_ttl_seconds = 900
 # Recommended: true for production
 enabled = true
 
-# Enable Crypto Fear & Greed Index
+# Enable Crypto Fear & Greed Index from Alternative.me
+# FREE - No API key required
+# Provides market sentiment score from 0 (extreme fear) to 100 (extreme greed)
 # Recommended: true (free, no API key required)
 use_fear_greed_index = true
 
 # Enable social media sentiment (Twitter/X)
+# REQUIRES API KEY - Not available for free
 # Recommended: false unless you have API access
 use_social_sentiment = false
 

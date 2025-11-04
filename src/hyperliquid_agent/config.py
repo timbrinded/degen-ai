@@ -49,28 +49,56 @@ class HyperliquidProviderConfig:
 
 @dataclass
 class OnChainConfig:
-    """On-chain data provider configuration."""
+    """On-chain data provider configuration.
+
+    Providers:
+    - token_unlocks: Token unlock schedule data (requires API key)
+    - nansen: On-chain analytics (requires API key)
+    - dune: Blockchain query data (requires API key)
+    - None: Disabled (no on-chain data collection)
+    """
 
     enabled: bool = True
-    provider: str = "placeholder"  # e.g., "token_unlocks", "nansen", "dune"
+    provider: str | None = None  # e.g., "token_unlocks", "nansen", "dune"
     api_key: str | None = None
     cache_ttl_seconds: int = 3600
+
+    def __post_init__(self):
+        """Validate configuration."""
+        if self.enabled and self.provider and not self.api_key:
+            raise ValueError(
+                f"On-chain provider '{self.provider}' is enabled but no API key provided. "
+                f"Set api_key in config or disable the provider."
+            )
 
 
 @dataclass
 class ExternalMarketConfig:
-    """External market data provider configuration."""
+    """External market data provider configuration.
+
+    Providers:
+    - CoinGecko: Crypto price data (FREE tier available, API key optional for higher limits)
+    - yfinance: Traditional market data via Yahoo Finance (FREE - no API key required)
+    - TradingView: Advanced charting data (requires API key)
+    """
 
     enabled: bool = True
     use_coingecko: bool = True
     coingecko_api_key: str | None = None
+    use_yfinance: bool = True
+    jblanked_api_key: str | None = None
     use_tradingview: bool = False
     cache_ttl_seconds: int = 900
 
 
 @dataclass
 class SentimentConfig:
-    """Sentiment data provider configuration."""
+    """Sentiment data provider configuration.
+
+    Providers:
+    - Fear & Greed Index: Alternative.me API (FREE - no API key required)
+    - Social Sentiment: Twitter/X sentiment analysis (requires API key)
+    """
 
     enabled: bool = True
     use_fear_greed_index: bool = True
@@ -123,6 +151,7 @@ class GovernanceConfig:
     fast_loop_interval_seconds: int = 10
     medium_loop_interval_minutes: int = 30
     slow_loop_interval_hours: int = 24
+    emergency_reduction_pct: float = 100.0  # Percentage of positions to close in emergency
 
 
 @dataclass
@@ -224,6 +253,7 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
             fast_loop_interval_seconds=gov_data.get("fast_loop_interval_seconds", 10),
             medium_loop_interval_minutes=gov_data.get("medium_loop_interval_minutes", 30),
             slow_loop_interval_hours=gov_data.get("slow_loop_interval_hours", 24),
+            emergency_reduction_pct=gov_data.get("emergency_reduction_pct", 100.0),
         )
 
     # Parse Signal config (optional)
@@ -252,9 +282,14 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
             if api_key == "":
                 api_key = None
 
+            # Get provider, treating empty string as None
+            provider = onchain_data.get("provider")
+            if provider == "":
+                provider = None
+
             onchain_config = OnChainConfig(
                 enabled=onchain_data.get("enabled", True),
-                provider=onchain_data.get("provider", "placeholder"),
+                provider=provider,
                 api_key=api_key,
                 cache_ttl_seconds=onchain_data.get("cache_ttl_seconds", 3600),
             )
@@ -271,10 +306,19 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
             if coingecko_api_key == "":
                 coingecko_api_key = None
 
+            jblanked_api_key = ext_data.get("jblanked_api_key") or os.environ.get(
+                "JBLANKED_API_KEY"
+            )
+            # Empty string should be treated as None
+            if jblanked_api_key == "":
+                jblanked_api_key = None
+
             external_market_config = ExternalMarketConfig(
                 enabled=ext_data.get("enabled", True),
                 use_coingecko=ext_data.get("use_coingecko", True),
                 coingecko_api_key=coingecko_api_key,
+                use_yfinance=ext_data.get("use_yfinance", True),
+                jblanked_api_key=jblanked_api_key,
                 use_tradingview=ext_data.get("use_tradingview", False),
                 cache_ttl_seconds=ext_data.get("cache_ttl_seconds", 900),
             )

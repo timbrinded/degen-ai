@@ -16,7 +16,7 @@ The agent operates in a simple three-step cycle:
 
 - **Autonomous 24/7 Operation**: Runs continuously without manual intervention
 - **LLM-Powered Decisions**: Supports OpenAI (GPT-4, etc.) and Anthropic (Claude) models
-- **Multi-Market Support**: Trade both spot and perpetual futures markets
+- **Dual Market Support**: Seamlessly trade both spot and perpetual futures markets with automatic market type detection
 - **Strategy-Based Trading**: Define trading strategies in markdown files with metadata
 - **Configurable Prompts**: Customize LLM behavior through prompt templates
 - **Robust Error Handling**: Exponential backoff retry logic for transient failures
@@ -694,6 +694,185 @@ cd hyperliquid-trading-agent
 uv run python examples/portfolio_rebalancing_example.py
 ```
 
+## Dual Market Support: Spot and Perpetual Trading
+
+The agent supports trading on both **spot markets** (e.g., ETH/USDC) and **perpetual futures markets** (e.g., ETH) simultaneously. The system automatically handles market type detection, asset identifier resolution, and order routing.
+
+### How It Works
+
+The agent uses a **MarketRegistry** that maintains metadata for all available markets on Hyperliquid. When the LLM decides to trade an asset, the agent:
+
+1. **Detects market availability**: Checks if the asset is available on spot, perp, or both
+2. **Resolves market identifiers**: Converts coin symbols to the correct format for each market type
+3. **Routes orders correctly**: Uses the appropriate SDK methods for spot vs perp orders
+4. **Handles precision**: Applies correct size and price rounding for each market
+
+### Market Name Formats
+
+Different market types use different identifier formats:
+
+**Perpetual Markets:**
+- Format: `"ETH"`, `"BTC"`, `"SOL"`
+- Simple coin symbol without quote currency
+- Used for perpetual futures contracts
+
+**Spot Markets:**
+- Format: `"ETH/USDC"`, `"BTC/USDC"`, `"PURR/USDC"`
+- Includes both base and quote currency
+- Alternative format: `"@123"` (token index) for some markets
+
+### Trading Both Market Types
+
+The LLM can specify which market type to use in its trading decisions:
+
+**Example LLM Response (Perp Market):**
+```json
+{
+  "selected_strategy": "funding-harvest-lite",
+  "actions": [
+    {
+      "action_type": "buy",
+      "coin": "ETH",
+      "market_type": "perp",
+      "size": 0.5,
+      "price": null,
+      "reasoning": "Funding rate is positive, opening delta-neutral position"
+    }
+  ]
+}
+```
+
+**Example LLM Response (Spot Market):**
+```json
+{
+  "selected_strategy": "spot-accumulation",
+  "actions": [
+    {
+      "action_type": "buy",
+      "coin": "ETH",
+      "market_type": "spot",
+      "size": 0.5,
+      "price": null,
+      "reasoning": "Accumulating spot ETH for long-term hold"
+    }
+  ]
+}
+```
+
+### Configuration for Dual Markets
+
+No special configuration is required. The agent automatically:
+- Loads spot market metadata on initialization
+- Loads perpetual market metadata on initialization
+- Maintains a unified registry of all available markets
+
+The Hyperliquid SDK Exchange client is initialized with spot metadata to support both market types:
+
+```python
+# Automatic initialization in TradeExecutor
+spot_meta = info.spot_meta()
+exchange = Exchange(
+    account_address=config.account_address,
+    wallet=account,
+    base_url=config.base_url,
+    spot_meta=spot_meta,  # Required for spot trading
+)
+```
+
+### Strategy Configuration for Market Types
+
+Strategies can specify which market types they support in their front matter:
+
+**Perp-only strategy:**
+```yaml
+---
+id: funding-harvest
+title: Funding Rate Arbitrage
+markets: [perps]
+---
+```
+
+**Spot-only strategy:**
+```yaml
+---
+id: spot-accumulation
+title: Spot Accumulation
+markets: [spot]
+---
+```
+
+**Multi-market strategy:**
+```yaml
+---
+id: cross-market-arb
+title: Cross-Market Arbitrage
+markets: [spot, perps]
+---
+```
+
+### Market Availability Detection
+
+The agent automatically detects which markets are available for each asset:
+
+```python
+# Example: Check ETH availability
+eth_info = market_registry.get_asset_info("ETH")
+
+if eth_info.has_spot:
+    spot_name = market_registry.get_market_name("ETH", "spot")
+    # Returns: "ETH/USDC" or "@123"
+
+if eth_info.has_perp:
+    perp_name = market_registry.get_market_name("ETH", "perp")
+    # Returns: "ETH"
+```
+
+### Size and Price Precision
+
+Each market has specific precision requirements:
+
+**Perpetual Markets:**
+- Size decimals: Typically 3-5 decimals (e.g., 0.001 ETH)
+- Price decimals: Typically 1-2 decimals (e.g., $2500.50)
+
+**Spot Markets:**
+- Size decimals: Varies by market (check metadata)
+- Price decimals: Varies by market (check metadata)
+
+The agent automatically rounds sizes and prices to the correct precision:
+
+```python
+# Automatic rounding in TradeExecutor
+sz_decimals = market_registry.get_sz_decimals(coin, market_type)
+rounded_size = round(size, sz_decimals)
+```
+
+### Testing Dual Market Support
+
+**Test scripts are provided to verify both market types:**
+
+```bash
+# Test spot order execution
+python test_spot_order.py
+
+# Test perp order execution
+python test_perp_order.py
+
+# Test end-to-end with both markets
+python test_e2e_dual_markets.py
+```
+
+### Monitoring Both Market Types
+
+The agent logs market type information for all trades:
+
+```
+2025-10-22 10:30:04 - INFO - Executing buy for ETH on perp market
+2025-10-22 10:30:05 - INFO - Order submitted: market=ETH, type=perp, size=0.5
+2025-10-22 10:31:04 - INFO - Executing buy for ETH on spot market
+2025-10-22 10:31:05 - INFO - Order submitted: market=ETH/USDC, type=spot, size=0.5
+```
+
 ## Trading Strategies
 
 The agent supports defining trading strategies as markdown files in the `strategies/` directory. Each strategy file includes:
@@ -705,8 +884,8 @@ The LLM receives all active strategies and can choose which to follow based on c
 
 ### Example Strategies Included
 
-- `01-funding-harvest-lite.md`: Delta-neutral funding rate arbitrage
-- `02-funding-flip-fade.md`: Mean-reversion on funding rate extremes
+- `01-funding-harvest-lite.md`: Delta-neutral funding rate arbitrage (perps)
+- `02-funding-flip-fade.md`: Mean-reversion on funding rate extremes (perps)
 
 ### Creating Custom Strategies
 
@@ -722,7 +901,7 @@ touch strategies/03-my-strategy.md
 ---
 id: my-strategy
 title: My Custom Strategy
-markets: [perps]
+markets: [spot, perps]  # Specify which market types
 risk_profile: moderate
 status: active
 ---
@@ -813,10 +992,104 @@ uv pip install -e .
 - Use a cheaper model (e.g., gpt-3.5-turbo instead of gpt-4)
 - Reduce `max_tokens` in LLM config
 
+### Dual Market Troubleshooting
+
+**"Unknown asset" or "Market not found" errors:**
+
+- Verify the asset is available on Hyperliquid (check testnet vs mainnet)
+- Run `python test_market_metadata.py` to see available markets
+- Check that MarketRegistry is properly hydrated on startup
+- Look for "MarketRegistry hydrated" message in logs
+
+**"Failed to fetch spot metadata" errors:**
+
+- Verify Hyperliquid API is accessible
+- Check that `base_url` in config is correct
+- Ensure spot markets are available on your network (testnet/mainnet)
+- Review logs for API response details
+
+**Orders rejected with "Invalid market name" errors:**
+
+- Check the market name format in logs
+- Spot markets should be "SYMBOL/USDC" or "@index"
+- Perp markets should be just "SYMBOL"
+- Verify the market exists: `python test_market_metadata.py`
+
+**Wrong market type being used:**
+
+- Check LLM response in logs for `market_type` field
+- Verify strategy metadata specifies correct `markets: [spot, perps]`
+- Ensure LLM is including `market_type` in trade actions
+- Review prompt template to ensure market type is requested
+
+**Size precision errors ("Invalid size decimals"):**
+
+- Check `sz_decimals` for the specific market in logs
+- Verify MarketRegistry has correct metadata
+- Run `python test_market_metadata.py` to see precision requirements
+- Ensure size rounding is working: look for "Rounded size" in logs
+
+**Spot orders failing but perp orders working:**
+
+- Verify Exchange client was initialized with `spot_meta`
+- Check for "Exchange initialized with spot metadata" in logs
+- Ensure spot markets are loaded: look for "Loaded X spot markets"
+- Test with `python test_spot_order.py`
+
+**Perp orders failing but spot orders working:**
+
+- Verify perpetual markets are loaded in MarketRegistry
+- Check for "Loaded X perp markets" in logs
+- Ensure market name doesn't include "/" for perps
+- Test with `python test_perp_order.py`
+
+**Market availability confusion (asset on both markets):**
+
+- Use `python find_dual_market_assets.py` to see which assets support both
+- Check logs for market resolution: "Resolved ETH/spot -> ETH/USDC"
+- Verify LLM is specifying correct `market_type` in decisions
+- Review strategy to ensure it's compatible with both market types
+
+**Debugging market resolution:**
+
+Enable debug logging to see detailed market resolution:
+
+```toml
+[agent]
+log_level = "DEBUG"
+```
+
+Then check logs for:
+- "MarketRegistry: Looking up market for SYMBOL/TYPE"
+- "Resolved market name: RESULT"
+- "Market metadata: sz_decimals=X, px_decimals=Y"
+
+**Testing market functionality:**
+
+Run the diagnostic scripts to verify setup:
+
+```bash
+# Check what markets are available
+python test_market_metadata.py
+
+# Find assets available on both spot and perp
+python find_dual_market_assets.py
+
+# Test spot order execution
+python test_spot_order.py
+
+# Test perp order execution
+python test_perp_order.py
+
+# Test end-to-end with both markets
+python test_e2e_dual_markets.py
+```
+
 ### Getting Help
 
 - Check logs in `logs/agent.log` for detailed error information
-- Review the design document in `.kiro/specs/hyperliquid-trading-agent/design.md`
+- Review the design document in `.kiro/specs/spot-perp-trading-fix/design.md`
+- Run diagnostic scripts to verify market setup
 - Open an issue on GitHub with logs and configuration (redact sensitive data)
 
 ## Disclaimer

@@ -12,6 +12,7 @@ from hyperliquid.info import Info
 
 from hyperliquid_agent.config import HyperliquidConfig
 from hyperliquid_agent.decision import TradeAction
+from hyperliquid_agent.market_registry import MarketRegistry
 
 
 @dataclass
@@ -27,22 +28,71 @@ class ExecutionResult:
 class TradeExecutor:
     """Executes trades on Hyperliquid platform."""
 
-    def __init__(self, config: HyperliquidConfig) -> None:
+    def __init__(self, config: HyperliquidConfig, registry: MarketRegistry) -> None:
         """Initialize the trade executor.
 
         Args:
             config: Hyperliquid configuration with credentials
+            registry: Market registry for symbol resolution (must be hydrated)
         """
+        self.logger = logging.getLogger(__name__)
         self.config = config
+        self.registry = registry
         account: LocalAccount = eth_account.Account.from_key(config.secret_key)  # type: ignore[misc]
+
+        # Initialize Info first to get spot metadata
+        self.info = Info(config.base_url, skip_ws=True)
+
+        # Get spot metadata for Exchange to support spot trading
+        spot_meta = self.info.spot_meta()
+
+        # Validate spot_meta structure
+        if not spot_meta:
+            raise RuntimeError("Failed to fetch spot metadata from Hyperliquid: spot_meta is empty")
+
+        if not isinstance(spot_meta, dict):
+            raise RuntimeError(
+                f"Invalid spot metadata format: expected dict, got {type(spot_meta).__name__}"
+            )
+
+        # Check for universe data
+        universe = spot_meta.get("universe")
+        if universe is None:
+            raise RuntimeError(
+                "Spot metadata is malformed: missing 'universe' field. "
+                f"Available fields: {list(spot_meta.keys())}"
+            )
+
+        if not isinstance(universe, list):
+            raise RuntimeError(
+                f"Spot metadata is malformed: 'universe' should be a list, got {type(universe).__name__}"
+            )
+
+        # Log spot metadata structure for debugging
+        self.logger.debug(f"Spot metadata structure: {list(spot_meta.keys())}")
+        self.logger.debug(f"Spot metadata universe length: {len(universe)}")
+
+        # Log number of spot markets loaded
+        num_spot_markets = len(universe)
+        self.logger.info(f"Loaded {num_spot_markets} spot markets from Hyperliquid")
+
+        if num_spot_markets == 0:
+            self.logger.warning(
+                "No spot markets found in metadata - spot trading may not be available"
+            )
+
+        # Log sample of available spot markets for debugging
+        if num_spot_markets > 0:
+            sample_markets = [market.get("name", "unknown") for market in universe[:5]]
+            self.logger.debug(f"Sample spot markets: {sample_markets}")
+
         self.exchange = Exchange(
             account_address=config.account_address,
             wallet=account,
             base_url=config.base_url,
+            spot_meta=spot_meta,  # type: ignore[arg-type]  # Pass spot metadata
         )
 
-        self.info = Info(config.base_url, skip_ws=True)
-        self.logger = logging.getLogger(__name__)
         self._asset_metadata_cache: dict[str, Any] = {}
 
     def execute_action(self, action: TradeAction) -> ExecutionResult:
@@ -69,9 +119,8 @@ class TradeExecutor:
             # Handle transfer action
             if action.action_type == "transfer":
                 result = self._submit_transfer(action)
-                self.logger.info(
-                    f"Transfer executed: {action.size} {action.coin} to {action.market_type}"
-                )
+                direction = "TO SPOT" if action.market_type == "spot" else "TO PERP"
+                self.logger.info(f"Transfer executed: {action.size} {action.coin} [{direction}]")
                 return ExecutionResult(action=action, success=True)
 
             # Submit order to Hyperliquid
@@ -87,8 +136,8 @@ class TradeExecutor:
                         order_id = resting.get("oid")
 
             self.logger.info(
-                f"Order executed: {action.action_type} {action.size} {action.coin} "
-                f"on {action.market_type} market, order_id={order_id}"
+                f"Order executed: {action.action_type.upper()} {action.size} {action.coin} "
+                f"[{action.market_type.upper()} MARKET], order_id={order_id}"
             )
 
             return ExecutionResult(action=action, success=True, order_id=order_id)
@@ -130,19 +179,20 @@ class TradeExecutor:
             self.logger.error(f"Failed to get metadata for {coin}: {e}")
             raise
 
-    def _round_size(self, size: float, coin: str) -> float:
+    def _round_size(self, size: float, coin: str, market_type: str) -> float:
         """Round size to conform to asset's szDecimals requirement.
 
         Args:
             size: Raw size value
             coin: Asset symbol
+            market_type: "spot" or "perp"
 
         Returns:
             Rounded size that conforms to exchange requirements
         """
         try:
-            metadata = self._get_asset_metadata(coin)
-            sz_decimals = metadata.get("szDecimals", 0)
+            # Use registry to get sz_decimals
+            sz_decimals = self.registry.get_sz_decimals(coin, market_type)  # type: ignore
 
             # Use Decimal for precise rounding
             size_decimal = Decimal(str(size))
@@ -162,6 +212,31 @@ class TradeExecutor:
         except Exception as e:
             self.logger.warning(f"Failed to round size for {coin}, using original value: {e}")
             return size
+
+    def _get_market_name(self, coin: str, market_type: str) -> str:
+        """Get market name using the centralized registry.
+
+        Args:
+            coin: Base coin symbol (e.g., 'ETH', 'BTC')
+            market_type: 'spot' or 'perp'
+
+        Returns:
+            Market identifier for Hyperliquid SDK
+
+        Raises:
+            ValueError: If market not found in registry
+        """
+        self.logger.debug(f"Resolving market name for coin='{coin}', market_type='{market_type}'")
+
+        try:
+            market_name = self.registry.get_market_name(coin, market_type)  # type: ignore
+            self.logger.debug(
+                f"Market name resolved: coin='{coin}', market_type='{market_type}' -> '{market_name}'"
+            )
+            return market_name
+        except ValueError as e:
+            self.logger.error(f"Market name resolution failed: {e}")
+            raise
 
     def _validate_action(self, action: TradeAction) -> bool:
         """Validate action parameters before submission.
@@ -216,6 +291,14 @@ class TradeExecutor:
         """
         is_buy = action.action_type in ["buy", "close"]
 
+        # Format market name based on market type
+        # SPOT: "ETH/USDC", PERP: "ETH"
+        market_name = self._get_market_name(action.coin, action.market_type)
+
+        self.logger.debug(
+            f"Submitting {action.market_type.upper()} {action.action_type} order for '{market_name}'"
+        )
+
         # Handle close action
         if action.action_type == "close":
             # Close position by selling (for long) or buying (for short)
@@ -225,40 +308,86 @@ class TradeExecutor:
                 raise ValueError("Size must be specified for close action")
 
             # Round size to conform to exchange requirements
-            rounded_size = self._round_size(action.size, action.coin)
+            rounded_size = self._round_size(action.size, action.coin, action.market_type)
 
             # Submit market order to close
-            return self.exchange.market_open(
-                name=action.coin,
+            if action.market_type == "spot":
+                self.logger.info(
+                    "Spot CLOSE order -> market=%s, is_buy=%s, size=%s",
+                    market_name,
+                    is_buy,
+                    rounded_size,
+                )
+
+            response = self.exchange.market_open(
+                name=market_name,
                 is_buy=is_buy,
                 sz=rounded_size,
                 px=None,  # Market order
             )
+
+            if action.market_type == "spot":
+                self.logger.info("Spot CLOSE order response: %s", response)
+
+            return response
 
         # Handle buy/sell actions
         if action.size is None:
             raise ValueError(f"Size must be specified for {action.action_type} action")
 
         # Round size to conform to exchange requirements
-        rounded_size = self._round_size(action.size, action.coin)
+        rounded_size = self._round_size(action.size, action.coin, action.market_type)
 
         # Market order (price is None)
         if action.price is None:
-            return self.exchange.market_open(
-                name=action.coin,
+            if action.market_type == "spot":
+                self.logger.info(
+                    "Spot %s market order -> market=%s, is_buy=%s, size=%s",
+                    action.action_type.upper(),
+                    market_name,
+                    is_buy,
+                    rounded_size,
+                )
+
+            response = self.exchange.market_open(
+                name=market_name,
                 is_buy=is_buy,
                 sz=rounded_size,
                 px=None,
             )
 
+            if action.market_type == "spot":
+                self.logger.info(
+                    "Spot %s market order response: %s", action.action_type.upper(), response
+                )
+
+            return response
+
         # Limit order
-        return self.exchange.order(
-            name=action.coin,
+        if action.market_type == "spot":
+            self.logger.info(
+                "Spot %s limit order -> market=%s, is_buy=%s, size=%s, limit_px=%s",
+                action.action_type.upper(),
+                market_name,
+                is_buy,
+                rounded_size,
+                action.price,
+            )
+
+        response = self.exchange.order(
+            name=market_name,
             is_buy=is_buy,
             sz=rounded_size,
             limit_px=action.price,
             order_type={"limit": {"tif": "Gtc"}},  # Good-til-cancel
         )
+
+        if action.market_type == "spot":
+            self.logger.info(
+                "Spot %s limit order response: %s", action.action_type.upper(), response
+            )
+
+        return response
 
     def _submit_transfer(self, action: TradeAction) -> dict:
         """Submit transfer between spot and perp wallets.

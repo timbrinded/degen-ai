@@ -35,6 +35,10 @@ class PriceContext:
     higher_highs: bool  # Making higher highs?
     higher_lows: bool  # Making higher lows?
 
+    # Data quality tracking
+    data_quality: str = "complete"  # "complete", "partial", "insufficient"
+    oldest_data_point: datetime | None = None
+
 
 @dataclass
 class RegimeSignals:

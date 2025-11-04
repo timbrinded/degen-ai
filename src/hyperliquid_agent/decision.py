@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 class TradeActionSchema(BaseModel):
     """Schema for a single trading action using structured outputs."""
 
+    model_config = {"extra": "forbid"}
+
     action_type: Literal["buy", "sell", "hold", "close", "transfer"]
     coin: str
     market_type: Literal["spot", "perp"] = "perp"
@@ -32,6 +34,8 @@ class TradeActionSchema(BaseModel):
 class DecisionSchema(BaseModel):
     """Schema for LLM trading decision using structured outputs."""
 
+    model_config = {"extra": "forbid"}
+
     actions: list[TradeActionSchema] = Field(default_factory=list)
     selected_strategy: str | None = None
     target_allocation: dict[str, float] | None = None
@@ -40,12 +44,18 @@ class DecisionSchema(BaseModel):
 
 
 class GovernanceDecisionSchema(BaseModel):
-    """Schema for governance-aware LLM decision using structured outputs."""
+    """Schema for governance-aware LLM decision using structured outputs.
+
+    Note: proposed_plan is intentionally omitted from this schema because OpenAI's
+    structured output API cannot handle bare dict types. The proposed_plan will be
+    extracted from the raw response during parsing if maintain_plan is False.
+    """
+
+    model_config = {"extra": "forbid"}
 
     maintain_plan: bool = True
     reasoning: str = ""
     micro_adjustments: list[TradeActionSchema] | None = None
-    proposed_plan: dict | None = None  # Will be parsed separately
 
 
 @dataclass
@@ -301,6 +311,7 @@ class DecisionEngine:
             "gpt-4o-mini": {"input": 0.15, "output": 0.60},
             "gpt-4-turbo": {"input": 10.00, "output": 30.00},
             "gpt-5-mini-2025-08-07": {"input": 0.25, "output": 2.00},
+            "gpt-5-2025-08-07": {"input": 2.50, "output": 10.00},
             "gpt-4": {"input": 30.00, "output": 60.00},
             "gpt-3.5-turbo": {"input": 0.50, "output": 1.50},
             "o1": {"input": 15.00, "output": 60.00},

@@ -9,6 +9,18 @@ from hyperliquid_agent.decision import TradeAction
 from hyperliquid_agent.executor import TradeExecutor
 
 
+# Patch Info at module level to provide spot_meta for all tests
+@pytest.fixture(autouse=True)
+def mock_info_with_spot_meta(mock_spot_metadata):
+    """Automatically patch Info to return proper spot_meta for all tests."""
+    mock_info = MagicMock()
+    mock_info.spot_meta.return_value = mock_spot_metadata
+    mock_info.meta.return_value = {"universe": []}
+
+    with patch("hyperliquid_agent.executor.Info", return_value=mock_info):
+        yield mock_info
+
+
 @pytest.fixture
 def hyperliquid_config():
     """Create a test Hyperliquid configuration."""
@@ -17,6 +29,38 @@ def hyperliquid_config():
         secret_key="0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
         base_url="https://api.hyperliquid-testnet.xyz",
     )
+
+
+@pytest.fixture
+def mock_registry():
+    """Create a mock MarketRegistry."""
+    registry = MagicMock()
+    registry.is_ready = True
+    registry.get_market_name.side_effect = lambda coin, market_type: coin
+
+    # Return different decimals based on coin
+    def get_sz_decimals(coin, market_type):
+        decimals_map = {"BTC": 4, "ETH": 3, "SOL": 2}
+        return decimals_map.get(coin, 4)
+
+    registry.get_sz_decimals.side_effect = get_sz_decimals
+    return registry
+
+
+@pytest.fixture
+def mock_spot_metadata():
+    """Mock spot metadata response."""
+    return {
+        "universe": [
+            {"name": "ETH/USDC", "index": 0},
+            {"name": "BTC/USDC", "index": 1},
+        ],
+        "tokens": [
+            {"name": "USDC", "index": 0},
+            {"name": "ETH", "index": 1},
+            {"name": "BTC", "index": 2},
+        ],
+    }
 
 
 @pytest.fixture
@@ -93,10 +137,10 @@ def market_order_action():
     )
 
 
-def test_executor_initialization(hyperliquid_config):
+def test_executor_initialization(hyperliquid_config, mock_registry):
     """Test TradeExecutor initializes correctly."""
-    with patch("hyperliquid_agent.executor.Exchange"), patch("hyperliquid_agent.executor.Info"):
-        executor = TradeExecutor(hyperliquid_config)
+    with patch("hyperliquid_agent.executor.Exchange"):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
 
         assert executor.config == hyperliquid_config
         assert executor.exchange is not None
@@ -104,35 +148,35 @@ def test_executor_initialization(hyperliquid_config):
         assert executor._asset_metadata_cache == {}
 
 
-def test_validate_action_valid_buy(hyperliquid_config, valid_buy_action):
+def test_validate_action_valid_buy(hyperliquid_config, mock_registry, valid_buy_action):
     """Test validation passes for valid buy action."""
-    with patch("hyperliquid_agent.executor.Exchange"), patch("hyperliquid_agent.executor.Info"):
-        executor = TradeExecutor(hyperliquid_config)
+    with patch("hyperliquid_agent.executor.Exchange"):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         assert executor._validate_action(valid_buy_action) is True
 
 
-def test_validate_action_valid_sell(hyperliquid_config, valid_sell_action):
+def test_validate_action_valid_sell(hyperliquid_config, mock_registry, valid_sell_action):
     """Test validation passes for valid sell action."""
-    with patch("hyperliquid_agent.executor.Exchange"), patch("hyperliquid_agent.executor.Info"):
-        executor = TradeExecutor(hyperliquid_config)
+    with patch("hyperliquid_agent.executor.Exchange"):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         assert executor._validate_action(valid_sell_action) is True
 
 
-def test_validate_action_valid_hold(hyperliquid_config, valid_hold_action):
+def test_validate_action_valid_hold(hyperliquid_config, mock_registry, valid_hold_action):
     """Test validation passes for valid hold action."""
-    with patch("hyperliquid_agent.executor.Exchange"), patch("hyperliquid_agent.executor.Info"):
-        executor = TradeExecutor(hyperliquid_config)
+    with patch("hyperliquid_agent.executor.Exchange"):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         assert executor._validate_action(valid_hold_action) is True
 
 
-def test_validate_action_valid_close(hyperliquid_config, valid_close_action):
+def test_validate_action_valid_close(hyperliquid_config, mock_registry, valid_close_action):
     """Test validation passes for valid close action."""
-    with patch("hyperliquid_agent.executor.Exchange"), patch("hyperliquid_agent.executor.Info"):
-        executor = TradeExecutor(hyperliquid_config)
+    with patch("hyperliquid_agent.executor.Exchange"):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         assert executor._validate_action(valid_close_action) is True
 
 
-def test_validate_action_invalid_action_type(hyperliquid_config):
+def test_validate_action_invalid_action_type(hyperliquid_config, mock_registry):
     """Test validation fails for invalid action type."""
     invalid_action = TradeAction(
         action_type="invalid",  # type: ignore[arg-type]
@@ -141,12 +185,12 @@ def test_validate_action_invalid_action_type(hyperliquid_config):
         size=0.1,
     )
 
-    with patch("hyperliquid_agent.executor.Exchange"), patch("hyperliquid_agent.executor.Info"):
-        executor = TradeExecutor(hyperliquid_config)
+    with patch("hyperliquid_agent.executor.Exchange"):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         assert executor._validate_action(invalid_action) is False
 
 
-def test_validate_action_missing_coin(hyperliquid_config):
+def test_validate_action_missing_coin(hyperliquid_config, mock_registry):
     """Test validation fails when coin is not specified."""
     invalid_action = TradeAction(
         action_type="buy",
@@ -155,12 +199,12 @@ def test_validate_action_missing_coin(hyperliquid_config):
         size=0.1,
     )
 
-    with patch("hyperliquid_agent.executor.Exchange"), patch("hyperliquid_agent.executor.Info"):
-        executor = TradeExecutor(hyperliquid_config)
+    with patch("hyperliquid_agent.executor.Exchange"):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         assert executor._validate_action(invalid_action) is False
 
 
-def test_validate_action_invalid_market_type(hyperliquid_config):
+def test_validate_action_invalid_market_type(hyperliquid_config, mock_registry):
     """Test validation fails for invalid market type."""
     invalid_action = TradeAction(
         action_type="buy",
@@ -169,12 +213,12 @@ def test_validate_action_invalid_market_type(hyperliquid_config):
         size=0.1,
     )
 
-    with patch("hyperliquid_agent.executor.Exchange"), patch("hyperliquid_agent.executor.Info"):
-        executor = TradeExecutor(hyperliquid_config)
+    with patch("hyperliquid_agent.executor.Exchange"):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         assert executor._validate_action(invalid_action) is False
 
 
-def test_validate_action_missing_size_for_buy(hyperliquid_config):
+def test_validate_action_missing_size_for_buy(hyperliquid_config, mock_registry):
     """Test validation fails when size is missing for buy action."""
     invalid_action = TradeAction(
         action_type="buy",
@@ -183,12 +227,12 @@ def test_validate_action_missing_size_for_buy(hyperliquid_config):
         size=None,
     )
 
-    with patch("hyperliquid_agent.executor.Exchange"), patch("hyperliquid_agent.executor.Info"):
-        executor = TradeExecutor(hyperliquid_config)
+    with patch("hyperliquid_agent.executor.Exchange"):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         assert executor._validate_action(invalid_action) is False
 
 
-def test_validate_action_zero_size_for_sell(hyperliquid_config):
+def test_validate_action_zero_size_for_sell(hyperliquid_config, mock_registry):
     """Test validation fails when size is zero for sell action."""
     invalid_action = TradeAction(
         action_type="sell",
@@ -197,12 +241,12 @@ def test_validate_action_zero_size_for_sell(hyperliquid_config):
         size=0.0,
     )
 
-    with patch("hyperliquid_agent.executor.Exchange"), patch("hyperliquid_agent.executor.Info"):
-        executor = TradeExecutor(hyperliquid_config)
+    with patch("hyperliquid_agent.executor.Exchange"):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         assert executor._validate_action(invalid_action) is False
 
 
-def test_validate_action_negative_size(hyperliquid_config):
+def test_validate_action_negative_size(hyperliquid_config, mock_registry):
     """Test validation fails when size is negative."""
     invalid_action = TradeAction(
         action_type="buy",
@@ -211,15 +255,15 @@ def test_validate_action_negative_size(hyperliquid_config):
         size=-0.1,
     )
 
-    with patch("hyperliquid_agent.executor.Exchange"), patch("hyperliquid_agent.executor.Info"):
-        executor = TradeExecutor(hyperliquid_config)
+    with patch("hyperliquid_agent.executor.Exchange"):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         assert executor._validate_action(invalid_action) is False
 
 
-def test_execute_action_hold(hyperliquid_config, valid_hold_action):
+def test_execute_action_hold(hyperliquid_config, mock_registry, valid_hold_action):
     """Test executing hold action returns success without submitting order."""
-    with patch("hyperliquid_agent.executor.Exchange"), patch("hyperliquid_agent.executor.Info"):
-        executor = TradeExecutor(hyperliquid_config)
+    with patch("hyperliquid_agent.executor.Exchange"):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         result = executor.execute_action(valid_hold_action)
 
         assert result.success is True
@@ -228,7 +272,7 @@ def test_execute_action_hold(hyperliquid_config, valid_hold_action):
         assert result.error is None
 
 
-def test_execute_action_invalid_parameters(hyperliquid_config):
+def test_execute_action_invalid_parameters(hyperliquid_config, mock_registry):
     """Test executing action with invalid parameters returns failure."""
     invalid_action = TradeAction(
         action_type="buy",
@@ -237,8 +281,8 @@ def test_execute_action_invalid_parameters(hyperliquid_config):
         size=0.1,
     )
 
-    with patch("hyperliquid_agent.executor.Exchange"), patch("hyperliquid_agent.executor.Info"):
-        executor = TradeExecutor(hyperliquid_config)
+    with patch("hyperliquid_agent.executor.Exchange"):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         result = executor.execute_action(invalid_action)
 
         assert result.success is False
@@ -247,12 +291,13 @@ def test_execute_action_invalid_parameters(hyperliquid_config):
 
 
 def test_execute_action_limit_order_success(
-    hyperliquid_config, valid_buy_action, mock_asset_metadata
+    hyperliquid_config, mock_registry, valid_buy_action, mock_asset_metadata, mock_spot_metadata
 ):
     """Test successful limit order execution."""
     mock_exchange = MagicMock()
     mock_info = MagicMock()
     mock_info.meta.return_value = mock_asset_metadata
+    mock_info.spot_meta.return_value = mock_spot_metadata
 
     order_response = {"status": {"resting": {"oid": "0xorder123"}}}
     mock_exchange.order.return_value = order_response
@@ -261,7 +306,7 @@ def test_execute_action_limit_order_success(
         patch("hyperliquid_agent.executor.Exchange", return_value=mock_exchange),
         patch("hyperliquid_agent.executor.Info", return_value=mock_info),
     ):
-        executor = TradeExecutor(hyperliquid_config)
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         result = executor.execute_action(valid_buy_action)
 
         assert result.success is True
@@ -279,12 +324,13 @@ def test_execute_action_limit_order_success(
 
 
 def test_execute_action_market_order_success(
-    hyperliquid_config, market_order_action, mock_asset_metadata
+    hyperliquid_config, mock_registry, market_order_action, mock_asset_metadata, mock_spot_metadata
 ):
     """Test successful market order execution."""
     mock_exchange = MagicMock()
     mock_info = MagicMock()
     mock_info.meta.return_value = mock_asset_metadata
+    mock_info.spot_meta.return_value = mock_spot_metadata
 
     order_response = {"status": {"resting": {"oid": "0xmarket456"}}}
     mock_exchange.market_open.return_value = order_response
@@ -293,7 +339,7 @@ def test_execute_action_market_order_success(
         patch("hyperliquid_agent.executor.Exchange", return_value=mock_exchange),
         patch("hyperliquid_agent.executor.Info", return_value=mock_info),
     ):
-        executor = TradeExecutor(hyperliquid_config)
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         result = executor.execute_action(market_order_action)
 
         assert result.success is True
@@ -308,11 +354,14 @@ def test_execute_action_market_order_success(
         assert call_args.kwargs["px"] is None
 
 
-def test_execute_action_close_position(hyperliquid_config, valid_close_action, mock_asset_metadata):
+def test_execute_action_close_position(
+    hyperliquid_config, mock_registry, valid_close_action, mock_asset_metadata, mock_spot_metadata
+):
     """Test closing position with market order."""
     mock_exchange = MagicMock()
     mock_info = MagicMock()
     mock_info.meta.return_value = mock_asset_metadata
+    mock_info.spot_meta.return_value = mock_spot_metadata
 
     order_response = {"status": {"resting": {"oid": "0xclose789"}}}
     mock_exchange.market_open.return_value = order_response
@@ -321,7 +370,7 @@ def test_execute_action_close_position(hyperliquid_config, valid_close_action, m
         patch("hyperliquid_agent.executor.Exchange", return_value=mock_exchange),
         patch("hyperliquid_agent.executor.Info", return_value=mock_info),
     ):
-        executor = TradeExecutor(hyperliquid_config)
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         result = executor.execute_action(valid_close_action)
 
         assert result.success is True
@@ -336,11 +385,14 @@ def test_execute_action_close_position(hyperliquid_config, valid_close_action, m
         assert call_args.kwargs["px"] is None
 
 
-def test_execute_action_spot_market(hyperliquid_config, valid_sell_action, mock_asset_metadata):
+def test_execute_action_spot_market(
+    hyperliquid_config, mock_registry, valid_sell_action, mock_asset_metadata, mock_spot_metadata
+):
     """Test order execution on spot market."""
     mock_exchange = MagicMock()
     mock_info = MagicMock()
     mock_info.meta.return_value = mock_asset_metadata
+    mock_info.spot_meta.return_value = mock_spot_metadata
 
     order_response = {"status": {"resting": {"oid": "0xspot999"}}}
     mock_exchange.order.return_value = order_response
@@ -349,7 +401,7 @@ def test_execute_action_spot_market(hyperliquid_config, valid_sell_action, mock_
         patch("hyperliquid_agent.executor.Exchange", return_value=mock_exchange),
         patch("hyperliquid_agent.executor.Info", return_value=mock_info),
     ):
-        executor = TradeExecutor(hyperliquid_config)
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         result = executor.execute_action(valid_sell_action)
 
         assert result.success is True
@@ -363,18 +415,21 @@ def test_execute_action_spot_market(hyperliquid_config, valid_sell_action, mock_
         assert call_args.kwargs["sz"] == 1.5
 
 
-def test_execute_action_api_error(hyperliquid_config, valid_buy_action, mock_asset_metadata):
+def test_execute_action_api_error(
+    hyperliquid_config, mock_registry, valid_buy_action, mock_asset_metadata, mock_spot_metadata
+):
     """Test execution handles API errors gracefully."""
     mock_exchange = MagicMock()
     mock_info = MagicMock()
     mock_info.meta.return_value = mock_asset_metadata
+    mock_info.spot_meta.return_value = mock_spot_metadata
     mock_exchange.order.side_effect = Exception("API connection failed")
 
     with (
         patch("hyperliquid_agent.executor.Exchange", return_value=mock_exchange),
         patch("hyperliquid_agent.executor.Info", return_value=mock_info),
     ):
-        executor = TradeExecutor(hyperliquid_config)
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         result = executor.execute_action(valid_buy_action)
 
         assert result.success is False
@@ -383,19 +438,20 @@ def test_execute_action_api_error(hyperliquid_config, valid_buy_action, mock_ass
 
 
 def test_execute_action_insufficient_balance_error(
-    hyperliquid_config, valid_buy_action, mock_asset_metadata
+    hyperliquid_config, mock_registry, valid_buy_action, mock_asset_metadata, mock_spot_metadata
 ):
     """Test execution handles insufficient balance error."""
     mock_exchange = MagicMock()
     mock_info = MagicMock()
     mock_info.meta.return_value = mock_asset_metadata
+    mock_info.spot_meta.return_value = mock_spot_metadata
     mock_exchange.order.side_effect = Exception("Insufficient balance")
 
     with (
         patch("hyperliquid_agent.executor.Exchange", return_value=mock_exchange),
         patch("hyperliquid_agent.executor.Info", return_value=mock_info),
     ):
-        executor = TradeExecutor(hyperliquid_config)
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         result = executor.execute_action(valid_buy_action)
 
         assert result.success is False
@@ -403,12 +459,13 @@ def test_execute_action_insufficient_balance_error(
 
 
 def test_execute_action_response_without_order_id(
-    hyperliquid_config, valid_buy_action, mock_asset_metadata
+    hyperliquid_config, mock_registry, valid_buy_action, mock_asset_metadata, mock_spot_metadata
 ):
     """Test execution handles response without order ID."""
     mock_exchange = MagicMock()
     mock_info = MagicMock()
     mock_info.meta.return_value = mock_asset_metadata
+    mock_info.spot_meta.return_value = mock_spot_metadata
 
     # Response without order ID structure
     order_response = {"status": "filled"}
@@ -418,63 +475,72 @@ def test_execute_action_response_without_order_id(
         patch("hyperliquid_agent.executor.Exchange", return_value=mock_exchange),
         patch("hyperliquid_agent.executor.Info", return_value=mock_info),
     ):
-        executor = TradeExecutor(hyperliquid_config)
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         result = executor.execute_action(valid_buy_action)
 
         assert result.success is True
         assert result.order_id is None  # No order ID in response
 
 
-def test_round_size_with_decimals(hyperliquid_config, mock_asset_metadata):
+def test_round_size_with_decimals(
+    hyperliquid_config, mock_registry, mock_asset_metadata, mock_spot_metadata
+):
     """Test size rounding conforms to asset szDecimals."""
     mock_info = MagicMock()
     mock_info.meta.return_value = mock_asset_metadata
+    mock_info.spot_meta.return_value = mock_spot_metadata
 
     with (
         patch("hyperliquid_agent.executor.Exchange"),
         patch("hyperliquid_agent.executor.Info", return_value=mock_info),
     ):
-        executor = TradeExecutor(hyperliquid_config)
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
 
         # BTC has 4 decimals
-        rounded_btc = executor._round_size(0.123456, "BTC")
+        rounded_btc = executor._round_size(0.123456, "BTC", "perp")
         assert rounded_btc == 0.1234
 
         # ETH has 3 decimals
-        rounded_eth = executor._round_size(1.23456, "ETH")
+        rounded_eth = executor._round_size(1.23456, "ETH", "perp")
         assert rounded_eth == 1.234
 
         # SOL has 2 decimals
-        rounded_sol = executor._round_size(10.999, "SOL")
+        rounded_sol = executor._round_size(10.999, "SOL", "perp")
         assert rounded_sol == 10.99
 
 
-def test_round_size_rounds_down(hyperliquid_config, mock_asset_metadata):
+def test_round_size_rounds_down(
+    hyperliquid_config, mock_registry, mock_asset_metadata, mock_spot_metadata
+):
     """Test size rounding always rounds down."""
     mock_info = MagicMock()
     mock_info.meta.return_value = mock_asset_metadata
+    mock_info.spot_meta.return_value = mock_spot_metadata
 
     with (
         patch("hyperliquid_agent.executor.Exchange"),
         patch("hyperliquid_agent.executor.Info", return_value=mock_info),
     ):
-        executor = TradeExecutor(hyperliquid_config)
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
 
         # Should round down, not up
-        rounded = executor._round_size(0.12349, "BTC")
+        rounded = executor._round_size(0.12349, "BTC", "perp")
         assert rounded == 0.1234  # Not 0.1235
 
 
-def test_get_asset_metadata_caching(hyperliquid_config, mock_asset_metadata):
+def test_get_asset_metadata_caching(
+    hyperliquid_config, mock_registry, mock_asset_metadata, mock_spot_metadata
+):
     """Test asset metadata is cached after first retrieval."""
     mock_info = MagicMock()
     mock_info.meta.return_value = mock_asset_metadata
+    mock_info.spot_meta.return_value = mock_spot_metadata
 
     with (
         patch("hyperliquid_agent.executor.Exchange"),
         patch("hyperliquid_agent.executor.Info", return_value=mock_info),
     ):
-        executor = TradeExecutor(hyperliquid_config)
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
 
         # First call should fetch from API
         metadata1 = executor._get_asset_metadata("BTC")
@@ -487,26 +553,32 @@ def test_get_asset_metadata_caching(hyperliquid_config, mock_asset_metadata):
         assert mock_info.meta.call_count == 1  # No additional API call
 
 
-def test_get_asset_metadata_not_found(hyperliquid_config, mock_asset_metadata):
+def test_get_asset_metadata_not_found(
+    hyperliquid_config, mock_registry, mock_asset_metadata, mock_spot_metadata
+):
     """Test error when asset not found in universe."""
     mock_info = MagicMock()
     mock_info.meta.return_value = mock_asset_metadata
+    mock_info.spot_meta.return_value = mock_spot_metadata
 
     with (
         patch("hyperliquid_agent.executor.Exchange"),
         patch("hyperliquid_agent.executor.Info", return_value=mock_info),
     ):
-        executor = TradeExecutor(hyperliquid_config)
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
 
         with pytest.raises(ValueError, match="Asset UNKNOWN not found in universe"):
             executor._get_asset_metadata("UNKNOWN")
 
 
-def test_submit_order_close_without_size(hyperliquid_config, mock_asset_metadata):
+def test_submit_order_close_without_size(
+    hyperliquid_config, mock_registry, mock_asset_metadata, mock_spot_metadata
+):
     """Test close action without size raises error."""
     mock_exchange = MagicMock()
     mock_info = MagicMock()
     mock_info.meta.return_value = mock_asset_metadata
+    mock_info.spot_meta.return_value = mock_spot_metadata
 
     close_action = TradeAction(
         action_type="close",
@@ -519,7 +591,7 @@ def test_submit_order_close_without_size(hyperliquid_config, mock_asset_metadata
         patch("hyperliquid_agent.executor.Exchange", return_value=mock_exchange),
         patch("hyperliquid_agent.executor.Info", return_value=mock_info),
     ):
-        executor = TradeExecutor(hyperliquid_config)
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
         result = executor.execute_action(close_action)
 
         assert result.success is False

@@ -455,3 +455,253 @@ api_key = "sk-test123"
         assert config.signals is None
     finally:
         os.unlink(config_path)
+
+
+def test_onchain_provider_validation_enabled_with_provider_but_no_api_key():
+    """Test that enabled on-chain provider without API key raises clear error."""
+    config_content = """
+[hyperliquid]
+account_address = "0x1234567890123456789012345678901234567890"
+secret_key = "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+base_url = "https://api.hyperliquid-testnet.xyz"
+
+[llm]
+provider = "openai"
+model = "gpt-4"
+api_key = "sk-test123"
+
+[agent]
+
+[signals]
+timeout_seconds = 30.0
+
+[signals.onchain]
+enabled = true
+provider = "token_unlocks"
+api_key = ""
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_content)
+        config_path = f.name
+
+    try:
+        with pytest.raises(
+            ValueError,
+            match="On-chain provider 'token_unlocks' is enabled but no API key provided",
+        ):
+            load_config(config_path)
+    finally:
+        os.unlink(config_path)
+
+
+def test_onchain_provider_validation_enabled_without_provider():
+    """Test that enabled on-chain config without provider is allowed."""
+    config_content = """
+[hyperliquid]
+account_address = "0x1234567890123456789012345678901234567890"
+secret_key = "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+base_url = "https://api.hyperliquid-testnet.xyz"
+
+[llm]
+provider = "openai"
+model = "gpt-4"
+api_key = "sk-test123"
+
+[agent]
+
+[signals]
+timeout_seconds = 30.0
+
+[signals.onchain]
+enabled = true
+provider = ""
+api_key = ""
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_content)
+        config_path = f.name
+
+    try:
+        config = load_config(config_path)
+        # Should load successfully with provider=None
+        assert config.signals is not None
+        assert config.signals.onchain is not None
+        assert config.signals.onchain.enabled is True
+        assert config.signals.onchain.provider is None
+        assert config.signals.onchain.api_key is None
+    finally:
+        os.unlink(config_path)
+
+
+def test_onchain_provider_default_is_none():
+    """Test that on-chain provider defaults to None instead of 'placeholder'."""
+    config_content = """
+[hyperliquid]
+account_address = "0x1234567890123456789012345678901234567890"
+secret_key = "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+base_url = "https://api.hyperliquid-testnet.xyz"
+
+[llm]
+provider = "openai"
+model = "gpt-4"
+api_key = "sk-test123"
+
+[agent]
+
+[signals]
+timeout_seconds = 30.0
+
+[signals.onchain]
+enabled = true
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_content)
+        config_path = f.name
+
+    try:
+        config = load_config(config_path)
+        # Provider should default to None, not "placeholder"
+        assert config.signals is not None
+        assert config.signals.onchain is not None
+        assert config.signals.onchain.provider is None
+    finally:
+        os.unlink(config_path)
+
+
+def test_governance_config_emergency_reduction_pct():
+    """Test that emergency_reduction_pct is loaded correctly."""
+    config_content = """
+[hyperliquid]
+account_address = "0x1234567890123456789012345678901234567890"
+secret_key = "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+base_url = "https://api.hyperliquid-testnet.xyz"
+
+[llm]
+provider = "openai"
+model = "gpt-4"
+api_key = "sk-test123"
+
+[agent]
+
+[governance]
+fast_loop_interval_seconds = 10
+medium_loop_interval_minutes = 30
+slow_loop_interval_hours = 24
+emergency_reduction_pct = 75.0
+
+[governance.governor]
+minimum_advantage_over_cost_bps = 50.0
+
+[governance.regime_detector]
+confirmation_cycles_required = 3
+
+[governance.tripwire]
+min_margin_ratio = 0.15
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_content)
+        config_path = f.name
+
+    try:
+        config = load_config(config_path)
+        assert config.governance is not None
+        assert config.governance.emergency_reduction_pct == 75.0
+    finally:
+        os.unlink(config_path)
+
+
+def test_governance_config_emergency_reduction_pct_default():
+    """Test that emergency_reduction_pct defaults to 100.0."""
+    config_content = """
+[hyperliquid]
+account_address = "0x1234567890123456789012345678901234567890"
+secret_key = "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"
+base_url = "https://api.hyperliquid-testnet.xyz"
+
+[llm]
+provider = "openai"
+model = "gpt-4"
+api_key = "sk-test123"
+
+[agent]
+
+[governance]
+fast_loop_interval_seconds = 10
+
+[governance.governor]
+minimum_advantage_over_cost_bps = 50.0
+
+[governance.regime_detector]
+confirmation_cycles_required = 3
+
+[governance.tripwire]
+min_margin_ratio = 0.15
+"""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_content)
+        config_path = f.name
+
+    try:
+        config = load_config(config_path)
+        assert config.governance is not None
+        assert config.governance.emergency_reduction_pct == 100.0
+    finally:
+        os.unlink(config_path)
+
+
+def test_example_config_loads_correctly():
+    """Test that the example configuration file loads without errors."""
+    example_config_path = "config.toml.example"
+
+    # Check if example config exists
+    if not os.path.exists(example_config_path):
+        pytest.skip("Example config file not found")
+
+    # Create a temporary copy with valid credentials
+    with open(example_config_path) as f:
+        example_content = f.read()
+
+    # Replace placeholder values with valid test values
+    test_content = (
+        example_content.replace(
+            'account_address = "0x0000000000000000000000000000000000000000"',
+            'account_address = "0x1234567890123456789012345678901234567890"',
+        )
+        .replace(
+            'secret_key = "0x0000000000000000000000000000000000000000000000000000000000000000"',
+            'secret_key = "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"',
+        )
+        .replace('api_key = "sk-..."', 'api_key = "sk-test123"')
+    )
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(test_content)
+        config_path = f.name
+
+    try:
+        config = load_config(config_path)
+        # Verify basic structure loads
+        assert config.hyperliquid is not None
+        assert config.llm is not None
+        assert config.agent is not None
+
+        # Verify signal config loads with correct defaults
+        if config.signals is not None:
+            # Check on-chain provider defaults
+            if config.signals.onchain is not None:
+                # Provider should be None or empty string (treated as None)
+                assert (
+                    config.signals.onchain.provider is None or config.signals.onchain.provider == ""
+                )
+
+            # Check sentiment config (no API key required)
+            if config.signals.sentiment is not None:
+                assert config.signals.sentiment.enabled is True
+                assert config.signals.sentiment.use_fear_greed_index is True
+
+        # Verify governance config loads with emergency_reduction_pct
+        if config.governance is not None:
+            assert hasattr(config.governance, "emergency_reduction_pct")
+            assert config.governance.emergency_reduction_pct == 100.0
+    finally:
+        os.unlink(config_path)

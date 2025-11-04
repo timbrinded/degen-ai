@@ -7,7 +7,7 @@ import queue
 import threading
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from hyperliquid_agent.monitor import AccountState
 from hyperliquid_agent.signals.models import (
@@ -15,6 +15,9 @@ from hyperliquid_agent.signals.models import (
     MediumLoopSignals,
     SlowLoopSignals,
 )
+
+if TYPE_CHECKING:
+    from hyperliquid_agent.signals.orchestrator import SignalOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,10 @@ class SignalService:
         self.background_thread: threading.Thread | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.shutdown_event = threading.Event()
+        self.orchestrator_ready = threading.Event()  # Synchronization barrier
+        self.orchestrator: SignalOrchestrator | None = (
+            None  # Will be set when background thread starts
+        )
 
     def start(self):
         """Start background thread with async event loop."""
@@ -64,11 +71,28 @@ class SignalService:
             return
 
         self.shutdown_event.clear()
+        self.orchestrator_ready.clear()  # Reset ready flag
         self.background_thread = threading.Thread(
             target=self._run_async_loop, daemon=True, name="SignalCollectionThread"
         )
         self.background_thread.start()
         logger.info("Signal service started")
+
+    def wait_until_ready(self, timeout: float = 10.0) -> bool:
+        """Wait for orchestrator to be initialized and ready.
+
+        Args:
+            timeout: Maximum time to wait in seconds
+
+        Returns:
+            True if orchestrator became ready, False if timeout
+        """
+        ready = self.orchestrator_ready.wait(timeout=timeout)
+        if ready:
+            logger.info(f"Signal service orchestrator ready after waiting up to {timeout}s")
+        else:
+            logger.warning(f"Signal service orchestrator not ready after {timeout}s timeout")
+        return ready
 
     def stop(self):
         """Gracefully stop background thread."""
@@ -122,6 +146,11 @@ class SignalService:
         from hyperliquid_agent.signals.orchestrator import SignalOrchestrator
 
         orchestrator = SignalOrchestrator(self.config)
+        self.orchestrator = orchestrator  # Store reference for external access
+
+        # Signal that orchestrator is ready
+        self.orchestrator_ready.set()
+        logger.info("Signal orchestrator initialized and ready")
 
         # Start periodic cache cleanup task
         cleanup_interval = self.config.get("cache_cleanup_interval_seconds", 300)
@@ -132,10 +161,12 @@ class SignalService:
         try:
             while not self.shutdown_event.is_set():
                 try:
-                    # Non-blocking queue check with timeout
+                    # Non-blocking queue check
                     try:
-                        request = self.request_queue.get(timeout=0.1)
+                        request = self.request_queue.get_nowait()
                     except queue.Empty:
+                        # Yield control to event loop to process other tasks
+                        await asyncio.sleep(0.01)
                         continue
 
                     # Process request asynchronously
@@ -206,6 +237,34 @@ class SignalService:
         except queue.Empty:
             logger.error(f"Signal collection timeout after {timeout_seconds}s")
             return self._get_fallback_signals(signal_type)
+
+    def run_coroutine_sync(self, coro):
+        """Execute an async coroutine in the signal service's event loop synchronously.
+
+        This method allows synchronous code to run async operations in the background
+        thread's event loop and wait for the result.
+
+        Args:
+            coro: Async coroutine to execute
+
+        Returns:
+            Result from the coroutine
+
+        Raises:
+            RuntimeError: If signal service is not running
+            Exception: Any exception raised by the coroutine
+        """
+        if not self.background_thread or not self.background_thread.is_alive():
+            raise RuntimeError("Signal service not running")
+
+        if self.loop is None:
+            raise RuntimeError("Signal service event loop not initialized")
+
+        # Use asyncio.run_coroutine_threadsafe to submit the coroutine to the background loop
+        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+        # Wait for result with a reasonable timeout (30 seconds by default)
+        return future.result(timeout=30.0)
 
     def get_cache_metrics(self) -> dict | None:
         """Get cache performance metrics for monitoring.

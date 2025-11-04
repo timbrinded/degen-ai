@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from collections import deque
 from datetime import datetime
 from typing import Any, Literal
 
@@ -25,6 +26,220 @@ from hyperliquid_agent.signals.models import (
 from hyperliquid_agent.signals.processor import ComputedSignalProcessor, TechnicalIndicators
 
 logger = logging.getLogger(__name__)
+
+
+class PriceHistory:
+    """Maintains rolling buffer of historical price data for multi-timeframe analysis.
+
+    Stores 90 days of 4-hour candles (540 data points) to enable accurate calculation
+    of 1d, 7d, 30d, and 90d returns, as well as market structure detection.
+    """
+
+    def __init__(self, lookback_days: int = 90):
+        """Initialize price history with specified lookback period.
+
+        Args:
+            lookback_days: Number of days to maintain in history (default 90)
+        """
+        # 4-hour candles: 6 per day * lookback_days
+        max_len = lookback_days * 6
+        self.closes: deque[float] = deque(maxlen=max_len)
+        self.highs: deque[float] = deque(maxlen=max_len)
+        self.lows: deque[float] = deque(maxlen=max_len)
+        self.timestamps: deque[datetime] = deque(maxlen=max_len)
+        self.lookback_days = lookback_days
+
+    def add_candle(self, close: float, high: float, low: float, timestamp: datetime):
+        """Add new price data point to history.
+
+        Args:
+            close: Closing price
+            high: High price
+            low: Low price
+            timestamp: Candle timestamp
+        """
+        self.closes.append(close)
+        self.highs.append(high)
+        self.lows.append(low)
+        self.timestamps.append(timestamp)
+
+    def calculate_returns(self) -> dict[str, float] | None:
+        """Calculate multi-timeframe returns from historical price data.
+
+        Returns:
+            Dictionary with keys: return_1d, return_7d, return_30d, return_90d
+            Returns None if insufficient data available
+        """
+        if len(self.closes) < 7:  # Need at least 1 day of data (6 candles)
+            return None
+
+        current_price = self.closes[-1]
+
+        # Calculate returns for each timeframe
+        # 1d = 6 candles ago (6 * 4h = 24h)
+        # 7d = 42 candles ago (42 * 4h = 168h = 7d)
+        # 30d = 180 candles ago (180 * 4h = 720h = 30d)
+        # 90d = 540 candles ago (540 * 4h = 2160h = 90d)
+
+        returns = {}
+
+        # 1-day return
+        if len(self.closes) >= 7:
+            price_1d_ago = self.closes[-7]
+            if price_1d_ago > 0:
+                returns["return_1d"] = ((current_price - price_1d_ago) / price_1d_ago) * 100
+            else:
+                returns["return_1d"] = 0.0
+        else:
+            returns["return_1d"] = 0.0
+
+        # 7-day return
+        if len(self.closes) >= 43:
+            price_7d_ago = self.closes[-43]
+            if price_7d_ago > 0:
+                returns["return_7d"] = ((current_price - price_7d_ago) / price_7d_ago) * 100
+            else:
+                returns["return_7d"] = 0.0
+        else:
+            returns["return_7d"] = 0.0
+
+        # 30-day return
+        if len(self.closes) >= 181:
+            price_30d_ago = self.closes[-181]
+            if price_30d_ago > 0:
+                returns["return_30d"] = ((current_price - price_30d_ago) / price_30d_ago) * 100
+            else:
+                returns["return_30d"] = 0.0
+        else:
+            returns["return_30d"] = 0.0
+
+        # 90-day return
+        if len(self.closes) >= 541:
+            price_90d_ago = self.closes[-541]
+            if price_90d_ago > 0:
+                returns["return_90d"] = ((current_price - price_90d_ago) / price_90d_ago) * 100
+            else:
+                returns["return_90d"] = 0.0
+        else:
+            returns["return_90d"] = 0.0
+
+        return returns
+
+    def detect_market_structure(self) -> dict[str, bool]:
+        """Detect higher highs and higher lows patterns using peak and trough analysis.
+
+        Analyzes the most recent price action to identify trend structure:
+        - Higher highs: Recent peaks are higher than earlier peaks
+        - Higher lows: Recent troughs are higher than earlier troughs
+
+        Returns:
+            Dictionary with keys: higher_highs, higher_lows
+        """
+        if len(self.highs) < 50:  # Need sufficient data for pattern detection
+            return {"higher_highs": False, "higher_lows": False}
+
+        # Analyze last 50 candles for market structure
+        recent_highs = list(self.highs)[-50:]
+        recent_lows = list(self.lows)[-50:]
+
+        # Find peaks (local maxima) in highs
+        peaks = []
+        for i in range(1, len(recent_highs) - 1):
+            if recent_highs[i] > recent_highs[i - 1] and recent_highs[i] > recent_highs[i + 1]:
+                peaks.append(recent_highs[i])
+
+        # Find troughs (local minima) in lows
+        troughs = []
+        for i in range(1, len(recent_lows) - 1):
+            if recent_lows[i] < recent_lows[i - 1] and recent_lows[i] < recent_lows[i + 1]:
+                troughs.append(recent_lows[i])
+
+        # Determine higher highs: compare recent peaks to earlier peaks
+        higher_highs = False
+        if len(peaks) >= 2:
+            # Compare last peak to previous peak
+            higher_highs = peaks[-1] > peaks[-2]
+
+        # Determine higher lows: compare recent troughs to earlier troughs
+        higher_lows = False
+        if len(troughs) >= 2:
+            # Compare last trough to previous trough
+            higher_lows = troughs[-1] > troughs[-2]
+
+        return {"higher_highs": higher_highs, "higher_lows": higher_lows}
+
+    def get_data_quality(self) -> str:
+        """Assess data quality based on available history.
+
+        Returns:
+            "complete" if 90d of data, "partial" if 7-90d, "insufficient" if <7d
+        """
+        num_candles = len(self.closes)
+
+        if num_candles >= 540:  # 90 days
+            return "complete"
+        elif num_candles >= 42:  # 7 days
+            return "partial"
+        else:
+            return "insufficient"
+
+    def get_oldest_data_point(self) -> datetime | None:
+        """Get timestamp of oldest data point in history.
+
+        Returns:
+            Oldest timestamp or None if no data
+        """
+        if len(self.timestamps) > 0:
+            return self.timestamps[0]
+        return None
+
+
+class OpenInterestHistory:
+    """Track historical open interest for change calculations.
+
+    Maintains a rolling buffer of open interest values with timestamps to enable
+    accurate 24-hour change calculations.
+    """
+
+    def __init__(self, lookback_hours: int = 24):
+        """Initialize open interest history with specified lookback period.
+
+        Args:
+            lookback_hours: Number of hours to maintain in history (default 24)
+        """
+        # 4-hour candles: lookback_hours / 4 + 1 for accurate 24h lookback
+        max_len = (lookback_hours // 4) + 1
+        self.values: deque[float] = deque(maxlen=max_len)
+        self.timestamps: deque[datetime] = deque(maxlen=max_len)
+        self.lookback_hours = lookback_hours
+
+    def add_value(self, oi: float, timestamp: datetime):
+        """Add new OI data point to history.
+
+        Args:
+            oi: Open interest value
+            timestamp: Data point timestamp
+        """
+        self.values.append(oi)
+        self.timestamps.append(timestamp)
+
+    def calculate_24h_change(self) -> float | None:
+        """Calculate 24-hour OI change percentage.
+
+        Returns:
+            Percentage change from 24h ago to current, or None if insufficient data
+        """
+        if len(self.values) < 7:  # Need at least 24h of data (6 * 4h candles + current)
+            return None
+
+        current_oi = self.values[-1]
+        oi_24h_ago = self.values[0]
+
+        if oi_24h_ago == 0:
+            return None
+
+        change_pct = ((current_oi - oi_24h_ago) / abs(oi_24h_ago)) * 100
+        return change_pct
 
 
 class SignalCollectorBase:
@@ -85,15 +300,36 @@ class FastSignalCollector(SignalCollectorBase):
         slippage_estimates = {}
         partial_fill_rates = {}
         order_book_depth = {}
-        micro_pnl = sum(p.unrealized_pnl for p in account_state.positions)
 
-        # Track API latency
+        # Only request market data for perpetual positions; spot balances share the AccountState
+        perp_positions = [p for p in account_state.positions if p.market_type == "perp"]
+        micro_pnl = sum(p.unrealized_pnl for p in perp_positions)
+
+        if not perp_positions:
+            metadata = SignalQualityMetadata(
+                timestamp=datetime.now(),
+                confidence=0.0,
+                staleness_seconds=0.0,
+                sources=["hyperliquid"],
+                is_cached=False,
+            )
+
+            return FastLoopSignals(
+                spreads=spreads,
+                slippage_estimates=slippage_estimates,
+                short_term_volatility=0.0,
+                micro_pnl=micro_pnl,
+                partial_fill_rates=partial_fill_rates,
+                order_book_depth=order_book_depth,
+                api_latency_ms=0.0,
+                metadata=metadata,
+            )
+
+        # Track API latency for perp positions only
         api_start_time = time.time()
 
-        # Collect order books for all positions concurrently
-        tasks = [
-            self.hyperliquid_provider.fetch_order_book(pos.coin) for pos in account_state.positions
-        ]
+        # Collect order books for perpetual positions concurrently
+        tasks = [self.hyperliquid_provider.fetch_order_book(pos.coin) for pos in perp_positions]
 
         order_book_responses = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -104,7 +340,7 @@ class FastSignalCollector(SignalCollectorBase):
         successful_fetches = 0
         total_confidence = 0.0
 
-        for pos, ob_response in zip(account_state.positions, order_book_responses, strict=True):
+        for pos, ob_response in zip(perp_positions, order_book_responses, strict=True):
             coin = pos.coin
 
             if isinstance(ob_response, BaseException):
@@ -160,7 +396,7 @@ class FastSignalCollector(SignalCollectorBase):
             partial_fill_rates[coin] = 0.95
 
         # Calculate short-term volatility from recent price changes
-        short_term_vol = await self._calculate_short_term_volatility(account_state.positions)
+        short_term_vol = await self._calculate_short_term_volatility(perp_positions)
 
         # Build quality metadata
         avg_confidence = total_confidence / successful_fetches if successful_fetches > 0 else 0.0
@@ -254,6 +490,10 @@ class MediumSignalCollector(SignalCollectorBase):
         super().__init__(info)
         self.hyperliquid_provider = hyperliquid_provider
         self.computed_processor = computed_processor
+        # Price history tracking for each coin
+        self.price_history: dict[str, PriceHistory] = {}
+        # Open interest history tracking for each coin
+        self.oi_history: dict[str, OpenInterestHistory] = {}
 
     async def collect(self, account_state: AccountState) -> MediumLoopSignals:
         """Collect medium-loop signals asynchronously with concurrent data fetching.
@@ -269,11 +509,38 @@ class MediumSignalCollector(SignalCollectorBase):
         concentration_ratios: dict[str, float] = {}
         drift_from_targets: dict[str, float] = {}
         funding_rate_trend: dict[str, Literal["increasing", "decreasing", "stable"]] = {}
-        open_interest_change_24h: dict[str, float] = {}
+        open_interest_change_24h: dict[str, float | None] = {}
         oi_to_volume_ratio: dict[str, float] = {}
         technical_indicators: dict[str, TechnicalIndicators | None] = {}
 
         total_value = account_state.portfolio_value
+
+        # Focus medium-loop analytics on perpetual markets; spot balances lack required data
+        perp_positions = [p for p in account_state.positions if p.market_type == "perp"]
+
+        if not perp_positions:
+            metadata = SignalQualityMetadata(
+                timestamp=datetime.now(),
+                confidence=0.0,
+                staleness_seconds=0.0,
+                sources=["hyperliquid"],
+                is_cached=False,
+            )
+
+            return MediumLoopSignals(
+                realized_vol_1h=0.0,
+                realized_vol_24h=0.0,
+                trend_score=0.0,
+                funding_basis=funding_basis,
+                perp_spot_basis=perp_spot_basis,
+                concentration_ratios=concentration_ratios,
+                drift_from_targets=drift_from_targets,
+                technical_indicators=technical_indicators,
+                open_interest_change_24h=open_interest_change_24h,
+                oi_to_volume_ratio=oi_to_volume_ratio,
+                funding_rate_trend={},
+                metadata=metadata,
+            )
 
         # Initialize tracking variables
         successful_fetches = 0
@@ -283,13 +550,13 @@ class MediumSignalCollector(SignalCollectorBase):
         candles_responses: Any = []
 
         # Collect data for all positions concurrently
-        if account_state.positions:
+        if perp_positions:
             # Create concurrent tasks for each position
             funding_tasks = []
             oi_tasks = []
             candles_tasks = []
 
-            for position in account_state.positions:
+            for position in perp_positions:
                 coin = position.coin
 
                 # Funding rate history (last 24 hours)
@@ -314,7 +581,7 @@ class MediumSignalCollector(SignalCollectorBase):
             oi_responses = await asyncio.gather(*oi_tasks, return_exceptions=True)
             candles_responses = await asyncio.gather(*candles_tasks, return_exceptions=True)
 
-            for i, position in enumerate(account_state.positions):  # type: ignore[assignment]
+            for i, position in enumerate(perp_positions):  # type: ignore[assignment]
                 coin = position.coin
 
                 # Calculate concentration
@@ -356,9 +623,17 @@ class MediumSignalCollector(SignalCollectorBase):
                 if not isinstance(oi_response, BaseException):
                     oi_data = oi_response.data
 
-                    # Calculate 24h OI change (would need historical OI data)
-                    # For now, use placeholder - in production, fetch historical OI
-                    open_interest_change_24h[coin] = 0.0
+                    # Update OI history for this coin
+                    if coin not in self.oi_history:
+                        self.oi_history[coin] = OpenInterestHistory()
+
+                    # Use actual data timestamp instead of datetime.now() to prevent drift
+                    self.oi_history[coin].add_value(oi_data.open_interest, oi_data.timestamp)
+
+                    # Calculate 24h OI change from historical data
+                    # Preserve None to indicate insufficient data for transparency
+                    oi_change = self.oi_history[coin].calculate_24h_change()
+                    open_interest_change_24h[coin] = oi_change
 
                     # Calculate OI-to-volume ratio
                     # Fetch 24h volume from candles
@@ -380,29 +655,49 @@ class MediumSignalCollector(SignalCollectorBase):
                     successful_fetches += 1
                     total_confidence += oi_response.confidence
                 else:
-                    open_interest_change_24h[coin] = 0.0
+                    open_interest_change_24h[coin] = None
                     oi_to_volume_ratio[coin] = 0.0
 
-                # Process candles for technical indicators
+                # Process candles for technical indicators and price history
                 candles_response = candles_responses[i]
                 if not isinstance(candles_response, BaseException):
                     candles = candles_response.data
-                    if candles and len(candles) >= 50:
-                        try:
-                            # Calculate technical indicators using ComputedSignalProcessor
-                            indicators = (
-                                await self.computed_processor.calculate_technical_indicators(
-                                    candles
-                                )
-                            )
-                            technical_indicators[coin] = indicators
+                    if candles:
+                        if coin not in self.price_history:
+                            self.price_history[coin] = PriceHistory()
 
-                            successful_fetches += 1
-                            total_confidence += candles_response.confidence
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to calculate technical indicators for {coin}: {e}"
+                        history = self.price_history[coin]
+                        last_timestamp = history.timestamps[-1] if history.timestamps else None
+
+                        for candle in candles:
+                            if last_timestamp and candle.timestamp <= last_timestamp:
+                                continue
+
+                            history.add_candle(
+                                close=candle.close,
+                                high=candle.high,
+                                low=candle.low,
+                                timestamp=candle.timestamp,
                             )
+                            last_timestamp = candle.timestamp
+
+                        if len(candles) >= 50:
+                            try:
+                                indicators = (
+                                    await self.computed_processor.calculate_technical_indicators(
+                                        candles
+                                    )
+                                )
+                                technical_indicators[coin] = indicators
+
+                                successful_fetches += 1
+                                total_confidence += candles_response.confidence
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to calculate technical indicators for {coin}: {e}"
+                                )
+                                technical_indicators[coin] = None
+                        else:
                             technical_indicators[coin] = None
                     else:
                         technical_indicators[coin] = None
@@ -411,7 +706,7 @@ class MediumSignalCollector(SignalCollectorBase):
 
         # Calculate realized volatility and trend using the largest position
         realized_vol_1h, realized_vol_24h, trend_score = await self._calculate_volatility_and_trend(
-            account_state.positions
+            perp_positions
         )
 
         # Build quality metadata
@@ -425,7 +720,9 @@ class MediumSignalCollector(SignalCollectorBase):
                 not isinstance(r, BaseException) and r.is_cached
                 for responses in [funding_responses, oi_responses, candles_responses]
                 for r in responses
-            ),
+            )
+            if perp_positions
+            else False,
         )
 
         # Type cast for funding_rate_trend to satisfy type checker
@@ -479,6 +776,28 @@ class MediumSignalCollector(SignalCollectorBase):
         if pct_change < -0.1:
             return "decreasing"
         return "stable"
+
+    def get_price_history(self, coin: str) -> PriceHistory | None:
+        """Get price history for a specific coin.
+
+        Args:
+            coin: Coin symbol
+
+        Returns:
+            PriceHistory object or None if not available
+        """
+        return self.price_history.get(coin)
+
+    def get_oi_history(self, coin: str) -> OpenInterestHistory | None:
+        """Get open interest history for a specific coin.
+
+        Args:
+            coin: Coin symbol
+
+        Returns:
+            OpenInterestHistory object or None if not available
+        """
+        return self.oi_history.get(coin)
 
     async def _calculate_volatility_and_trend(
         self, positions: list[Position]

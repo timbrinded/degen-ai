@@ -17,6 +17,7 @@ dependencies = [
     "matplotlib>=3.7.0",
     "tqdm>=4.65.0",
     "pytest>=8.4.2",
+    "yfinance>=0.2.0",
 ]
 
 [project.optional-dependencies]
@@ -73,4 +74,9 @@ faulthandler_timeout = 60
 faulthandler_exit_on_timeout = true
 
 [dependency-groups]
-dev = ["pre-commit>=4.3.0"]
+dev = [
+    "pre-commit>=4.3.0",
+    "pyrefly>=0.38.1",
+    "pytest-asyncio>=1.2.0",
+    "ruff>=0.14.1",
+]

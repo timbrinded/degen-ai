@@ -10,16 +10,14 @@ from pathlib import Path
 from typing import Any, NoReturn, TypeVar
 
 from colorama import Fore, Style, init
+from hyperliquid.info import Info
 
 from hyperliquid_agent.config import Config
 from hyperliquid_agent.decision import DecisionEngine, PromptTemplate
 from hyperliquid_agent.executor import TradeExecutor
+from hyperliquid_agent.market_registry import MarketRegistry
 from hyperliquid_agent.monitor import PositionMonitor
-from hyperliquid_agent.portfolio import (
-    PortfolioRebalancer,
-    PortfolioState,
-    TargetAllocation,
-)
+from hyperliquid_agent.portfolio import PortfolioRebalancer, PortfolioState, TargetAllocation
 
 # Initialize colorama for cross-platform colored output
 init(autoreset=True)
@@ -189,7 +187,11 @@ class TradingAgent:
         prompt_template = PromptTemplate(config.agent.prompt_template_path)
         self.decision_engine = DecisionEngine(config.llm, prompt_template)
 
-        self.executor = TradeExecutor(config.hyperliquid)
+        # Initialize market registry
+        info = Info(config.hyperliquid.base_url, skip_ws=True)
+        self.registry = MarketRegistry(info)
+
+        self.executor = TradeExecutor(config.hyperliquid, self.registry)
 
         # Initialize portfolio rebalancer
         self.rebalancer = PortfolioRebalancer(
@@ -204,6 +206,11 @@ class TradingAgent:
 
     def run(self) -> NoReturn:
         """Run the main agent loop indefinitely."""
+        import asyncio
+
+        # Hydrate market registry before starting the loop
+        asyncio.run(self.registry.hydrate())
+
         self.logger.info(
             "Starting trading agent",
             extra={

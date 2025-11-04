@@ -13,6 +13,8 @@ from hyperliquid_agent.llm_client import LLMClient
 class RegimeClassificationSchema(BaseModel):
     """Pydantic schema for LLM regime classification using structured outputs."""
 
+    model_config = {"extra": "forbid"}
+
     regime: Literal["trending-bull", "trending-bear", "range-bound", "carry-friendly", "unknown"]
     confidence: float = Field(ge=0.0, le=1.0)
     reasoning: str = ""

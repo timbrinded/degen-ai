@@ -109,8 +109,15 @@ def start(
         "-g",
         help="Run in governed mode with multi-timescale decision-making",
     ),
+    async_mode: bool = typer.Option(
+        True,
+        "--async/--sync",
+        help="Use async concurrent loop execution (default: async)",
+    ),
 ) -> None:
     """Start the Hyperliquid trading agent."""
+    import asyncio
+
     from hyperliquid_agent.config import load_config
 
     if governed:
@@ -124,7 +131,12 @@ def start(
                 f"Slow loop: every {cfg.governance.slow_loop_interval_hours}h"
             )
 
-        agent.run()
+        if async_mode:
+            typer.echo("  Execution mode: ASYNC (concurrent loops)")
+            asyncio.run(agent.run_async())
+        else:
+            typer.echo("  Execution mode: SYNC (sequential loops)")
+            agent.run()
     else:
         from hyperliquid_agent.agent import TradingAgent
         from hyperliquid_agent.config import load_config
@@ -426,12 +438,23 @@ def test_executor(
     price: float | None = typer.Option(None, "--price", help="Limit price (None for market)"),
 ) -> None:
     """Test the trade executor with a single action on testnet."""
+    import asyncio
+
+    from hyperliquid.info import Info
+
     from hyperliquid_agent.config import load_config
     from hyperliquid_agent.decision import TradeAction
     from hyperliquid_agent.executor import TradeExecutor
+    from hyperliquid_agent.market_registry import MarketRegistry
 
     cfg = load_config(str(config))
-    executor = TradeExecutor(cfg.hyperliquid)
+
+    # Initialize and hydrate market registry
+    info = Info(cfg.hyperliquid.base_url, skip_ws=True)
+    registry = MarketRegistry(info)
+    asyncio.run(registry.hydrate())
+
+    executor = TradeExecutor(cfg.hyperliquid, registry)
 
     # Create test action
     action = TradeAction(
