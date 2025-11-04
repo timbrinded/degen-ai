@@ -1,12 +1,23 @@
 """Position monitoring and account state retrieval."""
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from hyperliquid.info import Info
 
 from hyperliquid_agent.config import HyperliquidConfig
+
+
+def _safe_float(value: float | int | str | None) -> float:
+    """Convert value to float, returning 0.0 on failure."""
+
+    try:
+        if value is None:
+            return 0.0
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 @dataclass
@@ -26,10 +37,14 @@ class AccountState:
     """Current account state snapshot."""
 
     portfolio_value: float
-    available_balance: float  # Perp margin balance
+    available_balance: float  # Perp margin balance (withdrawable)
     positions: list[Position]
-    spot_balances: dict[str, float]  # coin -> balance (e.g., {"USDC": 100.0})
     timestamp: float
+    spot_balances: dict[str, float] = field(default_factory=dict)
+    account_value: float = 0.0
+    total_initial_margin: float = 0.0
+    total_maintenance_margin: float = 0.0
+    margin_fraction: float | None = None
     is_stale: bool = False
 
 
@@ -81,18 +96,38 @@ class PositionMonitor:
             Parsed AccountState object
         """
         # Extract account value and margin summary
-        margin_summary = raw_state.get("marginSummary", {})
-        account_value = float(margin_summary.get("accountValue", 0.0))
+        margin_summary = raw_state.get("marginSummary", {}) or {}
+        account_value = _safe_float(margin_summary.get("accountValue"))
+
+        total_initial_margin = _safe_float(
+            margin_summary.get("totalInitialMargin")
+            or margin_summary.get("totalInitialMarginUsed")
+            or margin_summary.get("initialMargin")
+        )
+
+        total_maintenance_margin = _safe_float(
+            margin_summary.get("totalMaintenanceMargin") or margin_summary.get("maintenanceMargin")
+        )
+
+        margin_fraction_raw = margin_summary.get("marginFraction")
+        margin_fraction: float | None
+        if margin_fraction_raw is None:
+            margin_fraction = None
+        else:
+            try:
+                margin_fraction = float(margin_fraction_raw)
+            except (TypeError, ValueError):
+                margin_fraction = None
 
         # Extract withdrawable balance (available balance for perp)
-        withdrawable = float(raw_state.get("withdrawable", 0.0))
+        withdrawable = _safe_float(raw_state.get("withdrawable", 0.0))
 
         # Parse spot balances
         spot_balances: dict[str, float] = {}
         balances = spot_state.get("balances", [])
         for balance in balances:
             coin = balance.get("coin", "")
-            total = float(balance.get("total", 0.0))
+            total = _safe_float(balance.get("total", 0.0))
             if total > 0:
                 spot_balances[coin] = total
 
@@ -109,19 +144,19 @@ class PositionMonitor:
 
             # Skip if no position size
             size_str = position_data.get("szi", "0")
-            size = float(size_str)
+            size = _safe_float(size_str)
             if size == 0:
                 continue
 
             # Extract position details
-            entry_price = float(position_data.get("entryPx", 0.0))
+            entry_price = _safe_float(position_data.get("entryPx", 0.0))
 
             # Get current price from position data or mark price
-            mark_px = float(position_data.get("positionValue", 0.0))
+            mark_px = _safe_float(position_data.get("positionValue", 0.0))
             current_price = abs(mark_px / size) if size != 0 and mark_px != 0 else entry_price
 
             # Extract unrealized PnL
-            unrealized_pnl = float(position_data.get("unrealizedPnl", 0.0))
+            unrealized_pnl = _safe_float(position_data.get("unrealizedPnl", 0.0))
 
             # Determine market type (perp is default for Hyperliquid positions)
             market_type: Literal["spot", "perp"] = "perp"
@@ -164,7 +199,11 @@ class PositionMonitor:
             portfolio_value=total_portfolio_value,
             available_balance=withdrawable,
             positions=positions,
-            spot_balances=spot_balances,
             timestamp=time.time(),
+            spot_balances=spot_balances,
+            account_value=account_value,
+            total_initial_margin=total_initial_margin,
+            total_maintenance_margin=total_maintenance_margin,
+            margin_fraction=margin_fraction,
             is_stale=False,
         )

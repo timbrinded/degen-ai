@@ -15,6 +15,7 @@ from hyperliquid.info import Info
 from hyperliquid_agent.config import Config
 from hyperliquid_agent.decision import DecisionEngine, PromptTemplate
 from hyperliquid_agent.executor import TradeExecutor
+from hyperliquid_agent.funding import FundingPlanner
 from hyperliquid_agent.market_registry import MarketRegistry
 from hyperliquid_agent.monitor import PositionMonitor
 from hyperliquid_agent.portfolio import PortfolioRebalancer, PortfolioState, TargetAllocation
@@ -200,6 +201,9 @@ class TradingAgent:
             rebalance_threshold=0.05,
         )
 
+        # Funding planner for deterministic wallet transfers
+        self.funding_planner = FundingPlanner(config.risk, self.executor, self.logger)
+
         # Initialize tick counter
         self.tick_count = 0
         self.last_portfolio_value: float | None = None
@@ -377,6 +381,33 @@ class TradingAgent:
 
             # Use rebalancing plan actions instead of direct LLM actions
             actions_to_execute = plan.actions
+
+        funding_result = self.funding_planner.plan(account_state, actions_to_execute)
+        actions_to_execute = funding_result.actions
+
+        if funding_result.inserted_transfers:
+            self.logger.info(
+                "Funding planner inserted %s transfer actions",
+                funding_result.inserted_transfers,
+                extra={
+                    "tick": self.tick_count,
+                    "inserted_transfers": funding_result.inserted_transfers,
+                },
+            )
+
+        for message in funding_result.clamped_transfers:
+            self.logger.warning(
+                "Funding planner clamped transfer: %s",
+                message,
+                extra={"tick": self.tick_count},
+            )
+
+        for message in funding_result.skipped_actions:
+            self.logger.warning(
+                "Funding planner skipped action: %s",
+                message,
+                extra={"tick": self.tick_count},
+            )
 
         self.logger.info(
             f"Decision received: {len(actions_to_execute)} actions to execute",

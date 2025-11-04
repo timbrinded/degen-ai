@@ -1,9 +1,19 @@
 """Configuration management for the trading agent."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
+
+
+@dataclass
+class RiskConfig:
+    """Risk controls for capital allocation between perp and spot wallets."""
+
+    enable_auto_transfers: bool = True
+    target_initial_margin_ratio: float = 1.25
+    min_perp_balance_usd: float = 1000.0
+    target_spot_usdc_buffer_usd: float = 0.0
 
 
 @dataclass
@@ -161,6 +171,7 @@ class Config:
     hyperliquid: HyperliquidConfig
     llm: LLMConfig
     agent: AgentConfig
+    risk: RiskConfig = field(default_factory=RiskConfig)
     governance: GovernanceConfig | None = None
     signals: SignalConfig | None = None
 
@@ -196,9 +207,9 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
     # Parse Hyperliquid config
     hl_data = data["hyperliquid"]
     required_hl_fields = ["account_address", "secret_key", "base_url"]
-    for field in required_hl_fields:
-        if field not in hl_data:
-            raise ValueError(f"Missing required field in [hyperliquid]: {field}")
+    for required_field in required_hl_fields:
+        if required_field not in hl_data:
+            raise ValueError(f"Missing required field in [hyperliquid]: {required_field}")
 
     hyperliquid_config = HyperliquidConfig(
         account_address=hl_data["account_address"],
@@ -209,9 +220,9 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
     # Parse LLM config
     llm_data = data["llm"]
     required_llm_fields = ["provider", "model", "api_key"]
-    for field in required_llm_fields:
-        if field not in llm_data:
-            raise ValueError(f"Missing required field in [llm]: {field}")
+    for required_field in required_llm_fields:
+        if required_field not in llm_data:
+            raise ValueError(f"Missing required field in [llm]: {required_field}")
 
     if llm_data["provider"] not in ["openai", "anthropic"]:
         raise ValueError(
@@ -238,6 +249,15 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
         retry_backoff_base=agent_data.get("retry_backoff_base", 2.0),
         log_level=log_level,
         prompt_template_path=agent_data.get("prompt_template_path", "prompts/default.txt"),
+    )
+
+    # Parse risk controls (optional)
+    risk_data = data.get("risk", {})
+    risk_config = RiskConfig(
+        enable_auto_transfers=bool(risk_data.get("enable_auto_transfers", True)),
+        target_initial_margin_ratio=float(risk_data.get("target_initial_margin_ratio", 1.25)),
+        min_perp_balance_usd=float(risk_data.get("min_perp_balance_usd", 1000.0)),
+        target_spot_usdc_buffer_usd=float(risk_data.get("target_spot_usdc_buffer_usd", 0.0)),
     )
 
     # Parse Governance config (optional)
@@ -372,6 +392,7 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
         hyperliquid=hyperliquid_config,
         llm=llm_config,
         agent=agent_config,
+        risk=risk_config,
         governance=governance_config,
         signals=signal_config,
     )

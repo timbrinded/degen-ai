@@ -54,9 +54,9 @@ def mock_spot_metadata():
             {"name": "BTC/USDC", "index": 1},
         ],
         "tokens": [
-            {"name": "USDC", "index": 0},
-            {"name": "ETH", "index": 1},
-            {"name": "BTC", "index": 2},
+            {"name": "USDC", "index": 0, "szDecimals": 2},
+            {"name": "ETH", "index": 1, "szDecimals": 4},
+            {"name": "BTC", "index": 2, "szDecimals": 4},
         ],
     }
 

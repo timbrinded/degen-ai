@@ -269,10 +269,17 @@ class MarketRegistry:
             asset_info = self._assets[normalized_base_symbol]
 
             # Add spot market info
-            sz_decimals_spot = spot_data.get("szDecimals", 0)
-            assert isinstance(sz_decimals_spot, int), (
-                f"Expected int for szDecimals, got {type(sz_decimals_spot)}"
-            )
+            sz_decimals_spot = spot_data.get("szDecimals")
+            if sz_decimals_spot is None:
+                sz_decimals_spot = base_token.get("szDecimals")
+
+            if not isinstance(sz_decimals_spot, int):
+                self._logger.debug(
+                    "szDecimals missing or invalid for %s (base_token=%s), defaulting to 0",
+                    market_name,
+                    raw_base_symbol,
+                )
+                sz_decimals_spot = 0
 
             px_decimals_spot = spot_data.get("pxDecimals", 8) or 8
             if not isinstance(px_decimals_spot, int):
@@ -284,6 +291,8 @@ class MarketRegistry:
             alias_market_name = f"{raw_base_symbol.upper()}/{raw_quote_symbol.upper()}"
             unique_aliases = list(dict.fromkeys([alias_market_name, market_name]))
 
+            lot_size = Decimal(10) ** -sz_decimals_spot if sz_decimals_spot >= 0 else None
+
             spot_info = SpotMarketInfo(
                 market_name=alias_market_name,
                 base_token_idx=base_token_idx,
@@ -292,6 +301,7 @@ class MarketRegistry:
                 px_decimals=px_decimals_spot,
                 native_symbol=market_name,
                 aliases=unique_aliases,
+                lot_size=lot_size,
             )
 
             asset_info.spot_markets.append(spot_info)
