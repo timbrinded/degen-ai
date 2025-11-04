@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Integration test for spot order execution on Hyperliquid testnet.
+"""Integration test for perp order execution on Hyperliquid testnet.
 
-This script tests the complete flow of placing a spot market order:
+This script tests the complete flow of placing a perpetual market order:
 1. Initialize TradeExecutor with testnet configuration
-2. Hydrate MarketRegistry to load spot market metadata
-3. Place a small spot market order (ETH/USDC or PURR/USDC)
+2. Hydrate MarketRegistry to load perp market metadata
+3. Place a small perp market order (ETH perpetual)
 4. Verify order acceptance by checking for order_id in response
 5. Cancel the order after successful placement
 
 Usage:
-    python test_spot_order.py
+    python test_perp_order.py
 """
 
 import asyncio
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 async def main():
     """Main test function."""
     logger.info("=" * 80)
-    logger.info("Spot Order Execution Integration Test")
+    logger.info("Perp Order Execution Integration Test")
     logger.info("=" * 80)
 
     # Load configuration
@@ -78,30 +78,29 @@ async def main():
         logger.error(f"✗ Failed to hydrate market registry: {e}", exc_info=True)
         return 1
 
-    # Determine which spot market to use
-    logger.info("\n[3] SELECTING SPOT MARKET")
+    # Determine which perp market to use
+    logger.info("\n[3] SELECTING PERP MARKET")
     logger.info("-" * 80)
 
-    test_coins = ["ETH", "UETH", "PURR"]  # Try these in order
+    test_coins = ["ETH", "BTC", "SOL"]  # Try these in order
     selected_coin = None
     selected_market = None
 
     for coin in test_coins:
         try:
             asset_info = registry.get_asset_info(coin)
-            logger.debug(f"  {coin} asset info: {asset_info}")
-            if asset_info and asset_info.has_spot:
-                market_name = registry.get_market_name(coin, "spot")
+            if asset_info and asset_info.has_perp:
+                market_name = registry.get_market_name(coin, "perp")
                 selected_coin = coin
                 selected_market = market_name
-                logger.info(f"✓ Found available spot market: {coin} -> {market_name}")
+                logger.info(f"✓ Found available perp market: {coin} -> {market_name}")
                 break
         except Exception as e:
-            logger.debug(f"  {coin} not available on spot: {e}")
+            logger.debug(f"  {coin} not available on perp: {e}")
             continue
 
     if not selected_coin or not selected_market:
-        logger.error("✗ No suitable spot markets found for testing")
+        logger.error("✗ No suitable perp markets found for testing")
         logger.error("  Tried: " + ", ".join(test_coins))
         return 1
 
@@ -123,28 +122,29 @@ async def main():
     logger.info("-" * 80)
 
     try:
-        sz_decimals = registry.get_sz_decimals(selected_coin, "spot")
-        logger.info(f"  Size decimals for {selected_coin} spot: {sz_decimals}")
+        sz_decimals = registry.get_sz_decimals(selected_coin, "perp")
+        logger.info(f"  Size decimals for {selected_coin} perp: {sz_decimals}")
 
         # Calculate appropriate test size based on decimals
-        test_size = 1.0 if sz_decimals == 0 else 10 ** (-sz_decimals)
+        # Use a small size to minimize risk
+        test_size = 0.01 if sz_decimals >= 2 else 0.1
 
         logger.info(f"  Test size: {test_size}")
     except Exception as e:
         logger.error(f"✗ Failed to get size decimals: {e}", exc_info=True)
         return 1
 
-    # Create spot market order action
-    logger.info("\n[6] CREATING SPOT MARKET ORDER")
+    # Create perp market order action
+    logger.info("\n[6] CREATING PERP MARKET ORDER")
     logger.info("-" * 80)
 
     action = TradeAction(
         action_type="buy",
         coin=selected_coin,
-        market_type="spot",
+        market_type="perp",
         size=test_size,
         price=None,  # Market order
-        reasoning="Integration test - spot market order",
+        reasoning="Integration test - perp market order",
     )
 
     logger.info(f"  Action: {action.action_type.upper()}")
@@ -212,10 +212,10 @@ async def main():
     logger.info("=" * 80)
 
     if result.success:
-        logger.info("\n✓ SPOT ORDER INTEGRATION TEST PASSED")
+        logger.info("\n✓ PERP ORDER INTEGRATION TEST PASSED")
         return 0
     else:
-        logger.error("\n✗ SPOT ORDER INTEGRATION TEST FAILED")
+        logger.error("\n✗ PERP ORDER INTEGRATION TEST FAILED")
         return 1
 
 
