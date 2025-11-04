@@ -238,7 +238,6 @@ def test_execute_tick_success(
 
 
 @patch("hyperliquid_agent.agent.MarketRegistry")
-@patch("hyperliquid_agent.agent.MarketRegistry")
 @patch("hyperliquid_agent.monitor.Info")
 @patch("hyperliquid_agent.executor.Exchange")
 @patch("hyperliquid_agent.executor.Info")
@@ -333,9 +332,10 @@ def test_execute_tick_monitor_error_recovery(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
-    mock_registry_class,
+    mock_spot_metadata,
 ):
     """Test tick continues after monitor error with cached state."""
     # Setup monitor mock to fail first, then succeed
@@ -398,9 +398,10 @@ def test_execute_tick_llm_error_recovery(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
-    mock_registry_class,
+    mock_spot_metadata,
 ):
     """Test tick continues after LLM error without executing trades."""
     # Setup monitor mock
@@ -451,9 +452,10 @@ def test_execute_tick_executor_error_recovery(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
-    mock_registry_class,
+    mock_spot_metadata,
 ):
     """Test tick continues after executor error."""
     # Setup monitor mock
@@ -524,10 +526,11 @@ def test_execute_tick_logs_portfolio_value(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
     mock_llm_response,
-    mock_registry_class,
+    mock_spot_metadata,
 ):
     """Test tick execution logs portfolio value changes."""
     # Setup monitor mock
@@ -583,9 +586,10 @@ def test_execute_tick_multiple_actions(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
-    mock_registry_class,
+    mock_spot_metadata,
 ):
     """Test tick execution with multiple trading actions."""
     # Setup monitor mock
@@ -663,10 +667,11 @@ def test_execute_tick_stale_state_handling(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
     mock_llm_response,
-    mock_registry_class,
+    mock_spot_metadata,
 ):
     """Test tick execution handles stale state indicator."""
     # Setup monitor mock to return stale state
@@ -717,11 +722,31 @@ def test_execute_tick_stale_state_handling(
     # The monitor should have returned cached state with is_stale=True
 
 
+@patch("hyperliquid_agent.agent.MarketRegistry")
+@patch("hyperliquid_agent.monitor.Info")
+@patch("hyperliquid_agent.executor.Exchange")
+@patch("hyperliquid_agent.executor.Info")
+@patch("openai.OpenAI")
 def test_agent_configuration_logging(
-    testnet_config,
+    mock_openai_class,
+    mock_executor_info,
+    mock_executor_exchange,
+    mock_monitor_info,
     mock_registry_class,
+    testnet_config,
+    mock_spot_metadata,
 ):
     """Test agent logs configuration at startup."""
+    mock_openai_class.return_value = MagicMock()
+    mock_monitor_info.return_value = MagicMock()
+    mock_executor_info_instance = MagicMock()
+    mock_executor_info_instance.spot_meta.return_value = mock_spot_metadata
+    mock_executor_info.return_value = mock_executor_info_instance
+    mock_executor_exchange.return_value = MagicMock()
+    mock_registry = MagicMock()
+    mock_registry.is_ready = True
+    mock_registry_class.return_value = mock_registry
+
     agent = TradingAgent(testnet_config)
 
     # Verify logger was configured with correct name
@@ -741,9 +766,10 @@ def test_execute_tick_invalid_llm_response(
     mock_executor_info,
     mock_executor_exchange,
     mock_monitor_info,
+    mock_registry_class,
     testnet_config,
     mock_hyperliquid_responses,
-    mock_registry_class,
+    mock_spot_metadata,
 ):
     """Test tick handles invalid LLM response gracefully."""
     # Setup monitor mock

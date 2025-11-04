@@ -577,6 +577,7 @@ class TestEmergencyPositionReduction:
         agent.monitor = Mock()
         agent.base_agent = Mock()
         agent.base_agent.executor = Mock()
+        agent.executor = agent.base_agent.executor
 
         # Bind the actual method
         agent._handle_tripwire_action = GovernedTradingAgent._handle_tripwire_action.__get__(
