@@ -21,11 +21,13 @@ class SpotMarketInfo:
     """Metadata for a specific spot market.
 
     Attributes:
-        market_name: Market identifier for API calls (e.g., "ETH/USDC" or "@123")
+        market_name: Preferred market identifier for API calls (e.g., "UETH/USDC")
         base_token_idx: Index of base token in spot metadata
         quote_token_idx: Index of quote token in spot metadata
         sz_decimals: Number of decimals for size precision
         px_decimals: Number of decimals for price precision
+        native_symbol: Exchange-native identifier (e.g., "@1242")
+        aliases: Alternate identifiers resolvable by the API client
         lot_size: Minimum order size increment (if available)
         min_order_size: Minimum order size (if available)
     """
@@ -35,6 +37,8 @@ class SpotMarketInfo:
     quote_token_idx: int
     sz_decimals: int
     px_decimals: int
+    native_symbol: str | None = None
+    aliases: list[str] = field(default_factory=list)
     lot_size: Decimal | None = None
     min_order_size: Decimal | None = None
 
@@ -230,23 +234,38 @@ class MarketRegistry:
 
             base_token_idx, quote_token_idx = token_pair
 
-            # Get base token name
+            # Validate token indices
             if base_token_idx >= len(tokens):
                 self._logger.warning(f"Invalid base token index for {market_name}")
                 continue
 
-            base_token = tokens[base_token_idx]
-            base_symbol = base_token.get("name", "").upper()
+            if quote_token_idx >= len(tokens):
+                self._logger.warning(f"Invalid quote token index for {market_name}")
+                continue
 
-            if not base_symbol:
+            base_token = tokens[base_token_idx]
+            quote_token = tokens[quote_token_idx]
+
+            raw_base_symbol = base_token.get("name", "")
+            raw_quote_symbol = quote_token.get("name", "")
+
+            if not raw_base_symbol:
                 self._logger.warning(f"No base symbol found for spot market {market_name}")
                 continue
 
-            # Create or get asset entry
-            if base_symbol not in self._assets:
-                self._assets[base_symbol] = AssetMarketInfo(base_symbol=base_symbol)
+            if not raw_quote_symbol:
+                self._logger.warning(f"No quote symbol found for spot market {market_name}")
+                continue
 
-            asset_info = self._assets[base_symbol]
+            # Normalize base symbol to align spot and perp metadata (e.g., UETH -> ETH)
+            normalized_base_symbol = self._normalize_symbol(raw_base_symbol)
+
+            if normalized_base_symbol not in self._assets:
+                self._assets[normalized_base_symbol] = AssetMarketInfo(
+                    base_symbol=normalized_base_symbol
+                )
+
+            asset_info = self._assets[normalized_base_symbol]
 
             # Add spot market info
             sz_decimals_spot = spot_data.get("szDecimals", 0)
@@ -254,18 +273,31 @@ class MarketRegistry:
                 f"Expected int for szDecimals, got {type(sz_decimals_spot)}"
             )
 
+            px_decimals_spot = spot_data.get("pxDecimals", 8) or 8
+            if not isinstance(px_decimals_spot, int):
+                self._logger.debug(
+                    "pxDecimals missing or invalid for %s, defaulting to 8", market_name
+                )
+                px_decimals_spot = 8
+
+            alias_market_name = f"{raw_base_symbol.upper()}/{raw_quote_symbol.upper()}"
+            unique_aliases = list(dict.fromkeys([alias_market_name, market_name]))
+
             spot_info = SpotMarketInfo(
-                market_name=market_name,
+                market_name=alias_market_name,
                 base_token_idx=base_token_idx,
                 quote_token_idx=quote_token_idx,
                 sz_decimals=sz_decimals_spot,
-                px_decimals=8,  # Default for spot
+                px_decimals=px_decimals_spot,
+                native_symbol=market_name,
+                aliases=unique_aliases,
             )
 
             asset_info.spot_markets.append(spot_info)
 
             # Add to reverse lookup
-            self._spot_by_name[market_name] = asset_info
+            for identifier in unique_aliases:
+                self._spot_by_name[identifier] = asset_info
 
             spot_count += 1
 

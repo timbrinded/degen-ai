@@ -311,12 +311,25 @@ class TradeExecutor:
             rounded_size = self._round_size(action.size, action.coin, action.market_type)
 
             # Submit market order to close
-            return self.exchange.market_open(
+            if action.market_type == "spot":
+                self.logger.info(
+                    "Spot CLOSE order -> market=%s, is_buy=%s, size=%s",
+                    market_name,
+                    is_buy,
+                    rounded_size,
+                )
+
+            response = self.exchange.market_open(
                 name=market_name,
                 is_buy=is_buy,
                 sz=rounded_size,
                 px=None,  # Market order
             )
+
+            if action.market_type == "spot":
+                self.logger.info("Spot CLOSE order response: %s", response)
+
+            return response
 
         # Handle buy/sell actions
         if action.size is None:
@@ -327,21 +340,54 @@ class TradeExecutor:
 
         # Market order (price is None)
         if action.price is None:
-            return self.exchange.market_open(
+            if action.market_type == "spot":
+                self.logger.info(
+                    "Spot %s market order -> market=%s, is_buy=%s, size=%s",
+                    action.action_type.upper(),
+                    market_name,
+                    is_buy,
+                    rounded_size,
+                )
+
+            response = self.exchange.market_open(
                 name=market_name,
                 is_buy=is_buy,
                 sz=rounded_size,
                 px=None,
             )
 
+            if action.market_type == "spot":
+                self.logger.info(
+                    "Spot %s market order response: %s", action.action_type.upper(), response
+                )
+
+            return response
+
         # Limit order
-        return self.exchange.order(
+        if action.market_type == "spot":
+            self.logger.info(
+                "Spot %s limit order -> market=%s, is_buy=%s, size=%s, limit_px=%s",
+                action.action_type.upper(),
+                market_name,
+                is_buy,
+                rounded_size,
+                action.price,
+            )
+
+        response = self.exchange.order(
             name=market_name,
             is_buy=is_buy,
             sz=rounded_size,
             limit_px=action.price,
             order_type={"limit": {"tif": "Gtc"}},  # Good-til-cancel
         )
+
+        if action.market_type == "spot":
+            self.logger.info(
+                "Spot %s limit order response: %s", action.action_type.upper(), response
+            )
+
+        return response
 
     def _submit_transfer(self, action: TradeAction) -> dict:
         """Submit transfer between spot and perp wallets.
