@@ -131,6 +131,9 @@ class GovernedTradingAgent:
         # Trading constants
         self.constants = TradingConstants()
 
+        # Track which tripwires are currently active to suppress duplicate actions
+        self._active_tripwire_triggers: set[str] = set()
+
         # Note: _startup_hydration() is called explicitly in run() and run_async()
         # BEFORE the main loop starts to ensure proper initialization sequence
 
@@ -470,20 +473,53 @@ class GovernedTradingAgent:
         Returns:
             True if execution should be skipped, False otherwise
         """
+        skip_execution = False
+        current_triggers: set[str] = set()
+
         for event in tripwire_events:
-            self.logger.warning(
-                f"Tripwire fired: {event.trigger} ({event.severity})",
-                extra={
-                    "tick": self.tick_count,
-                    "severity": event.severity,
-                    "category": event.category,
-                    "trigger": event.trigger,
-                    "action": event.action.value,
-                    "details": event.details,
-                },
+            current_triggers.add(event.trigger)
+            already_active = bool(event.details.get("already_active")) or (
+                event.trigger in self._active_tripwire_triggers
             )
 
-            # Use match/case for cleaner control flow (Python 3.10+)
+            if already_active:
+                self.logger.debug(
+                    "Tripwire still active: %s (%s)",
+                    event.trigger,
+                    event.severity,
+                    extra={
+                        "tick": self.tick_count,
+                        "trigger": event.trigger,
+                        "action": event.action.value,
+                        "details": event.details,
+                    },
+                )
+                if event.action in {
+                    TripwireAction.CUT_SIZE_TO_FLOOR,
+                    TripwireAction.FREEZE_NEW_RISK,
+                }:
+                    skip_execution = True
+                if event.action == TripwireAction.ESCALATE_TO_SLOW_LOOP:
+                    self.last_slow_loop = None
+                continue
+
+            self._active_tripwire_triggers.add(event.trigger)
+
+            log_extra = {
+                "tick": self.tick_count,
+                "severity": event.severity,
+                "category": event.category,
+                "trigger": event.trigger,
+                "action": event.action.value,
+                "details": event.details,
+            }
+
+            log_fn = self.logger.warning
+            if event.severity == "critical":
+                log_fn = self.logger.critical
+
+            log_fn(f"Tripwire fired: {event.trigger} ({event.severity})", extra=log_extra)
+
             match event.action:
                 case TripwireAction.INVALIDATE_PLAN:
                     if self.governor.active_plan:
@@ -501,7 +537,7 @@ class GovernedTradingAgent:
                         "Freezing new risk - skipping plan execution",
                         extra={"tick": self.tick_count},
                     )
-                    return True
+                    skip_execution = True
 
                 case TripwireAction.CUT_SIZE_TO_FLOOR:
                     self.logger.critical(
@@ -509,16 +545,37 @@ class GovernedTradingAgent:
                         extra={"tick": self.tick_count},
                     )
                     self._handle_tripwire_action(event.action)
-                    return True
+                    skip_execution = True
+                    self.last_slow_loop = None  # Force regime reassessment ASAP
+                    if self.governor.active_plan:
+                        self.governor.active_plan.status = "invalidated"
+                        self.logger.warning(
+                            f"Plan {self.governor.active_plan.plan_id} invalidated after emergency reduction",
+                            extra={
+                                "tick": self.tick_count,
+                                "plan_id": self.governor.active_plan.plan_id,
+                            },
+                        )
 
                 case TripwireAction.ESCALATE_TO_SLOW_LOOP:
                     self.logger.warning(
                         "Escalating to slow loop for regime re-evaluation",
                         extra={"tick": self.tick_count},
                     )
-                    self.last_slow_loop = None  # Force slow loop next iteration
+                    self.last_slow_loop = None
 
-        return False
+        if not tripwire_events:
+            self._active_tripwire_triggers.clear()
+        else:
+            stale = {
+                trigger
+                for trigger in list(self._active_tripwire_triggers)
+                if trigger not in current_triggers
+            }
+            for trigger in stale:
+                self._active_tripwire_triggers.discard(trigger)
+
+        return skip_execution
 
     def _handle_tripwire_action(self, action: TripwireAction) -> bool:
         """Handle tripwire action for emergency position reduction.

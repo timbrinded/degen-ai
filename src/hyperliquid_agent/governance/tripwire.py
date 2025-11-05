@@ -63,6 +63,7 @@ class TripwireService:
         self.daily_start_portfolio_value: float | None = None
         self.daily_loss_pct: float = 0.0
         self.logger = logger or logging.getLogger(__name__)
+        self.active_triggers: dict[str, datetime] = {}
 
     def _check_account_safety(self, account_state: AccountState) -> list[TripwireEvent]:
         """Check account safety tripwires.
@@ -85,22 +86,39 @@ class TripwireService:
             * 100
         )
 
-        if self.daily_loss_pct >= self.config.daily_loss_limit_pct:
+        loss_trigger = "daily_loss_limit"
+        loss_limit = self.config.daily_loss_limit_pct
+        was_active = loss_trigger in self.active_triggers
+
+        if self.daily_loss_pct >= loss_limit:
+            action = (
+                TripwireAction.FREEZE_NEW_RISK if was_active else TripwireAction.CUT_SIZE_TO_FLOOR
+            )
+            severity: Literal["warning", "critical"] = "critical" if not was_active else "warning"
+
             events.append(
                 TripwireEvent(
-                    severity="critical",
+                    severity=severity,
                     category="account_safety",
-                    trigger="daily_loss_limit",
-                    action=TripwireAction.CUT_SIZE_TO_FLOOR,
+                    trigger=loss_trigger,
+                    action=action,
                     timestamp=datetime.now(),
                     details={
                         "loss_pct": self.daily_loss_pct,
-                        "limit": self.config.daily_loss_limit_pct,
+                        "limit": loss_limit,
                         "start_value": self.daily_start_portfolio_value,
                         "current_value": account_state.portfolio_value,
+                        "already_active": was_active,
+                        "triggered_at": self.active_triggers.get(loss_trigger),
                     },
                 )
             )
+
+            if not was_active:
+                self.active_triggers[loss_trigger] = datetime.now()
+        elif was_active and self.daily_loss_pct < max(0.5 * loss_limit, loss_limit - 1.0):
+            # Allow recovery to clear the active trigger after sufficient rebound
+            self.active_triggers.pop(loss_trigger, None)
 
         # Margin ratio check (when margin data is available)
         # Note: Hyperliquid API provides margin data in marginSummary
@@ -344,6 +362,7 @@ class TripwireService:
         """
         self.daily_start_portfolio_value = current_portfolio_value
         self.daily_loss_pct = 0.0
+        self.active_triggers.pop("daily_loss_limit", None)
 
     def check_all_tripwires(
         self, account_state: AccountState, active_plan: StrategyPlanCard | None

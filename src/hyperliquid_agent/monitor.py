@@ -1,5 +1,6 @@
 """Position monitoring and account state retrieval."""
 
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Literal
@@ -60,6 +61,12 @@ class PositionMonitor:
         self.info = Info(config.base_url, skip_ws=True)
         self.account_address = config.account_address
         self.last_valid_state: AccountState | None = None
+        self.logger = logging.getLogger(__name__)
+
+        # Cache for spot mid-prices used to mark spot balances to market
+        self._spot_price_cache: dict[str, float] = {}
+        self._spot_price_cache_ts: float = 0.0
+        self._spot_price_cache_ttl: float = 30.0  # seconds
 
     def get_current_state(self) -> AccountState:
         """Retrieve current account state from Hyperliquid.
@@ -122,17 +129,56 @@ class PositionMonitor:
         # Extract withdrawable balance (available balance for perp)
         withdrawable = _safe_float(raw_state.get("withdrawable", 0.0))
 
-        # Parse spot balances
+        # Parse spot balances and attempt to value them in USD terms
         spot_balances: dict[str, float] = {}
+        spot_value = 0.0
+        pending_spot_positions: list[Position] = []
         balances = spot_state.get("balances", [])
         for balance in balances:
             coin = balance.get("coin", "")
             total = _safe_float(balance.get("total", 0.0))
-            if total > 0:
-                spot_balances[coin] = total
+            if total <= 0:
+                continue
 
-        # Calculate total spot value (for now, just USDC since it's 1:1)
-        spot_value = spot_balances.get("USDC", 0.0)
+            spot_balances[coin] = total
+
+            usd_value = _safe_float(
+                balance.get("usdValue")
+                or balance.get("usd_value")
+                or balance.get("usd")
+                or balance.get("notional")
+                or 0.0
+            )
+            price: float | None = None
+
+            if usd_value > 0:
+                price = usd_value / total if total > 0 else None
+            else:
+                price = self._get_spot_price(coin)
+                if price is not None:
+                    usd_value = price * total
+
+            if coin.upper() == "USDC" and usd_value <= 0:
+                # Treat USDC at par if price metadata unavailable
+                usd_value = total
+                price = 1.0
+
+            if usd_value > 0:
+                spot_value += usd_value
+            else:
+                self.logger.debug("Unable to value spot asset %s; assuming zero", coin)
+
+            if coin.upper() != "USDC":
+                pending_spot_positions.append(
+                    Position(
+                        coin=coin,
+                        size=total,
+                        entry_price=price or 0.0,
+                        current_price=price or 0.0,
+                        unrealized_pnl=0.0,
+                        market_type="spot",
+                    )
+                )
 
         # Parse positions from assetPositions (perp positions)
         positions = []
@@ -172,25 +218,8 @@ class PositionMonitor:
                 )
             )
 
-        # Add spot balances as Position objects (excluding USDC which is cash)
-        for coin, size in spot_balances.items():
-            if coin == "USDC":
-                continue  # USDC is cash, not a position
-
-            # For spot positions, we need to fetch current price
-            # For now, use a simple approach: spot positions have no unrealized PnL tracking
-            # The agent will see the position and can make decisions based on it
-            # Entry price is unknown for existing balances, so we use 0.0
-            positions.append(
-                Position(
-                    coin=coin,
-                    size=size,
-                    entry_price=0.0,  # Unknown for existing spot balances
-                    current_price=0.0,  # Will be fetched by monitor_enhanced if needed
-                    unrealized_pnl=0.0,  # Unknown without entry price
-                    market_type="spot",
-                )
-            )
+        # Append marked-to-market spot positions (excluding cash equivalent)
+        positions.extend(pending_spot_positions)
 
         # Total portfolio value includes perp account value + spot balances
         total_portfolio_value = account_value + spot_value
@@ -207,3 +236,63 @@ class PositionMonitor:
             margin_fraction=margin_fraction,
             is_stale=False,
         )
+
+    def _refresh_spot_price_cache(self) -> None:
+        """Refresh cached spot mid-prices from the exchange metadata."""
+
+        try:
+            meta_and_ctxs = self.info.spot_meta_and_asset_ctxs()
+        except Exception as exc:  # pragma: no cover - network failures are non-deterministic
+            self.logger.debug("Failed to refresh spot price cache: %s", exc, exc_info=True)
+            self._spot_price_cache_ts = time.time()
+            return
+
+        if not isinstance(meta_and_ctxs, list) or len(meta_and_ctxs) < 2:
+            self._spot_price_cache_ts = time.time()
+            return
+
+        asset_ctxs = meta_and_ctxs[1]
+        new_cache: dict[str, float] = {"USDC": 1.0}
+
+        for ctx in asset_ctxs:
+            coin = ctx.get("coin")
+            if not coin:
+                continue
+
+            mid_px = _safe_float(ctx.get("midPx"))
+            mark_px = _safe_float(ctx.get("markPx"))
+            price = mid_px or mark_px
+            if price > 0:
+                new_cache[coin] = price
+
+        self._spot_price_cache = new_cache
+        self._spot_price_cache_ts = time.time()
+
+    def _get_spot_price(self, coin: str) -> float | None:
+        """Return cached USD price for a spot asset when available."""
+
+        now = time.time()
+        if now - self._spot_price_cache_ts > self._spot_price_cache_ttl:
+            self._refresh_spot_price_cache()
+
+        # Direct look-up for canonical market names (e.g., "UETH/USDC")
+        if coin in self._spot_price_cache:
+            return self._spot_price_cache[coin]
+
+        normalized = coin.upper()
+        candidate_keys = []
+
+        if "/" not in normalized and normalized:
+            candidate_keys.append(f"{normalized}/USDC")
+
+        candidate_keys.append(normalized)
+
+        for key in candidate_keys:
+            price = self._spot_price_cache.get(key)
+            if price is not None:
+                return price
+
+        if normalized == "USDC":
+            return 1.0
+
+        return None
