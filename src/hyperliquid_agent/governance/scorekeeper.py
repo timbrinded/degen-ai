@@ -98,6 +98,16 @@ class PlanScorekeeper:
         if not self.active_metrics:
             return
 
+        alias_map = self._build_alias_map(account_state)
+
+        positions_by_canonical = {}
+        for position in account_state.positions:
+            canonical = self._resolve_canonical(position.coin, alias_map)
+            asset_identity = getattr(position, "asset_identity", None)
+            if asset_identity and asset_identity.canonical_symbol:
+                canonical = asset_identity.canonical_symbol
+            positions_by_canonical[canonical] = position
+
         # Update portfolio tracking
         current_value = account_state.portfolio_value
 
@@ -128,10 +138,8 @@ class PlanScorekeeper:
         # Calculate drift from target allocations
         drift_values = []
         for target_alloc in plan.target_allocations:
-            # Find matching position
-            matching_pos = next(
-                (p for p in account_state.positions if p.coin == target_alloc.coin), None
-            )
+            target_canonical = self._resolve_canonical(target_alloc.coin, alias_map)
+            matching_pos = positions_by_canonical.get(target_canonical)
 
             if matching_pos:
                 # Calculate actual allocation percentage
@@ -240,13 +248,22 @@ Rebalance Count: {self.active_metrics.rebalance_count}
         Args:
             account_state: Current account state for price data
         """
+        alias_map = self._build_alias_map(account_state)
+        positions_by_canonical = {}
+        for position in account_state.positions:
+            canonical = self._resolve_canonical(position.coin, alias_map)
+            asset_identity = getattr(position, "asset_identity", None)
+            if asset_identity and asset_identity.canonical_symbol:
+                canonical = asset_identity.canonical_symbol
+            positions_by_canonical[canonical] = position
+
         for shadow in self.shadow_portfolios:
             # Calculate current shadow portfolio value
             shadow_value = 0.0
 
             for coin, size in shadow.paper_positions.items():
-                # Find current price from account state positions
-                matching_pos = next((p for p in account_state.positions if p.coin == coin), None)
+                canonical = self._resolve_canonical(coin, alias_map)
+                matching_pos = positions_by_canonical.get(canonical)
 
                 if matching_pos:
                     position_value = size * matching_pos.current_price
@@ -294,13 +311,34 @@ Rebalance Count: {self.active_metrics.rebalance_count}
             initial_positions: Initial paper positions (coin -> size)
             initial_value: Initial portfolio value
         """
+        normalized_positions = {coin.upper(): size for coin, size in initial_positions.items()}
+
         shadow = ShadowPortfolio(
             strategy_name=strategy_name,
-            paper_positions=initial_positions.copy(),
+            paper_positions=normalized_positions,
             paper_portfolio_value=initial_value,
             initial_value=initial_value,
         )
         self.shadow_portfolios.append(shadow)
+
+    def _build_alias_map(self, account_state: AccountState) -> dict[str, str]:
+        alias_map: dict[str, str] = {}
+        assets = getattr(account_state, "assets", {}) or {}
+        for canonical, identity in assets.items():
+            canonical_upper = canonical.upper()
+            alias_map[canonical_upper] = canonical
+            for alias in identity.all_aliases:
+                if alias:
+                    alias_map[alias.upper()] = canonical
+            if identity.wallet_symbol:
+                alias_map[identity.wallet_symbol.upper()] = canonical
+        alias_map.setdefault("USDC", "USDC")
+        return alias_map
+
+    def _resolve_canonical(self, symbol: str, alias_map: dict[str, str]) -> str:
+        if not symbol:
+            return ""
+        return alias_map.get(symbol.upper(), symbol.upper())
 
     def record_trade(self, is_winning: bool, slippage_bps: float):
         """Record a trade execution for metrics tracking.

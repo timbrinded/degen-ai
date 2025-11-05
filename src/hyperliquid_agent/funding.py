@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field, replace
 
+from hyperliquid_agent.asset_identity import AssetIdentity
 from hyperliquid_agent.config import RiskConfig
 from hyperliquid_agent.decision import TradeAction
 from hyperliquid_agent.executor import TradeExecutor
@@ -33,6 +34,7 @@ class FundingPlanner:
         self.risk_config = risk_config
         self.executor = executor
         self.logger = logger or logging.getLogger(__name__)
+        self.identity_registry = getattr(executor, "identity_registry", None)
 
     def plan(self, account_state: AccountState, actions: list[TradeAction]) -> FundingPlanResult:
         """Return new action list with safe transfer actions inserted or adjusted."""
@@ -66,13 +68,16 @@ class FundingPlanner:
             reclaimable = max(0.0, spot_usdc - self.risk_config.target_spot_usdc_buffer_usd)
             reclaim_amount = min(perp_deficit, reclaimable)
             if reclaim_amount > 0.0:
+                transfer_identity = self._resolve_identity("USDC")
                 planned_actions.append(
                     TradeAction(
                         action_type="transfer",
-                        coin="USDC",
+                        coin=transfer_identity.canonical_symbol if transfer_identity else "USDC",
                         market_type="perp",
                         size=reclaim_amount,
                         reasoning="Auto-transfer to restore perp margin buffer",
+                        asset_identity=transfer_identity,
+                        native_symbol="USDC",
                     )
                 )
                 inserted_transfers += 1
@@ -129,13 +134,18 @@ class FundingPlanner:
                     transfer_amount = min(deficit, safe_transferable)
 
                     if transfer_amount > 0.0:
+                        transfer_identity = self._resolve_identity("USDC")
                         planned_actions.append(
                             TradeAction(
                                 action_type="transfer",
-                                coin="USDC",
+                                coin=transfer_identity.canonical_symbol
+                                if transfer_identity
+                                else "USDC",
                                 market_type="spot",
                                 size=transfer_amount,
                                 reasoning=f"Auto-transfer to fund spot buy of {action.coin}",
+                                asset_identity=transfer_identity,
+                                native_symbol="USDC",
                             )
                         )
                         inserted_transfers += 1
@@ -237,7 +247,12 @@ class FundingPlanner:
         price = action.price
         if price is None:
             try:
-                market_name = self.executor._get_market_name(action.coin, action.market_type)
+                market_name = self.executor._get_market_name(
+                    action.coin,
+                    action.market_type,
+                    identity=getattr(action, "asset_identity", None),
+                    native_symbol=getattr(action, "native_symbol", None),
+                )
                 reference = self.executor._get_reference_price(
                     action.coin, action.market_type, market_name
                 )
@@ -252,3 +267,18 @@ class FundingPlanner:
                 price = 0.0
 
         return float(action.size) * max(float(price or 0.0), 0.0)
+
+    def _resolve_identity(self, symbol: str) -> AssetIdentity | None:
+        if not self.identity_registry or not symbol:
+            return None
+
+        identity = self.identity_registry.resolve(symbol)
+        if identity:
+            return identity
+
+        if symbol.upper().startswith("U"):
+            identity = self.identity_registry.resolve(symbol[1:])
+            if identity:
+                return identity
+
+        return self.identity_registry.resolve_spot_symbol(symbol)

@@ -297,7 +297,7 @@ def test_parse_user_state_values_spot_assets(mock_info_class, hyperliquid_config
 
     monitor = PositionMonitor(hyperliquid_config)
 
-    def fake_price_lookup(coin: str) -> float | None:
+    def fake_price_lookup(coin: str, _identity=None) -> float | None:
         return 1.0 if coin.upper() == "USDC" else 2000.0
 
     monitor._get_spot_price = MagicMock(side_effect=fake_price_lookup)

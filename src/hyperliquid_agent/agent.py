@@ -16,9 +16,11 @@ from hyperliquid_agent.config import Config
 from hyperliquid_agent.decision import DecisionEngine, PromptTemplate
 from hyperliquid_agent.executor import TradeExecutor
 from hyperliquid_agent.funding import FundingPlanner
+from hyperliquid_agent.identity_registry import AssetIdentityRegistry, default_assets_config_path
 from hyperliquid_agent.market_registry import MarketRegistry
 from hyperliquid_agent.monitor import PositionMonitor
 from hyperliquid_agent.portfolio import PortfolioRebalancer, PortfolioState, TargetAllocation
+from hyperliquid_agent.price_service import AssetPriceService
 
 # Initialize colorama for cross-platform colored output
 init(autoreset=True)
@@ -182,17 +184,38 @@ class TradingAgent:
         self.config = config
         self.logger = self._setup_logging()
 
+        assets_config = default_assets_config_path()
+        self.info = Info(config.hyperliquid.base_url, skip_ws=True)
+        self.identity_registry = AssetIdentityRegistry(assets_config, self.info)
+        try:
+            self.identity_registry.load()
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load asset identities: {exc}") from exc
+
+        self.price_service = AssetPriceService(self.info, self.identity_registry)
+
         # Initialize all components
-        self.monitor = PositionMonitor(config.hyperliquid)
+        self.monitor = PositionMonitor(
+            config.hyperliquid,
+            identity_registry=self.identity_registry,
+            price_service=self.price_service,
+        )
 
         prompt_template = PromptTemplate(config.agent.prompt_template_path)
-        self.decision_engine = DecisionEngine(config.llm, prompt_template)
+        self.decision_engine = DecisionEngine(
+            config.llm,
+            prompt_template,
+            identity_registry=self.identity_registry,
+        )
 
         # Initialize market registry
-        info = Info(config.hyperliquid.base_url, skip_ws=True)
-        self.registry = MarketRegistry(info)
+        self.registry = MarketRegistry(self.info)
 
-        self.executor = TradeExecutor(config.hyperliquid, self.registry)
+        self.executor = TradeExecutor(
+            config.hyperliquid,
+            self.registry,
+            identity_registry=self.identity_registry,
+        )
 
         # Initialize portfolio rebalancer
         self.rebalancer = PortfolioRebalancer(

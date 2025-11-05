@@ -10,6 +10,7 @@ from typing import NoReturn
 from hyperliquid.info import Info
 
 from hyperliquid_agent.agent import TradingAgent
+from hyperliquid_agent.asset_identity import AssetIdentity
 from hyperliquid_agent.config import Config
 from hyperliquid_agent.decision import TradeAction
 from hyperliquid_agent.executor import TradeExecutor
@@ -31,8 +32,10 @@ from hyperliquid_agent.governance.tripwire import (
     TripwireConfig,
     TripwireService,
 )
+from hyperliquid_agent.identity_registry import AssetIdentityRegistry, default_assets_config_path
 from hyperliquid_agent.market_registry import MarketRegistry
 from hyperliquid_agent.monitor_enhanced import EnhancedPositionMonitor
+from hyperliquid_agent.price_service import AssetPriceService
 from hyperliquid_agent.signals import EnhancedAccountState, MediumLoopSignals, TechnicalIndicators
 
 
@@ -100,8 +103,20 @@ class GovernedTradingAgent:
         self.info = Info(config.hyperliquid.base_url, skip_ws=True)
         self.registry = MarketRegistry(self.info)
 
+        # Load asset identity registry for unified symbol handling
+        assets_config = default_assets_config_path()
+        self.identity_registry = AssetIdentityRegistry(assets_config, self.info)
+        try:
+            self.identity_registry.load()
+        except Exception as exc:  # pragma: no cover - startup failure must surface
+            raise RuntimeError(f"Failed to load asset identity registry: {exc}") from exc
+
+        self.price_service = AssetPriceService(self.info, self.identity_registry)
+
         # Initialize executor with registry
-        self.executor = TradeExecutor(config.hyperliquid, self.registry)
+        self.executor = TradeExecutor(
+            config.hyperliquid, self.registry, identity_registry=self.identity_registry
+        )
 
         # Initialize governance components with logger
         self.governor = StrategyGovernor(governance_config.governor, logger=self.base_agent.logger)
@@ -116,7 +131,11 @@ class GovernedTradingAgent:
         self.scorekeeper = PlanScorekeeper(logger=self.base_agent.logger)
 
         # Initialize enhanced monitor
-        self.monitor = EnhancedPositionMonitor(config.hyperliquid)
+        self.monitor = EnhancedPositionMonitor(
+            config.hyperliquid,
+            identity_registry=self.identity_registry,
+            price_service=self.price_service,
+        )
 
         # Loop timing tracking
         self.last_medium_loop: datetime | None = None
@@ -701,14 +720,16 @@ class GovernedTradingAgent:
             List of TradeAction objects to execute
         """
         actions = []
+        alias_map = self._build_alias_map(account_state)
 
         for target_data in target_allocations_data:
-            coin = str(target_data["coin"])
+            raw_coin = str(target_data["coin"])
+            canonical_coin = self._resolve_canonical(raw_coin, alias_map)
             target_pct = float(target_data["target_pct"])
             market_type = str(target_data["market_type"])
 
             # Use tuple key to distinguish spot from perp
-            allocation_key = (coin, market_type)
+            allocation_key = (canonical_coin, market_type)
             current_pct = current_allocations.get(allocation_key, 0.0)
             gap_pct = target_pct - current_pct
 
@@ -720,33 +741,60 @@ class GovernedTradingAgent:
                 value_gap = target_value - current_value
 
                 # Find current price
-                if coin == "USDC":
+                if canonical_coin == "USDC":
                     # USDC is the margin/collateral, not a tradeable asset - skip it
                     continue
 
                 # Try to get price from position first, then fall back to price_map
-                matching_pos = next((p for p in account_state.positions if p.coin == coin), None)
+                matching_pos = next(
+                    (
+                        p
+                        for p in account_state.positions
+                        if self._resolve_canonical(
+                            p.coin, alias_map, getattr(p, "asset_identity", None)
+                        )
+                        == canonical_coin
+                    ),
+                    None,
+                )
                 if matching_pos:
                     current_price = matching_pos.current_price
-                elif account_state.price_map and coin in account_state.price_map:
+                elif account_state.price_map and (
+                    raw_coin in account_state.price_map
+                    or canonical_coin in account_state.price_map
+                    or (raw_coin.startswith("U") and raw_coin[1:] in account_state.price_map)
+                ):
                     # Use price from watchlist for new positions
-                    current_price = account_state.price_map[coin]
+                    if raw_coin in account_state.price_map:
+                        current_price = account_state.price_map[raw_coin]
+                    elif canonical_coin in account_state.price_map:
+                        current_price = account_state.price_map[canonical_coin]
+                    else:
+                        current_price = account_state.price_map.get(raw_coin[1:], 0.0)
                     self.logger.info(
-                        f"Using watchlist price for {coin}: {current_price}",
-                        extra={"tick": self.tick_count, "coin": coin, "price": current_price},
+                        f"Using watchlist price for {canonical_coin}: {current_price}",
+                        extra={
+                            "tick": self.tick_count,
+                            "coin": canonical_coin,
+                            "price": current_price,
+                        },
                     )
                 else:
                     # Final fallback: try to fetch price on-demand
-                    current_price = self.monitor.get_market_price(coin)
+                    current_price = self.monitor.get_market_price(canonical_coin)
                     if current_price:
                         self.logger.info(
-                            f"Fetched on-demand price for {coin}: {current_price}",
-                            extra={"tick": self.tick_count, "coin": coin, "price": current_price},
+                            f"Fetched on-demand price for {canonical_coin}: {current_price}",
+                            extra={
+                                "tick": self.tick_count,
+                                "coin": canonical_coin,
+                                "price": current_price,
+                            },
                         )
                     else:
                         self.logger.warning(
-                            f"Cannot determine price for {coin} - not in positions or watchlist",
-                            extra={"tick": self.tick_count, "coin": coin},
+                            f"Cannot determine price for {canonical_coin} - not in positions or watchlist",
+                            extra={"tick": self.tick_count, "coin": canonical_coin},
                         )
                         continue
 
@@ -762,30 +810,75 @@ class GovernedTradingAgent:
                     actions.append(
                         TradeAction(
                             action_type=action_type,  # type: ignore
-                            coin=coin,
+                            coin=canonical_coin,
                             market_type=market_type,  # type: ignore
                             size=size,
                             price=None,  # Market order
                             reasoning=f"Rebalancing to target: {current_pct:.1f}% -> {target_pct:.1f}%",
+                            asset_identity=self._resolve_identity(canonical_coin),
+                            native_symbol=raw_coin,
                         )
                     )
 
                     self.logger.info(
-                        f"Generated {action_type} action for {coin} on {market_type.upper()}: {size:.4f} (gap: {gap_pct:.1f}%)",
+                        f"Generated {action_type} action for {canonical_coin} on {market_type.upper()}: {size:.4f} (gap: {gap_pct:.1f}%)",
                         extra={
                             "tick": self.tick_count,
-                            "coin": coin,
+                            "coin": canonical_coin,
                             "market_type": market_type,
                             "action_type": action_type,
                             "size": size,
                             "current_pct": current_pct,
                             "target_pct": target_pct,
                             "gap_pct": gap_pct,
-                            "allocation_key": f"{coin}/{market_type}",
+                            "allocation_key": f"{canonical_coin}/{market_type}",
                         },
                     )
 
         return actions
+
+    def _build_alias_map(self, account_state: EnhancedAccountState) -> dict[str, str]:
+        alias_map: dict[str, str] = {}
+        assets = getattr(account_state, "assets", {}) or {}
+        for canonical, identity in assets.items():
+            canonical_upper = canonical.upper()
+            alias_map[canonical_upper] = canonical
+            for alias in identity.all_aliases:
+                if alias:
+                    alias_map[alias.upper()] = canonical
+            alias_map[identity.wallet_symbol.upper()] = canonical
+        alias_map.setdefault("USDC", "USDC")
+        return alias_map
+
+    def _resolve_canonical(
+        self,
+        symbol: str,
+        alias_map: dict[str, str],
+        identity: AssetIdentity | None = None,
+    ) -> str:
+        if identity and identity.canonical_symbol:
+            return identity.canonical_symbol
+        if not symbol:
+            return symbol
+        upper = symbol.upper()
+        return alias_map.get(upper, upper)
+
+    def _resolve_identity(self, symbol: str) -> AssetIdentity | None:
+        if not symbol or not self.identity_registry:
+            return None
+
+        identity = self.identity_registry.resolve(symbol)
+        if identity:
+            return identity
+
+        identity = self.identity_registry.resolve_spot_symbol(symbol)
+        if identity:
+            return identity
+
+        if symbol.upper().startswith("U"):
+            return self.identity_registry.resolve(symbol[1:])
+
+        return None
 
     def _execute_fast_loop(self, current_time: datetime):
         """Execute fast loop: follow active plan deterministically.
@@ -1305,10 +1398,17 @@ class GovernedTradingAgent:
         current_allocations: dict[tuple[str, str], float] = {}
         total_value = account_state.portfolio_value
 
+        alias_map = self._build_alias_map(account_state)
+
         for position in account_state.positions:
             position_value = position.size * position.current_price
             current_pct = (position_value / total_value * 100) if total_value > 0 else 0.0
-            allocation_key = (position.coin, position.market_type)
+            canonical_coin = self._resolve_canonical(
+                position.coin,
+                alias_map,
+                getattr(position, "asset_identity", None),
+            )
+            allocation_key = (canonical_coin, position.market_type)
             current_allocations[allocation_key] = current_pct
 
         # Log current allocations for visibility
@@ -1326,7 +1426,7 @@ class GovernedTradingAgent:
 
         # Log target allocations for comparison
         target_summary = {
-            f"{t['coin']}/{t['market_type']}": f"{t['target_pct']:.2f}%"
+            f"{self._resolve_canonical(str(t['coin']), alias_map)}/{t['market_type']}": f"{t['target_pct']:.2f}%"
             for t in target_allocations_data
         }
         self.logger.info(

@@ -3,8 +3,10 @@
 from pathlib import Path
 
 import typer
+from hyperliquid.info import Info
 
 from hyperliquid_agent.backtesting.cli import backtest_command
+from hyperliquid_agent.identity_registry import AssetIdentityRegistry, default_assets_config_path
 
 app = typer.Typer()
 
@@ -159,9 +161,19 @@ def status(
     """Check current account status and positions."""
     from hyperliquid_agent.config import load_config
     from hyperliquid_agent.monitor import PositionMonitor
+    from hyperliquid_agent.price_service import AssetPriceService
 
     cfg = load_config(str(config))
-    monitor = PositionMonitor(cfg.hyperliquid)
+    assets_config = default_assets_config_path()
+    info = Info(cfg.hyperliquid.base_url, skip_ws=True)
+    identity_registry = AssetIdentityRegistry(assets_config, info)
+    identity_registry.load()
+    price_service = AssetPriceService(info, identity_registry)
+    monitor = PositionMonitor(
+        cfg.hyperliquid,
+        identity_registry=identity_registry,
+        price_service=price_service,
+    )
 
     typer.echo("Fetching account state...")
     state = monitor.get_current_state()
@@ -502,3 +514,81 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+@app.command("assets-validate")
+def assets_validate(
+    base_url: str = typer.Option("https://api.hyperliquid.xyz", help="Hyperliquid API base URL"),
+    config_path: Path = typer.Option(
+        default_assets_config_path(),
+        exists=True,
+        resolve_path=True,
+        help="Path to asset identity config JSON",
+    ),
+):
+    """Validate asset identity configuration against exchange metadata."""
+
+    info = Info(str(base_url), skip_ws=True)
+    registry = AssetIdentityRegistry(config_path, info)
+    registry.load()
+
+    identities = list(registry.identities())
+
+    typer.echo("Loaded identities:")
+    for identity in identities:
+        typer.echo(
+            f"  - {identity.canonical_symbol}: wallet={identity.wallet_symbol}"
+            f" perp={identity.perp_symbol or 'N/A'}"
+            f" spot_aliases={list(identity.spot_aliases)}"
+        )
+
+    # Gather exchange metadata sets
+    perp_universe = {
+        asset.get("name", "").upper()
+        for asset in info.meta().get("universe", [])
+        if asset.get("name")
+    }
+
+    spot_tokens = info.spot_meta().get("tokens", [])
+    spot_canonical = set()
+    for token in spot_tokens:
+        name = token.get("name", "").upper()
+        if not name:
+            continue
+        if name.startswith("U") and len(name) > 1:
+            spot_canonical.add(name[1:])
+        spot_canonical.add(name)
+
+    identity_set = {identity.canonical_symbol for identity in identities}
+
+    missing_perp = sorted(perp_universe - identity_set)
+    missing_spot = sorted({s for s in spot_canonical if not registry.resolve(s)})
+
+    if missing_perp:
+        typer.echo("\nPerp markets missing from config:")
+        for symbol in missing_perp:
+            typer.echo(f"  - {symbol}")
+    else:
+        typer.echo("\nAll perp markets present in config.")
+
+    if missing_spot:
+        typer.echo("\nSpot markets missing from config:")
+        for symbol in missing_spot:
+            typer.echo(f"  - {symbol}")
+    else:
+        typer.echo("\nAll spot markets present in config.")
+
+    # Validate each identity resolves to spot/perp descriptors when expected
+    typer.echo("\nDescriptor validation:")
+    for identity in identities:
+        spot_descriptor = registry.get_spot_market(identity)
+        perp_descriptor = registry.get_perp_market(identity)
+
+        if identity.spot_aliases or identity.wallet_symbol:
+            status = "OK" if spot_descriptor else "MISSING"
+            typer.echo(f"  - {identity.canonical_symbol} spot descriptor: {status}")
+        if identity.perp_symbol:
+            status = "OK" if perp_descriptor else "MISSING"
+            typer.echo(f"  - {identity.canonical_symbol} perp descriptor: {status}")
+
+    typer.echo("\nValidation complete.")

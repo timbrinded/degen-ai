@@ -10,8 +10,10 @@ from eth_account.signers.local import LocalAccount
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
 
+from hyperliquid_agent.asset_identity import AssetIdentity
 from hyperliquid_agent.config import HyperliquidConfig
 from hyperliquid_agent.decision import TradeAction
+from hyperliquid_agent.identity_registry import AssetIdentityRegistry
 from hyperliquid_agent.market_registry import MarketRegistry
 
 
@@ -30,7 +32,13 @@ class TradeExecutor:
 
     MIN_NOTIONAL_USDC = Decimal("5")
 
-    def __init__(self, config: HyperliquidConfig, registry: MarketRegistry) -> None:
+    def __init__(
+        self,
+        config: HyperliquidConfig,
+        registry: MarketRegistry,
+        *,
+        identity_registry: AssetIdentityRegistry | None = None,
+    ) -> None:
         """Initialize the trade executor.
 
         Args:
@@ -40,6 +48,7 @@ class TradeExecutor:
         self.logger = logging.getLogger(__name__)
         self.config = config
         self.registry = registry
+        self.identity_registry = identity_registry
         account: LocalAccount = eth_account.Account.from_key(config.secret_key)  # type: ignore[misc]
 
         # Initialize Info first to get spot metadata
@@ -358,7 +367,14 @@ class TradeExecutor:
 
         return float(adjusted_size)
 
-    def _get_market_name(self, coin: str, market_type: str) -> str:
+    def _get_market_name(
+        self,
+        coin: str,
+        market_type: str,
+        *,
+        identity: AssetIdentity | None = None,
+        native_symbol: str | None = None,
+    ) -> str:
         """Get market name using the centralized registry.
 
         Args:
@@ -372,6 +388,26 @@ class TradeExecutor:
             ValueError: If market not found in registry
         """
         self.logger.debug(f"Resolving market name for coin='{coin}', market_type='{market_type}'")
+
+        resolved_identity = identity
+
+        if self.identity_registry:
+            if resolved_identity is None:
+                resolved_identity = self.identity_registry.resolve(coin)
+            if resolved_identity is None and native_symbol:
+                resolved_identity = self.identity_registry.resolve(native_symbol)
+            if resolved_identity is None and coin.upper().startswith("U"):
+                resolved_identity = self.identity_registry.resolve(coin[1:])
+
+            if resolved_identity:
+                if market_type == "spot":
+                    descriptor = self.identity_registry.get_spot_market(resolved_identity)
+                    if descriptor and descriptor.display_symbol:
+                        return descriptor.display_symbol
+                elif market_type == "perp":
+                    descriptor = self.identity_registry.get_perp_market(resolved_identity)
+                    if descriptor and descriptor.display_symbol:
+                        return descriptor.display_symbol
 
         try:
             market_name = self.registry.get_market_name(coin, market_type)  # type: ignore
@@ -438,7 +474,12 @@ class TradeExecutor:
 
         # Format market name based on market type
         # SPOT: "ETH/USDC", PERP: "ETH"
-        market_name = self._get_market_name(action.coin, action.market_type)
+        market_name = self._get_market_name(
+            action.coin,
+            action.market_type,
+            identity=getattr(action, "asset_identity", None),
+            native_symbol=getattr(action, "native_symbol", None),
+        )
 
         self.logger.debug(
             f"Submitting {action.market_type.upper()} {action.action_type} order for '{market_name}'"

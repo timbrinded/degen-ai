@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING, Literal
 import frontmatter
 from pydantic import BaseModel, Field
 
+from hyperliquid_agent.asset_identity import AssetIdentity
 from hyperliquid_agent.config import LLMConfig
+from hyperliquid_agent.identity_registry import AssetIdentityRegistry
 from hyperliquid_agent.monitor import AccountState, Position
 
 if TYPE_CHECKING:
@@ -68,6 +70,8 @@ class TradeAction:
     size: float | None = None
     price: float | None = None  # None for market orders
     reasoning: str = ""
+    native_symbol: str | None = None
+    asset_identity: AssetIdentity | None = None
     # For transfer actions: "spot" means transfer TO spot, "perp" means transfer TO perp
 
 
@@ -212,7 +216,13 @@ class PromptTemplate:
 class DecisionEngine:
     """Generates trading decisions using LLM."""
 
-    def __init__(self, llm_config: LLMConfig, prompt_template: PromptTemplate) -> None:
+    def __init__(
+        self,
+        llm_config: LLMConfig,
+        prompt_template: PromptTemplate,
+        *,
+        identity_registry: AssetIdentityRegistry | None = None,
+    ) -> None:
         """Initialize the decision engine.
 
         Args:
@@ -223,6 +233,7 @@ class DecisionEngine:
         self.prompt_template = prompt_template
         self.client = self._init_llm_client()
         self.logger = logging.getLogger("hyperliquid_agent.decision")
+        self.identity_registry = identity_registry
         # Cost tracking
         self.total_cost_usd = 0.0
         self.total_input_tokens = 0
@@ -654,8 +665,19 @@ class DecisionEngine:
                     size=size,
                     price=price,
                     reasoning=reasoning,
+                    native_symbol=coin,
                 )
             )
+
+        self._normalize_trade_actions(actions)
+
+        if target_allocation and self.identity_registry:
+            canonical_allocation: dict[str, float] = {}
+            for symbol, pct in target_allocation.items():
+                identity = self._resolve_identity(symbol)
+                key = identity.canonical_symbol if identity else str(symbol)
+                canonical_allocation[key] = float(pct)
+            target_allocation = canonical_allocation
 
         return actions, selected_strategy, target_allocation
 
@@ -938,6 +960,7 @@ Status: {active_plan.status}
                         size=size,
                         price=price,
                         reasoning=action_data.get("reasoning", ""),
+                        native_symbol=coin,
                     )
                 )
 
@@ -945,6 +968,9 @@ Status: {active_plan.status}
         proposed_plan = None
         if not maintain_plan and "proposed_plan" in data:
             proposed_plan = self._parse_proposed_plan(data["proposed_plan"])
+
+        if micro_adjustments:
+            self._normalize_trade_actions(micro_adjustments)
 
         return maintain_plan, proposed_plan, micro_adjustments, reasoning
 
@@ -974,9 +1000,12 @@ Status: {active_plan.status}
         # Parse target allocations
         target_allocations = []
         for alloc_data in plan_data.get("target_allocations", []):
+            symbol = alloc_data["coin"]
+            identity = self._resolve_identity(symbol)
+            canonical = identity.canonical_symbol if identity else symbol
             target_allocations.append(
                 TargetAllocation(
-                    coin=alloc_data["coin"],
+                    coin=canonical,
                     target_pct=float(alloc_data["target_pct"]),
                     market_type=alloc_data.get("market_type", "perp"),
                     leverage=float(alloc_data.get("leverage", 1.0)),
@@ -1040,3 +1069,45 @@ Status: {active_plan.status}
             compatible_regimes=plan_data.get("compatible_regimes", []),
             avoid_regimes=plan_data.get("avoid_regimes", []),
         )
+
+    def _normalize_trade_actions(self, actions: list[TradeAction]) -> None:
+        if not actions or not self.identity_registry:
+            return
+
+        for action in actions:
+            identity = action.asset_identity or self._resolve_identity(action.coin)
+            if not identity and action.native_symbol:
+                identity = self._resolve_identity(action.native_symbol)
+
+            if identity:
+                action.asset_identity = identity
+                if not action.native_symbol:
+                    action.native_symbol = action.coin
+                action.coin = identity.canonical_symbol
+
+    def _resolve_identity(self, symbol: str | None) -> AssetIdentity | None:
+        if not symbol or not self.identity_registry:
+            return None
+
+        symbol_upper = symbol.upper()
+
+        identity = self.identity_registry.resolve(symbol_upper)
+        if identity:
+            return identity
+
+        identity = self.identity_registry.resolve_spot_symbol(symbol_upper)
+        if identity:
+            return identity
+
+        if symbol_upper.startswith("U"):
+            identity = self.identity_registry.resolve(symbol_upper[1:])
+            if identity:
+                return identity
+
+        if "/" in symbol_upper:
+            base = symbol_upper.split("/")[0]
+            identity = self.identity_registry.resolve(base)
+            if identity:
+                return identity
+
+        return None

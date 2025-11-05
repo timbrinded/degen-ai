@@ -7,7 +7,10 @@ from typing import Literal
 
 from hyperliquid.info import Info
 
+from hyperliquid_agent.asset_identity import AssetIdentity
 from hyperliquid_agent.config import HyperliquidConfig
+from hyperliquid_agent.identity_registry import AssetIdentityRegistry
+from hyperliquid_agent.price_service import AssetPriceService
 
 
 def _safe_float(value: float | int | str | None) -> float:
@@ -31,6 +34,8 @@ class Position:
     current_price: float
     unrealized_pnl: float
     market_type: Literal["spot", "perp"]
+    asset_identity: AssetIdentity | None = None
+    native_symbol: str | None = None
 
 
 @dataclass
@@ -47,12 +52,19 @@ class AccountState:
     total_maintenance_margin: float = 0.0
     margin_fraction: float | None = None
     is_stale: bool = False
+    assets: dict[str, AssetIdentity] = field(default_factory=dict)
 
 
 class PositionMonitor:
     """Monitors positions and retrieves account state from Hyperliquid."""
 
-    def __init__(self, config: HyperliquidConfig) -> None:
+    def __init__(
+        self,
+        config: HyperliquidConfig,
+        *,
+        identity_registry: AssetIdentityRegistry | None = None,
+        price_service: AssetPriceService | None = None,
+    ) -> None:
         """Initialize the position monitor.
 
         Args:
@@ -67,6 +79,11 @@ class PositionMonitor:
         self._spot_price_cache: dict[str, float] = {}
         self._spot_price_cache_ts: float = 0.0
         self._spot_price_cache_ttl: float = 30.0  # seconds
+        self.identity_registry = identity_registry
+        self.price_service = price_service
+
+        if self.price_service is None and self.identity_registry is not None:
+            self.price_service = AssetPriceService(self.info, self.identity_registry)
 
     def get_current_state(self) -> AccountState:
         """Retrieve current account state from Hyperliquid.
@@ -142,6 +159,12 @@ class PositionMonitor:
 
             spot_balances[coin] = total
 
+            identity: AssetIdentity | None = None
+            if self.identity_registry:
+                identity = self.identity_registry.resolve(coin)
+                if not identity and coin.startswith("U"):
+                    identity = self.identity_registry.resolve(coin[1:])
+
             usd_value = _safe_float(
                 balance.get("usdValue")
                 or balance.get("usd_value")
@@ -154,7 +177,7 @@ class PositionMonitor:
             if usd_value > 0:
                 price = usd_value / total if total > 0 else None
             else:
-                price = self._get_spot_price(coin)
+                price = self._get_spot_price(coin, identity)
                 if price is not None:
                     usd_value = price * total
 
@@ -177,6 +200,8 @@ class PositionMonitor:
                         current_price=price or 0.0,
                         unrealized_pnl=0.0,
                         market_type="spot",
+                        asset_identity=identity,
+                        native_symbol=coin,
                     )
                 )
 
@@ -207,6 +232,8 @@ class PositionMonitor:
             # Determine market type (perp is default for Hyperliquid positions)
             market_type: Literal["spot", "perp"] = "perp"
 
+            identity = self.identity_registry.resolve(coin) if self.identity_registry else None
+
             positions.append(
                 Position(
                     coin=coin,
@@ -215,6 +242,8 @@ class PositionMonitor:
                     current_price=current_price,
                     unrealized_pnl=unrealized_pnl,
                     market_type=market_type,
+                    asset_identity=identity,
+                    native_symbol=coin,
                 )
             )
 
@@ -223,6 +252,16 @@ class PositionMonitor:
 
         # Total portfolio value includes perp account value + spot balances
         total_portfolio_value = account_value + spot_value
+
+        assets_map: dict[str, AssetIdentity] = {}
+        if self.identity_registry:
+            for position in positions:
+                if position.asset_identity:
+                    assets_map[position.asset_identity.canonical_symbol] = position.asset_identity
+            for coin in spot_balances:
+                identity = self.identity_registry.resolve(coin)
+                if identity:
+                    assets_map[identity.canonical_symbol] = identity
 
         return AccountState(
             portfolio_value=total_portfolio_value,
@@ -235,6 +274,7 @@ class PositionMonitor:
             total_maintenance_margin=total_maintenance_margin,
             margin_fraction=margin_fraction,
             is_stale=False,
+            assets=assets_map,
         )
 
     def _refresh_spot_price_cache(self) -> None:
@@ -244,6 +284,11 @@ class PositionMonitor:
             meta_and_ctxs = self.info.spot_meta_and_asset_ctxs()
         except Exception as exc:  # pragma: no cover - network failures are non-deterministic
             self.logger.debug("Failed to refresh spot price cache: %s", exc, exc_info=True)
+            self._spot_price_cache_ts = time.time()
+            return
+
+        if self.price_service is not None:
+            # Dedicated price service owns the cache when available
             self._spot_price_cache_ts = time.time()
             return
 
@@ -262,30 +307,51 @@ class PositionMonitor:
             mid_px = _safe_float(ctx.get("midPx"))
             mark_px = _safe_float(ctx.get("markPx"))
             price = mid_px or mark_px
-            if price > 0:
-                new_cache[coin] = price
+            if price <= 0:
+                continue
+
+            new_cache[coin] = price
+
+            if self.identity_registry:
+                identity = self.identity_registry.resolve_spot_symbol(
+                    coin
+                ) or self.identity_registry.resolve(coin)
+                if identity:
+                    new_cache[identity.canonical_symbol] = price
+                    new_cache[identity.wallet_symbol] = price
+                    for alias in identity.spot_aliases:
+                        new_cache[alias] = price
+                    # Include display symbol with default quote if missing slash
+                    if identity.default_quote:
+                        new_cache[f"{identity.canonical_symbol}/{identity.default_quote}"] = price
 
         self._spot_price_cache = new_cache
         self._spot_price_cache_ts = time.time()
 
-    def _get_spot_price(self, coin: str) -> float | None:
+    def _get_spot_price(self, coin: str, identity: AssetIdentity | None = None) -> float | None:
         """Return cached USD price for a spot asset when available."""
+
+        if self.price_service is not None and identity is not None:
+            return self.price_service.get_price(identity, "spot")
 
         now = time.time()
         if now - self._spot_price_cache_ts > self._spot_price_cache_ttl:
             self._refresh_spot_price_cache()
 
-        # Direct look-up for canonical market names (e.g., "UETH/USDC")
-        if coin in self._spot_price_cache:
-            return self._spot_price_cache[coin]
-
         normalized = coin.upper()
-        candidate_keys = []
+        candidate_keys = [coin, normalized]
+
+        if identity:
+            candidate_keys.append(identity.canonical_symbol)
+            candidate_keys.append(identity.wallet_symbol)
+            for alias in identity.spot_aliases:
+                candidate_keys.append(alias)
+            if identity.default_quote:
+                candidate_keys.append(f"{identity.canonical_symbol}/{identity.default_quote}")
+                candidate_keys.append(f"{identity.wallet_symbol}/{identity.default_quote}")
 
         if "/" not in normalized and normalized:
             candidate_keys.append(f"{normalized}/USDC")
-
-        candidate_keys.append(normalized)
 
         for key in candidate_keys:
             price = self._spot_price_cache.get(key)
