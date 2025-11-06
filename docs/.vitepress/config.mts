@@ -4,7 +4,6 @@ export default defineConfig({
   title: 'Hyperliquid Trading Agent',
   description: 'AI-powered trading agent for Hyperliquid perpetual futures',
   base: '/hyperliquid-trading-agent/',
-  outDir: '../docs',
   ignoreDeadLinks: true,
   
   themeConfig: {

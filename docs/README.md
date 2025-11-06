@@ -1,3 +1,47 @@
+# Documentation Site
+
+VitePress documentation for Hyperliquid Trading Agent.
+
+## Setup
+
+Install dependencies:
+```bash
+bun install
+```
+
+## Development
+
+Run local dev server:
+```bash
+bun run docs:dev
+```
+
+Visit http://localhost:5173
+
+## Build
+
+Build static site:
+```bash
+bun run docs:build
+```
+
+Output will be in `.vitepress/dist/`
+
+## Legacy Markdown
+
+Historical reference documents are available under `legacy/`. They are preserved for convenience and can be ported into the VitePress content structure as needed.
+
+## Deploy to GitHub Pages
+
+1. Update `base` in `.vitepress/config.mts` to match your repo name
+2. Build the site: `bun run docs:build`
+3. Deploy the `.vitepress/dist` folder to GitHub Pages
+
+### Automated Deployment
+
+Add this GitHub Actions workflow at `.github/workflows/deploy-docs.yml`:
+
+```yaml
 name: Deploy Docs Site
 
 on:
@@ -47,3 +91,4 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
+```

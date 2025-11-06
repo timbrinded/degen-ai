@@ -2,7 +2,7 @@
 
 /**
  * Link Validator for VitePress Documentation
- * Validates all internal markdown links in the docs-site
+ * Validates all internal markdown links in the docs directory
  */
 
 import fs from 'fs';
