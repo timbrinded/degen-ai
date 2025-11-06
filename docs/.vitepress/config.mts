@@ -3,7 +3,7 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   title: 'Hyperliquid Trading Agent',
   description: 'AI-powered trading agent for Hyperliquid perpetual futures',
-  base: '/hyperliquid-trading-agent/',
+  base: '/degen-ai/',
   ignoreDeadLinks: true,
   
   themeConfig: {
