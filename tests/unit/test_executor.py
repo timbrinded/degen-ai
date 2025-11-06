@@ -433,6 +433,49 @@ def test_execute_action_close_position(
         assert call_args.kwargs["px"] is None
 
 
+def test_close_order_min_notional_adjustment_perp(
+    hyperliquid_config, mock_registry, mock_asset_metadata, mock_spot_metadata
+):
+    """Ensure close orders enforce minimum notional using reduce-only IOC orders."""
+
+    mock_exchange = MagicMock()
+    mock_exchange.market_open.return_value = {"status": {"resting": {"oid": "0xnoop"}}}
+    mock_exchange.order.return_value = {"status": {"resting": {"oid": "0xclosemin"}}}
+    mock_exchange._slippage_price.return_value = 105.0
+
+    small_close_action = TradeAction(
+        action_type="close",
+        coin="SOL",
+        market_type="perp",
+        size=0.0001,
+        price=None,
+        reasoning="Close residual position",
+    )
+
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
+
+    with (
+        patch("hyperliquid_agent.executor.Exchange", return_value=mock_exchange),
+        patch("hyperliquid_agent.executor.Info", return_value=mock_info),
+    ):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
+        result = executor.execute_action(small_close_action)
+
+        assert result.success is True
+        assert result.order_id == "0xclosemin"
+
+        mock_exchange.order.assert_called_once()
+        call_args = mock_exchange.order.call_args
+        assert call_args.kwargs["name"] == "SOL"
+        assert call_args.kwargs["reduce_only"] is True
+        assert call_args.kwargs["order_type"] == {"limit": {"tif": "Ioc"}}
+        assert call_args.kwargs["is_buy"] is True
+        assert call_args.kwargs["sz"] == pytest.approx(0.05)
+        assert call_args.kwargs["limit_px"] == 105.0
+
+        mock_exchange.market_open.assert_not_called()
+
+
 def test_execute_action_spot_market(
     hyperliquid_config, mock_registry, valid_sell_action, mock_asset_metadata, mock_spot_metadata
 ):
