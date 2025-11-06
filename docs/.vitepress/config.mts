@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitepress'
+import { withMermaid } from 'vitepress-plugin-mermaid'
 
-export default defineConfig({
+export default withMermaid(defineConfig({
   title: 'Hyperliquid Trading Agent',
   description: 'AI-powered trading agent for Hyperliquid perpetual futures',
   base: '/degen-ai/',
@@ -82,4 +83,4 @@ export default defineConfig({
       { icon: 'github', link: 'https://github.com/yourusername/hyperliquid-trading-agent' }
     ]
   }
-})
+}))
