@@ -46,6 +46,25 @@ log_level = "INFO"
 prompt_template_path = "prompts/default.txt"
 
 # ============================================================================
+# RISK & FUNDING CONTROLS
+# ============================================================================
+# Configure deterministic wallet transfers that fund spot trades while
+# preserving perpetual margin buffers.
+
+[risk]
+# Enable automatic wallet transfers inserted by the agent
+enable_auto_transfers = true
+
+# Keep a cushion above the total initial margin requirement (e.g., 1.25 = 125%)
+target_initial_margin_ratio = 1.25
+
+# Never let the perp wallet drop below this absolute USD balance
+min_perp_balance_usd = 1000.0
+
+# Desired idle USDC to keep in the spot wallet after funding buys
+target_spot_usdc_buffer_usd = 0.0
+
+# ============================================================================
 # GOVERNANCE SYSTEM CONFIGURATION
 # ============================================================================
 # The governance system prevents "strategy thrash" by introducing multi-timescale

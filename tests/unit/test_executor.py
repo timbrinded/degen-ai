@@ -11,11 +11,9 @@ from hyperliquid_agent.executor import TradeExecutor
 
 # Patch Info at module level to provide spot_meta for all tests
 @pytest.fixture(autouse=True)
-def mock_info_with_spot_meta(mock_spot_metadata):
+def mock_info_with_spot_meta(mock_spot_metadata, mock_asset_metadata):
     """Automatically patch Info to return proper spot_meta for all tests."""
-    mock_info = MagicMock()
-    mock_info.spot_meta.return_value = mock_spot_metadata
-    mock_info.meta.return_value = {"universe": []}
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
 
     with patch("hyperliquid_agent.executor.Info", return_value=mock_info):
         yield mock_info
@@ -56,9 +54,9 @@ def mock_spot_metadata():
             {"name": "BTC/USDC", "index": 1},
         ],
         "tokens": [
-            {"name": "USDC", "index": 0},
-            {"name": "ETH", "index": 1},
-            {"name": "BTC", "index": 2},
+            {"name": "USDC", "index": 0, "szDecimals": 2},
+            {"name": "ETH", "index": 1, "szDecimals": 4},
+            {"name": "BTC", "index": 2, "szDecimals": 4},
         ],
     }
 
@@ -73,6 +71,30 @@ def mock_asset_metadata():
             {"name": "SOL", "szDecimals": 2},
         ]
     }
+
+
+def configure_mock_info(mock_info, mock_asset_metadata, mock_spot_metadata):
+    """Configure Info mock with metadata and price contexts."""
+
+    mock_info.meta.return_value = mock_asset_metadata
+    mock_info.spot_meta.return_value = mock_spot_metadata
+    mock_info.meta_and_asset_ctxs.return_value = (
+        mock_asset_metadata,
+        [
+            {"markPx": "50000", "midPx": "50000.0"},
+            {"markPx": "3000", "midPx": "3000.0"},
+            {"markPx": "110", "midPx": "110.0"},
+        ],
+    )
+    mock_info.spot_meta_and_asset_ctxs.return_value = (
+        mock_spot_metadata,
+        [
+            {"coin": "ETH/USDC", "markPx": "3000", "midPx": "3000.0"},
+            {"coin": "BTC/USDC", "markPx": "50000", "midPx": "50000.0"},
+        ],
+    )
+
+    return mock_info
 
 
 @pytest.fixture
@@ -295,9 +317,7 @@ def test_execute_action_limit_order_success(
 ):
     """Test successful limit order execution."""
     mock_exchange = MagicMock()
-    mock_info = MagicMock()
-    mock_info.meta.return_value = mock_asset_metadata
-    mock_info.spot_meta.return_value = mock_spot_metadata
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
 
     order_response = {"status": {"resting": {"oid": "0xorder123"}}}
     mock_exchange.order.return_value = order_response
@@ -328,9 +348,7 @@ def test_execute_action_market_order_success(
 ):
     """Test successful market order execution."""
     mock_exchange = MagicMock()
-    mock_info = MagicMock()
-    mock_info.meta.return_value = mock_asset_metadata
-    mock_info.spot_meta.return_value = mock_spot_metadata
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
 
     order_response = {"status": {"resting": {"oid": "0xmarket456"}}}
     mock_exchange.market_open.return_value = order_response
@@ -354,14 +372,44 @@ def test_execute_action_market_order_success(
         assert call_args.kwargs["px"] is None
 
 
+def test_market_order_min_notional_adjustment(
+    hyperliquid_config, mock_registry, mock_asset_metadata, mock_spot_metadata
+):
+    """Test market orders are adjusted to satisfy minimum notional."""
+    mock_exchange = MagicMock()
+    mock_exchange.market_open.return_value = {"status": {"resting": {"oid": "0xmin"}}}
+
+    small_market_action = TradeAction(
+        action_type="buy",
+        coin="BTC",
+        market_type="perp",
+        size=0.00005,
+        price=None,
+        reasoning="Increase to min notional",
+    )
+
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
+
+    with (
+        patch("hyperliquid_agent.executor.Exchange", return_value=mock_exchange),
+        patch("hyperliquid_agent.executor.Info", return_value=mock_info),
+    ):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
+        result = executor.execute_action(small_market_action)
+
+        assert result.success is True
+
+        mock_exchange.market_open.assert_called_once()
+        call_args = mock_exchange.market_open.call_args
+        assert call_args.kwargs["sz"] == pytest.approx(0.0001)
+
+
 def test_execute_action_close_position(
     hyperliquid_config, mock_registry, valid_close_action, mock_asset_metadata, mock_spot_metadata
 ):
     """Test closing position with market order."""
     mock_exchange = MagicMock()
-    mock_info = MagicMock()
-    mock_info.meta.return_value = mock_asset_metadata
-    mock_info.spot_meta.return_value = mock_spot_metadata
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
 
     order_response = {"status": {"resting": {"oid": "0xclose789"}}}
     mock_exchange.market_open.return_value = order_response
@@ -385,14 +433,55 @@ def test_execute_action_close_position(
         assert call_args.kwargs["px"] is None
 
 
+def test_close_order_min_notional_adjustment_perp(
+    hyperliquid_config, mock_registry, mock_asset_metadata, mock_spot_metadata
+):
+    """Ensure close orders enforce minimum notional using reduce-only IOC orders."""
+
+    mock_exchange = MagicMock()
+    mock_exchange.market_open.return_value = {"status": {"resting": {"oid": "0xnoop"}}}
+    mock_exchange.order.return_value = {"status": {"resting": {"oid": "0xclosemin"}}}
+    mock_exchange._slippage_price.return_value = 105.0
+
+    small_close_action = TradeAction(
+        action_type="close",
+        coin="SOL",
+        market_type="perp",
+        size=0.0001,
+        price=None,
+        reasoning="Close residual position",
+    )
+
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
+
+    with (
+        patch("hyperliquid_agent.executor.Exchange", return_value=mock_exchange),
+        patch("hyperliquid_agent.executor.Info", return_value=mock_info),
+    ):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
+        result = executor.execute_action(small_close_action)
+
+        assert result.success is True
+        assert result.order_id == "0xclosemin"
+
+        mock_exchange.order.assert_called_once()
+        call_args = mock_exchange.order.call_args
+        assert call_args.kwargs["name"] == "SOL"
+        assert call_args.kwargs["reduce_only"] is True
+        assert call_args.kwargs["order_type"] == {"limit": {"tif": "Ioc"}}
+        assert call_args.kwargs["is_buy"] is True
+        assert call_args.kwargs["sz"] == pytest.approx(0.05)
+        assert call_args.kwargs["limit_px"] == 105.0
+
+        mock_exchange.market_open.assert_not_called()
+
+
 def test_execute_action_spot_market(
     hyperliquid_config, mock_registry, valid_sell_action, mock_asset_metadata, mock_spot_metadata
 ):
     """Test order execution on spot market."""
     mock_exchange = MagicMock()
-    mock_info = MagicMock()
-    mock_info.meta.return_value = mock_asset_metadata
-    mock_info.spot_meta.return_value = mock_spot_metadata
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
 
     order_response = {"status": {"resting": {"oid": "0xspot999"}}}
     mock_exchange.order.return_value = order_response
@@ -415,14 +504,44 @@ def test_execute_action_spot_market(
         assert call_args.kwargs["sz"] == 1.5
 
 
+def test_limit_order_min_notional_adjustment(
+    hyperliquid_config, mock_registry, mock_asset_metadata, mock_spot_metadata
+):
+    """Test limit orders are adjusted to satisfy minimum notional."""
+    mock_exchange = MagicMock()
+    mock_exchange.order.return_value = {"status": {"resting": {"oid": "0xlimitmin"}}}
+
+    small_limit_action = TradeAction(
+        action_type="sell",
+        coin="ETH",
+        market_type="perp",
+        size=0.001,
+        price=3000.0,
+        reasoning="Ensure min notional",
+    )
+
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
+
+    with (
+        patch("hyperliquid_agent.executor.Exchange", return_value=mock_exchange),
+        patch("hyperliquid_agent.executor.Info", return_value=mock_info),
+    ):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
+        result = executor.execute_action(small_limit_action)
+
+        assert result.success is True
+
+        mock_exchange.order.assert_called_once()
+        call_args = mock_exchange.order.call_args
+        assert call_args.kwargs["sz"] == pytest.approx(0.002)
+
+
 def test_execute_action_api_error(
     hyperliquid_config, mock_registry, valid_buy_action, mock_asset_metadata, mock_spot_metadata
 ):
     """Test execution handles API errors gracefully."""
     mock_exchange = MagicMock()
-    mock_info = MagicMock()
-    mock_info.meta.return_value = mock_asset_metadata
-    mock_info.spot_meta.return_value = mock_spot_metadata
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
     mock_exchange.order.side_effect = Exception("API connection failed")
 
     with (
@@ -442,9 +561,7 @@ def test_execute_action_insufficient_balance_error(
 ):
     """Test execution handles insufficient balance error."""
     mock_exchange = MagicMock()
-    mock_info = MagicMock()
-    mock_info.meta.return_value = mock_asset_metadata
-    mock_info.spot_meta.return_value = mock_spot_metadata
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
     mock_exchange.order.side_effect = Exception("Insufficient balance")
 
     with (
@@ -463,9 +580,7 @@ def test_execute_action_response_without_order_id(
 ):
     """Test execution handles response without order ID."""
     mock_exchange = MagicMock()
-    mock_info = MagicMock()
-    mock_info.meta.return_value = mock_asset_metadata
-    mock_info.spot_meta.return_value = mock_spot_metadata
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
 
     # Response without order ID structure
     order_response = {"status": "filled"}
@@ -486,9 +601,7 @@ def test_round_size_with_decimals(
     hyperliquid_config, mock_registry, mock_asset_metadata, mock_spot_metadata
 ):
     """Test size rounding conforms to asset szDecimals."""
-    mock_info = MagicMock()
-    mock_info.meta.return_value = mock_asset_metadata
-    mock_info.spot_meta.return_value = mock_spot_metadata
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
 
     with (
         patch("hyperliquid_agent.executor.Exchange"),
@@ -513,9 +626,7 @@ def test_round_size_rounds_down(
     hyperliquid_config, mock_registry, mock_asset_metadata, mock_spot_metadata
 ):
     """Test size rounding always rounds down."""
-    mock_info = MagicMock()
-    mock_info.meta.return_value = mock_asset_metadata
-    mock_info.spot_meta.return_value = mock_spot_metadata
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
 
     with (
         patch("hyperliquid_agent.executor.Exchange"),
@@ -532,9 +643,7 @@ def test_get_asset_metadata_caching(
     hyperliquid_config, mock_registry, mock_asset_metadata, mock_spot_metadata
 ):
     """Test asset metadata is cached after first retrieval."""
-    mock_info = MagicMock()
-    mock_info.meta.return_value = mock_asset_metadata
-    mock_info.spot_meta.return_value = mock_spot_metadata
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
 
     with (
         patch("hyperliquid_agent.executor.Exchange"),
@@ -557,9 +666,7 @@ def test_get_asset_metadata_not_found(
     hyperliquid_config, mock_registry, mock_asset_metadata, mock_spot_metadata
 ):
     """Test error when asset not found in universe."""
-    mock_info = MagicMock()
-    mock_info.meta.return_value = mock_asset_metadata
-    mock_info.spot_meta.return_value = mock_spot_metadata
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
 
     with (
         patch("hyperliquid_agent.executor.Exchange"),
@@ -576,9 +683,7 @@ def test_submit_order_close_without_size(
 ):
     """Test close action without size raises error."""
     mock_exchange = MagicMock()
-    mock_info = MagicMock()
-    mock_info.meta.return_value = mock_asset_metadata
-    mock_info.spot_meta.return_value = mock_spot_metadata
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
 
     close_action = TradeAction(
         action_type="close",

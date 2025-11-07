@@ -222,6 +222,9 @@ class SignalService:
             signal_type=signal_type, account_state=account_state, timestamp=datetime.now()
         )
 
+        if not self.orchestrator_ready.is_set():
+            self.wait_until_ready(timeout=min(5.0, timeout_seconds))
+
         # Put request in queue
         self.request_queue.put(request)
 

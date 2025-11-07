@@ -564,6 +564,34 @@ def test_daily_loss_calculation_updates(tripwire_config):
     assert service.daily_loss_pct == pytest.approx(3.0)
 
 
+def test_daily_loss_trigger_suppresses_duplicates(tripwire_config):
+    """Daily loss limit should only trigger the emergency action once."""
+    service = TripwireService(tripwire_config)
+    service.daily_start_portfolio_value = 10000.0
+
+    account_state = AccountState(
+        portfolio_value=9400.0,
+        available_balance=4700.0,
+        positions=[],
+        timestamp=datetime.now().timestamp(),
+        spot_balances={},
+        is_stale=False,
+    )
+
+    first_events = service._check_account_safety(account_state)
+    assert len(first_events) == 1
+    first_event = first_events[0]
+    assert first_event.action == TripwireAction.CUT_SIZE_TO_FLOOR
+    assert first_event.details["already_active"] is False
+
+    second_events = service._check_account_safety(account_state)
+    assert len(second_events) == 1
+    second_event = second_events[0]
+    assert second_event.action == TripwireAction.FREEZE_NEW_RISK
+    assert second_event.details["already_active"] is True
+    assert second_event.severity == "warning"
+
+
 def test_multiple_position_size_triggers(tripwire_config, sample_plan):
     """Test trigger fires when any position exceeds threshold."""
     service = TripwireService(tripwire_config)

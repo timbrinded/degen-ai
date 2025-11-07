@@ -286,3 +286,39 @@ def test_parse_user_state_directly(hyperliquid_config, mock_user_state_with_posi
     assert state.available_balance == 5000.25
     assert len(state.positions) == 2
     assert all(isinstance(pos, Position) for pos in state.positions)
+
+
+@patch("hyperliquid_agent.monitor.Info")
+def test_parse_user_state_values_spot_assets(mock_info_class, hyperliquid_config):
+    """Spot balances should be valued when pricing data is available."""
+
+    mock_info_instance = MagicMock()
+    mock_info_class.return_value = mock_info_instance
+
+    monitor = PositionMonitor(hyperliquid_config)
+
+    def fake_price_lookup(coin: str, _identity=None) -> float | None:
+        return 1.0 if coin.upper() == "USDC" else 2000.0
+
+    monitor._get_spot_price = MagicMock(side_effect=fake_price_lookup)
+
+    account_state = monitor._parse_user_state(
+        {
+            "marginSummary": {"accountValue": "8000"},
+            "withdrawable": "4000",
+            "assetPositions": [],
+        },
+        {
+            "balances": [
+                {"coin": "USDC", "total": "3000"},
+                {"coin": "UETH", "total": "1.5"},
+            ]
+        },
+    )
+
+    assert account_state.portfolio_value == pytest.approx(14000.0)
+    assert account_state.spot_balances["UETH"] == pytest.approx(1.5)
+    spot_positions = [p for p in account_state.positions if p.market_type == "spot"]
+    assert len(spot_positions) == 1
+    assert spot_positions[0].coin == "UETH"
+    assert spot_positions[0].current_price == pytest.approx(2000.0)

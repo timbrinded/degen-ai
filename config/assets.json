@@ -1,0 +1,30 @@
+[
+  {
+    "canonical": "ETH",
+    "wallet": "UETH",
+    "perp": "ETH",
+    "spot_aliases": ["UETH", "ETH"],
+    "default_quote": "USDC"
+  },
+  {
+    "canonical": "BTC",
+    "wallet": "UBTC",
+    "perp": "BTC",
+    "spot_aliases": ["UBTC", "BTC"],
+    "default_quote": "USDC"
+  },
+  {
+    "canonical": "SOL",
+    "wallet": "USOL",
+    "perp": "SOL",
+    "spot_aliases": ["USOL", "SOL"],
+    "default_quote": "USDC"
+  },
+  {
+    "canonical": "USDC",
+    "wallet": "USDC",
+    "perp": null,
+    "spot_aliases": ["USDC"],
+    "default_quote": "USDC"
+  }
+]

@@ -15,9 +15,12 @@ from hyperliquid.info import Info
 from hyperliquid_agent.config import Config
 from hyperliquid_agent.decision import DecisionEngine, PromptTemplate
 from hyperliquid_agent.executor import TradeExecutor
+from hyperliquid_agent.funding import FundingPlanner
+from hyperliquid_agent.identity_registry import AssetIdentityRegistry, default_assets_config_path
 from hyperliquid_agent.market_registry import MarketRegistry
 from hyperliquid_agent.monitor import PositionMonitor
 from hyperliquid_agent.portfolio import PortfolioRebalancer, PortfolioState, TargetAllocation
+from hyperliquid_agent.price_service import AssetPriceService
 
 # Initialize colorama for cross-platform colored output
 init(autoreset=True)
@@ -181,17 +184,38 @@ class TradingAgent:
         self.config = config
         self.logger = self._setup_logging()
 
+        assets_config = default_assets_config_path()
+        self.info = Info(config.hyperliquid.base_url, skip_ws=True)
+        self.identity_registry = AssetIdentityRegistry(assets_config, self.info)
+        try:
+            self.identity_registry.load()
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load asset identities: {exc}") from exc
+
+        self.price_service = AssetPriceService(self.info, self.identity_registry)
+
         # Initialize all components
-        self.monitor = PositionMonitor(config.hyperliquid)
+        self.monitor = PositionMonitor(
+            config.hyperliquid,
+            identity_registry=self.identity_registry,
+            price_service=self.price_service,
+        )
 
         prompt_template = PromptTemplate(config.agent.prompt_template_path)
-        self.decision_engine = DecisionEngine(config.llm, prompt_template)
+        self.decision_engine = DecisionEngine(
+            config.llm,
+            prompt_template,
+            identity_registry=self.identity_registry,
+        )
 
         # Initialize market registry
-        info = Info(config.hyperliquid.base_url, skip_ws=True)
-        self.registry = MarketRegistry(info)
+        self.registry = MarketRegistry(self.info)
 
-        self.executor = TradeExecutor(config.hyperliquid, self.registry)
+        self.executor = TradeExecutor(
+            config.hyperliquid,
+            self.registry,
+            identity_registry=self.identity_registry,
+        )
 
         # Initialize portfolio rebalancer
         self.rebalancer = PortfolioRebalancer(
@@ -199,6 +223,9 @@ class TradingAgent:
             max_slippage_pct=0.005,
             rebalance_threshold=0.05,
         )
+
+        # Funding planner for deterministic wallet transfers
+        self.funding_planner = FundingPlanner(config.risk, self.executor, self.logger)
 
         # Initialize tick counter
         self.tick_count = 0
@@ -377,6 +404,33 @@ class TradingAgent:
 
             # Use rebalancing plan actions instead of direct LLM actions
             actions_to_execute = plan.actions
+
+        funding_result = self.funding_planner.plan(account_state, actions_to_execute)
+        actions_to_execute = funding_result.actions
+
+        if funding_result.inserted_transfers:
+            self.logger.info(
+                "Funding planner inserted %s transfer actions",
+                funding_result.inserted_transfers,
+                extra={
+                    "tick": self.tick_count,
+                    "inserted_transfers": funding_result.inserted_transfers,
+                },
+            )
+
+        for message in funding_result.clamped_transfers:
+            self.logger.warning(
+                "Funding planner clamped transfer: %s",
+                message,
+                extra={"tick": self.tick_count},
+            )
+
+        for message in funding_result.skipped_actions:
+            self.logger.warning(
+                "Funding planner skipped action: %s",
+                message,
+                extra={"tick": self.tick_count},
+            )
 
         self.logger.info(
             f"Decision received: {len(actions_to_execute)} actions to execute",

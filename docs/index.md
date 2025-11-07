@@ -11,7 +11,7 @@ hero:
       link: /guide/getting-started
     - theme: alt
       text: View on GitHub
-      link: https://github.com/yourusername/hyperliquid-trading-agent
+      link: https://github.com/timbrinded/degen-ai
 
 features:
   - icon: 🤖
