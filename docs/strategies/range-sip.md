@@ -2,6 +2,29 @@
 
 A mean-reversion strategy that fades Bollinger Band extremes in well-defined ranging markets, targeting quick returns to the midline.
 
+## Visual Overview
+
+```mermaid
+graph LR
+    A[Monitor Range] --> B{Price at<br/>Bollinger Band?}
+    B -->|Upper Band| C{Flat/Declining<br/>Volatility?}
+    B -->|Lower Band| D{Flat/Declining<br/>Volatility?}
+    C -->|Yes| E[Enter Short<br/>Fade Extreme]
+    D -->|Yes| F[Enter Long<br/>Fade Extreme]
+    E --> G{Exit Signal?}
+    F --> G
+    G -->|Reach Midline| H[Exit]
+    G -->|ADX > 25| H
+    G -->|90min Timeout| H
+    
+    style A fill:#e1f5ff
+    style E fill:#ffe1f5
+    style F fill:#e1ffe1
+    style H fill:#ffd4e1
+```
+
+**Key Concept:** In ranging markets, fade extremes (Bollinger Band touches) back to the mean when volatility is declining.
+
 ## Strategy Logic
 
 ### Overview

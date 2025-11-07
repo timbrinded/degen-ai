@@ -2,6 +2,29 @@
 
 A positioning-based strategy that exploits divergences between price trends and open interest trends to identify distribution, absorption, and potential squeeze setups.
 
+## Visual Overview
+
+```mermaid
+graph TD
+    A[Monitor Price vs OI] --> B{Divergence?}
+    B -->|Rally + Falling OI| C[Distribution<br/>Short Bias]
+    B -->|Dump + Rising OI| D[Squeeze Setup<br/>Long Bias]
+    B -->|No Divergence| E[No Trade]
+    C --> F{Confirmation<br/>3+ Bars?}
+    D --> F
+    F -->|Yes| G[Enter Position]
+    G --> H{Exit Signal?}
+    H -->|OI Aligns w/ Price| I[Exit]
+    H -->|1.5x ATR Stop| I
+    
+    style A fill:#e1f5ff
+    style C fill:#ffe1f5
+    style D fill:#e1ffe1
+    style I fill:#ffd4e1
+```
+
+**Key Concept:** When price and open interest disagree, it reveals positioning extremes – fade distributions, join squeezes.
+
 ## Strategy Logic
 
 ### Overview

@@ -2,6 +2,29 @@
 
 An event-driven strategy that trades scheduled token unlock events by exploiting predictable pre-event drift and post-event momentum patterns.
 
+## Visual Overview
+
+```mermaid
+graph TD
+    A[Identify Unlock Event] --> B{Historical Pattern?}
+    B -->|Pre-Event Fade| C[Price Overextended<br/>into Resistance?]
+    B -->|Post-Event Chase| D[Price Breaks Structure<br/>with Volume?]
+    C -->|Yes| E[Fade Pre-Event<br/>Short Position]
+    D -->|Yes| F[Chase Post-Event<br/>Momentum]
+    E --> G{Exit?}
+    F --> G
+    G -->|Target Hit| H[Close]
+    G -->|Event Occurs| H
+    G -->|Max Loss| H
+    
+    style A fill:#e1f5ff
+    style E fill:#ffe1f5
+    style F fill:#e1ffe1
+    style H fill:#ffd4e1
+```
+
+**Key Concept:** Trade predictable patterns around token unlock events – fade overextension pre-event or chase momentum post-event.
+
 ## Strategy Logic
 
 ### Overview

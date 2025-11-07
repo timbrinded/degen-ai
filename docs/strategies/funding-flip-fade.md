@@ -2,6 +2,26 @@
 
 A contrarian mean-reversion strategy that fades extreme funding rates when market positioning becomes crowded.
 
+## Visual Overview
+
+```mermaid
+graph LR
+    A[Monitor Funding Rate] --> B{Extreme?<br/>z > 2.0}
+    B -->|Yes| C{OI Growing?<br/>> 3%}
+    C -->|Yes| D{Momentum<br/>Stalling?}
+    D -->|Yes| E[Enter Opposite<br/>Position]
+    E --> F{Exit Signal?}
+    F -->|Funding Normalizes| G[Exit Position]
+    F -->|Stop Loss Hit| G
+    F -->|24h Timeout| G
+    
+    style A fill:#e1f5ff
+    style E fill:#e1ffe1
+    style G fill:#ffe1f5
+```
+
+**Key Concept:** When too many traders crowd one side (high funding + rising OI), fade them when momentum stalls.
+
 ## Strategy Logic
 
 ### Overview

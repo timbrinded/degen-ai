@@ -2,6 +2,27 @@
 
 A relative-value strategy that trades spread dislocations between cointegrated asset pairs, maintaining beta-hedged positions for near-zero delta exposure.
 
+## Visual Overview
+
+```mermaid
+graph LR
+    A[Monitor Pair Spread] --> B{Spread Z-Score<br/>Extreme?}
+    B -->|z > 2.0| C[Short Overvalued<br/>Long Undervalued]
+    B -->|z < -2.0| D[Long Overvalued<br/>Short Undervalued]
+    C --> E{Exit Signal?}
+    D --> E
+    E -->|z Returns to 0| F[Exit Both Legs]
+    E -->|Beta Breaks| F
+    E -->|Half-Life Timeout| F
+    
+    style A fill:#e1f5ff
+    style C fill:#ffe1f5
+    style D fill:#e1ffe1
+    style F fill:#ffd4e1
+```
+
+**Key Concept:** Trade pairs with stable relationships – when spread widens, go long undervalued/short overvalued, exit when spread normalizes.
+
 ## Strategy Logic
 
 ### Overview
