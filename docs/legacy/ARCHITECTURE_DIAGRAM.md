@@ -2,124 +2,34 @@
 
 ## System Flow
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         TRADING AGENT LOOP                          │
-│                         (Every tick_interval)                       │
-└─────────────────────────────────────────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 1: Monitor Positions                                          │
-│                                                                     │
-│  PositionMonitor.get_current_state()                                │
-│  ├─ Fetch from Hyperliquid API                                     │
-│  ├─ Parse positions, balances                                      │
-│  └─ Return AccountState                                            │
-│                                                                     │
-│  AccountState {                                                     │
-│    portfolio_value: 50000.0                                         │
-│    available_balance: 15000.0                                       │
-│    positions: [BTC: 0.5 @ $52k, ETH: 6.0 @ $2.6k]                  │
-│  }                                                                  │
-└─────────────────────────────────────────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 2: LLM Decision                                               │
-│                                                                     │
-│  DecisionEngine.get_decision(account_state)                         │
-│  ├─ Format prompt with current state + strategies                  │
-│  ├─ Query LLM (OpenAI/Anthropic)                                   │
-│  └─ Parse response                                                 │
-│                                                                     │
-│  LLM Response (Option 1 - Target Allocation):                      │
-│  {                                                                  │
-│    "selected_strategy": "balanced-growth",                          │
-│    "target_allocation": {                                           │
-│      "BTC": 0.40,    ← Want 40% in BTC                             │
-│      "ETH": 0.30,    ← Want 30% in ETH                             │
-│      "USDC": 0.30    ← Want 30% in cash                            │
-│    }                                                                │
-│  }                                                                  │
-│                                                                     │
-│  OR                                                                 │
-│                                                                     │
-│  LLM Response (Option 2 - Direct Actions):                         │
-│  {                                                                  │
-│    "selected_strategy": "compression-pop",                          │
-│    "actions": [                                                     │
-│      {"action_type": "buy", "coin": "BTC", "size": 0.5}            │
-│    ]                                                                │
-│  }                                                                  │
-└─────────────────────────────────────────────────────────────────────┘
-                                  │
-                    ┌─────────────┴─────────────┐
-                    │                           │
-                    ▼                           ▼
-    ┌───────────────────────────┐   ┌──────────────────────┐
-    │ Target Allocation         │   │ Direct Actions       │
-    │ Provided?                 │   │ (Legacy Path)        │
-    └───────────────────────────┘   └──────────────────────┘
-                    │                           │
-                    │ YES                       │ NO
-                    ▼                           │
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 2.5: Generate Rebalancing Plan (NEW!)                         │
-│                                                                     │
-│  PortfolioRebalancer.create_rebalancing_plan()                      │
-│                                                                     │
-│  1. Convert AccountState → PortfolioState                           │
-│     Current: {BTC: 50%, ETH: 20%, USDC: 30%}                       │
-│                                                                     │
-│  2. Calculate deltas (target - current)                             │
-│     BTC: 40% - 50% = -10%  (overweight, need to sell)             │
-│     ETH: 30% - 20% = +10%  (underweight, need to buy)             │
-│     USDC: 30% - 30% = 0%   (balanced, no action)                   │
-│                                                                     │
-│  3. Filter insignificant deviations (< 5% threshold)                │
-│     BTC: -10% → KEEP (significant)                                 │
-│     ETH: +10% → KEEP (significant)                                 │
-│     USDC: 0% → SKIP (no change)                                    │
-│                                                                     │
-│  4. Phase 1: Close/reduce overweight positions                      │
-│     Action: SELL 0.1 BTC (frees ~$5,200)                           │
-│                                                                     │
-│  5. Phase 2: Open/increase underweight positions                    │
-│     Action: BUY 2.0 ETH (uses ~$5,200)                             │
-│                                                                     │
-│  RebalancingPlan {                                                  │
-│    actions: [                                                       │
-│      SELL 0.1 BTC,                                                  │
-│      BUY 2.0 ETH                                                    │
-│    ],                                                               │
-│    estimated_cost: $25.00,                                          │
-│    reasoning: "Reduce BTC: 50% → 40%; Increase ETH: 20% → 30%"    │
-│  }                                                                  │
-└─────────────────────────────────────────────────────────────────────┘
-                                  │
-                                  │ (Both paths merge)
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│ STEP 3: Execute Trades                                             │
-│                                                                     │
-│  For each action in actions_to_execute:                             │
-│    TradeExecutor.execute_action(action)                             │
-│    ├─ Validate action parameters                                   │
-│    ├─ Submit order to Hyperliquid                                  │
-│    └─ Return ExecutionResult                                       │
-│                                                                     │
-│  Execution with retry logic:                                        │
-│  ├─ Attempt 1: SELL 0.1 BTC → Success (order_id: abc123)          │
-│  ├─ Attempt 1: BUY 2.0 ETH → Success (order_id: def456)           │
-│  └─ Log results                                                    │
-└─────────────────────────────────────────────────────────────────────┘
-                                  │
-                                  ▼
-                        ┌─────────────────┐
-                        │ Sleep until     │
-                        │ next tick       │
-                        └─────────────────┘
+```mermaid
+flowchart TD
+    Start([TRADING AGENT LOOP<br/>Every tick_interval])
+    
+    Start --> Step1["STEP 1: Monitor Positions<br/><br/>PositionMonitor.get_current_state()<br/>• Fetch from Hyperliquid API<br/>• Parse positions, balances<br/>• Return AccountState<br/><br/>AccountState:<br/>portfolio_value: 50000.0<br/>available_balance: 15000.0<br/>positions: BTC: 0.5, ETH: 6.0"]
+    
+    Step1 --> Step2["STEP 2: LLM Decision<br/><br/>DecisionEngine.get_decision()<br/>• Format prompt<br/>• Query LLM (OpenAI/Anthropic)<br/>• Parse response"]
+    
+    Step2 --> Decision{Target Allocation<br/>Provided?}
+    
+    Decision -->|YES: Target Allocation| Step2_5["STEP 2.5: Generate Rebalancing Plan<br/><br/>PortfolioRebalancer.create_rebalancing_plan()<br/><br/>1. Convert AccountState → PortfolioState<br/>2. Calculate deltas (target - current)<br/>3. Filter insignificant deviations<br/>4. Phase 1: Close/reduce overweight<br/>5. Phase 2: Open/increase underweight"]
+    
+    Decision -->|NO: Direct Actions| Merge((Merge))
+    
+    Step2_5 --> Merge
+    
+    Merge --> Step3["STEP 3: Execute Trades<br/><br/>For each action:<br/>• Validate parameters<br/>• Submit order to Hyperliquid<br/>• Return ExecutionResult<br/><br/>With retry logic"]
+    
+    Step3 --> Sleep([Sleep until<br/>next tick])
+    
+    Sleep --> Start
+    
+    style Start fill:#e1f5ff
+    style Step1 fill:#fff4e1
+    style Step2 fill:#ffe1f5
+    style Step2_5 fill:#e1ffe1
+    style Step3 fill:#ffd4e1
+    style Sleep fill:#e1f5ff
 ```
 
 ## Key Components
@@ -154,18 +64,20 @@
 
 ## Data Flow
 
-```
-AccountState (raw positions)
-      ↓
-PortfolioState (allocation percentages)
-      ↓
-TargetAllocation (desired percentages)
-      ↓
-RebalancingPlan (ordered trades)
-      ↓
-TradeAction[] (individual orders)
-      ↓
-ExecutionResult[] (order confirmations)
+```mermaid
+flowchart TD
+    A[AccountState<br/>raw positions] --> B[PortfolioState<br/>allocation percentages]
+    B --> C[TargetAllocation<br/>desired percentages]
+    C --> D[RebalancingPlan<br/>ordered trades]
+    D --> E[TradeAction[]<br/>individual orders]
+    E --> F[ExecutionResult[]<br/>order confirmations]
+    
+    style A fill:#e1f5ff
+    style B fill:#fff4e1
+    style C fill:#ffe1f5
+    style D fill:#e1ffe1
+    style E fill:#ffd4e1
+    style F fill:#d4e1ff
 ```
 
 ## Decision Modes
@@ -215,17 +127,24 @@ config.agent.tick_interval_seconds = 60  # Run every 60 seconds
 
 ## Error Handling
 
-```
-API Failure
-    ↓
-Retry with exponential backoff
-    ↓
-If all retries fail:
-    - Monitor: Return stale data (if available)
-    - Decision: Return error result
-    - Executor: Return error result
-    ↓
-Log error and continue to next tick
+```mermaid
+flowchart TD
+    A[API Failure] --> B[Retry with exponential backoff]
+    B --> C{All retries<br/>failed?}
+    C -->|Yes| D[Handle by component]
+    C -->|No| E[Success]
+    
+    D --> F[Monitor: Return stale data]
+    D --> G[Decision: Return error result]
+    D --> H[Executor: Return error result]
+    
+    F --> I[Log error and continue to next tick]
+    G --> I
+    H --> I
+    
+    style A fill:#ffcccc
+    style C fill:#fff4e1
+    style I fill:#e1f5ff
 ```
 
 ## Logging
@@ -258,42 +177,34 @@ All operations are logged with structured JSON:
 
 ### Before (Direct Actions Only)
 
-```
-LLM: "I want 40% BTC and 30% ETH"
-     ↓
-LLM must calculate:
-  - Current BTC: 0.5 @ $52k = $26k (50%)
-  - Target BTC: 40% of $50k = $20k
-  - Need to sell: ($26k - $20k) / $52k = 0.115 BTC
-  - Target ETH: 30% of $50k = $15k
-  - Need to buy: $15k / $2.6k = 5.77 ETH
-     ↓
-LLM outputs:
-  [SELL 0.115 BTC, BUY 5.77 ETH]
-     ↓
-Problems:
-  ❌ LLM bad at arithmetic
-  ❌ Doesn't check capital constraints
-  ❌ May try to buy before selling
-  ❌ Rounding errors
+```mermaid
+flowchart TD
+    A["LLM: 'I want 40% BTC and 30% ETH'"] --> B["LLM must calculate:<br/>• Current BTC: 0.5 @ $52k = $26k (50%)<br/>• Target BTC: 40% of $50k = $20k<br/>• Need to sell: ($26k - $20k) / $52k = 0.115 BTC<br/>• Target ETH: 30% of $50k = $15k<br/>• Need to buy: $15k / $2.6k = 5.77 ETH"]
+    
+    B --> C["LLM outputs:<br/>[SELL 0.115 BTC, BUY 5.77 ETH]"]
+    
+    C --> D["Problems:<br/>❌ LLM bad at arithmetic<br/>❌ Doesn't check capital constraints<br/>❌ May try to buy before selling<br/>❌ Rounding errors"]
+    
+    style A fill:#ffe1f5
+    style B fill:#fff4e1
+    style C fill:#e1f5ff
+    style D fill:#ffcccc
 ```
 
 ### After (Target Allocation)
 
-```
-LLM: "I want 40% BTC and 30% ETH"
-     ↓
-LLM outputs:
-  {"BTC": 0.40, "ETH": 0.30, "USDC": 0.30}
-     ↓
-Rebalancer calculates:
-  ✅ Precise arithmetic
-  ✅ Checks capital constraints
-  ✅ Orders trades correctly (sell first)
-  ✅ Filters dust trades
-     ↓
-Outputs:
-  [SELL 0.115 BTC, BUY 5.77 ETH]
+```mermaid
+flowchart TD
+    A["LLM: 'I want 40% BTC and 30% ETH'"] --> B["LLM outputs:<br/>{BTC: 0.40, ETH: 0.30, USDC: 0.30}"]
+    
+    B --> C["Rebalancer calculates:<br/>✅ Precise arithmetic<br/>✅ Checks capital constraints<br/>✅ Orders trades correctly (sell first)<br/>✅ Filters dust trades"]
+    
+    C --> D["Outputs:<br/>[SELL 0.115 BTC, BUY 5.77 ETH]"]
+    
+    style A fill:#ffe1f5
+    style B fill:#e1ffe1
+    style C fill:#e1ffe1
+    style D fill:#e1f5ff
 ```
 
 ## Summary

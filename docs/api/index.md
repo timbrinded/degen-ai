@@ -13,25 +13,27 @@ The trading agent is organized into several key modules:
 
 ## Module Organization
 
-```
-hyperliquid_agent/
-├── agent.py              # Main trading agent
-├── executor.py           # Trade execution
-├── portfolio.py          # Portfolio management
-├── governance/           # Governance system
-│   ├── governor.py
-│   ├── regime.py
-│   ├── scorekeeper.py
-│   └── tripwire.py
-├── signals/              # Signal system
-│   ├── orchestrator.py
-│   ├── service.py
-│   ├── providers.py
-│   └── cache.py
-└── backtesting/          # Backtesting system
-    ├── runner.py
-    ├── historical_data.py
-    └── reports.py
+```mermaid
+graph TD
+    Root[hyperliquid_agent/]
+    
+    Root --> Agent[agent.py - Main trading agent]
+    Root --> Executor[executor.py - Trade execution]
+    Root --> Portfolio[portfolio.py - Portfolio management]
+    
+    Root --> Gov[governance/]
+    Gov --> GovFiles["governor.py<br/>regime.py<br/>scorekeeper.py<br/>tripwire.py"]
+    
+    Root --> Signals[signals/]
+    Signals --> SigFiles["orchestrator.py<br/>service.py<br/>providers.py<br/>cache.py"]
+    
+    Root --> Backtest[backtesting/]
+    Backtest --> BackFiles["runner.py<br/>historical_data.py<br/>reports.py"]
+    
+    style Root fill:#e1f5ff
+    style Gov fill:#ffe1f5
+    style Signals fill:#fff4e1
+    style Backtest fill:#e1ffe1
 ```
 
 ## Usage Patterns

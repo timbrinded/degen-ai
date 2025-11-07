@@ -4,33 +4,26 @@
 
 The Hyperliquid Trading Agent consists of several interconnected modules:
 
-```
-┌─────────────────────────────────────────────────────┐
-│                  Governed Agent                      │
-│  ┌──────────────┐         ┌──────────────────────┐ │
-│  │  Governor    │────────▶│  Strategy Selection  │ │
-│  │  - Regime    │         │  - Portfolio Mgmt    │ │
-│  │  - Tripwires │         │  - Rebalancing       │ │
-│  └──────────────┘         └──────────────────────┘ │
-└─────────────────────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────────────────┐
-│                 Trading Agent                        │
-│  ┌──────────────┐  ┌──────────────┐  ┌───────────┐ │
-│  │ Signal       │─▶│  Decision    │─▶│ Executor  │ │
-│  │ Orchestrator │  │  Engine (LLM)│  │           │ │
-│  └──────────────┘  └──────────────┘  └───────────┘ │
-└─────────────────────────────────────────────────────┘
-                    │
-                    ▼
-┌─────────────────────────────────────────────────────┐
-│              Signal Collection Layer                 │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌────────┐│
-│  │Hyperliquid│ │ On-chain │ │Sentiment │ │External││
-│  │ Provider  │ │ Provider │ │ Provider │ │Markets ││
-│  └──────────┘ └──────────┘ └──────────┘ └────────┘│
-└─────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    subgraph GovAgent["Governed Agent"]
+        Governor["Governor<br/>- Regime<br/>- Tripwires"] --> StratSelect["Strategy Selection<br/>- Portfolio Mgmt<br/>- Rebalancing"]
+    end
+    
+    subgraph TradingAgent["Trading Agent"]
+        SignalOrch["Signal<br/>Orchestrator"] --> DecisionEngine["Decision<br/>Engine (LLM)"]
+        DecisionEngine --> Executor["Executor"]
+    end
+    
+    subgraph SignalLayer["Signal Collection Layer"]
+        HLProvider["Hyperliquid<br/>Provider"]
+        OnChainProvider["On-chain<br/>Provider"]
+        SentimentProvider["Sentiment<br/>Provider"]
+        ExtProvider["External<br/>Markets"]
+    end
+    
+    GovAgent --> TradingAgent
+    TradingAgent --> SignalLayer
 ```
 
 ## Core Modules

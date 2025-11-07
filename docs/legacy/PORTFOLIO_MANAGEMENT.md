@@ -8,52 +8,20 @@ The trading agent now supports **target allocation-based portfolio management**,
 
 ### Two-Phase Decision Flow
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Phase 1: Strategy Selection & Target Allocation            │
-│                                                             │
-│  LLM analyzes:                                              │
-│  - Current portfolio state                                  │
-│  - Market conditions                                        │
-│  - Available strategies                                     │
-│                                                             │
-│  LLM outputs:                                               │
-│  - Selected strategy ID                                     │
-│  - Target allocation (% per asset)                          │
-│                                                             │
-│  Example:                                                   │
-│  {                                                          │
-│    "selected_strategy": "balanced-growth",                  │
-│    "target_allocation": {                                   │
-│      "BTC": 0.40,                                           │
-│      "ETH": 0.30,                                           │
-│      "USDC": 0.30                                           │
-│    }                                                        │
-│  }                                                          │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Phase 2: Rebalancing Plan Generation (Deterministic)       │
-│                                                             │
-│  PortfolioRebalancer:                                       │
-│  1. Calculate allocation deltas                             │
-│  2. Filter insignificant deviations                         │
-│  3. Generate ordered trade sequence:                        │
-│     a. Close/reduce overweight positions (frees capital)    │
-│     b. Open/increase underweight positions (uses capital)   │
-│  4. Respect minimum trade sizes                             │
-│  5. Handle capital constraints                              │
-│                                                             │
-│  Output: Ordered list of TradeAction objects                │
-└─────────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Phase 3: Trade Execution                                    │
-│                                                             │
-│  TradeExecutor submits orders to Hyperliquid               │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Phase1["Phase 1: Strategy Selection & Target Allocation<br/><br/>LLM analyzes:<br/>• Current portfolio state<br/>• Market conditions<br/>• Available strategies<br/><br/>LLM outputs:<br/>• Selected strategy ID<br/>• Target allocation (% per asset)"]
+    
+    Phase2["Phase 2: Rebalancing Plan Generation<br/>(Deterministic)<br/><br/>PortfolioRebalancer:<br/>1. Calculate allocation deltas<br/>2. Filter insignificant deviations<br/>3. Generate ordered trade sequence:<br/>   a. Close/reduce overweight<br/>   b. Open/increase underweight<br/>4. Respect minimum trade sizes<br/>5. Handle capital constraints<br/><br/>Output: Ordered list of TradeAction objects"]
+    
+    Phase3["Phase 3: Trade Execution<br/><br/>TradeExecutor submits orders to Hyperliquid"]
+    
+    Phase1 --> Phase2
+    Phase2 --> Phase3
+    
+    style Phase1 fill:#e1f5ff
+    style Phase2 fill:#e1ffe1
+    style Phase3 fill:#ffe1f5
 ```
 
 ## Key Components
