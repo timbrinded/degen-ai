@@ -1,0 +1,85 @@
+{
+  "active_plan": {
+    "plan_id": "plan_20251110_202609",
+    "strategy_name": "dca-hedge",
+    "strategy_version": "1.0",
+    "created_at": "2025-11-10T20:26:09.045556",
+    "objective": "Accumulate ETH spot over days with minimal leverage while capping drawdowns via a conditional, small perp hedge during elevated volatility or negative drift.",
+    "target_holding_period_hours": 72,
+    "time_horizon": "days",
+    "key_thesis": "ETH remains a core asset to accumulate; using scheduled spot buys reduces timing risk. When volatility elevates or drift turns negative, a small short-perp hedge (20\u201340% beta of spot) reduces downside without flipping net short.",
+    "target_allocations": [
+      {
+        "coin": "ETH",
+        "target_pct": 50.0,
+        "market_type": "spot",
+        "leverage": 1.0
+      },
+      {
+        "coin": "USDC",
+        "target_pct": 50.0,
+        "market_type": "spot",
+        "leverage": 1.0
+      },
+      {
+        "coin": "ETH",
+        "target_pct": 0.0,
+        "market_type": "perp",
+        "leverage": 1.0
+      }
+    ],
+    "allowed_leverage_range": [
+      1.0,
+      1.0
+    ],
+    "risk_budget": {
+      "max_position_pct": {
+        "UETH": 60.0,
+        "ETH": 25.0,
+        "USDC": 100.0
+      },
+      "max_leverage": 1.0,
+      "max_adverse_excursion_pct": 8.0,
+      "plan_max_drawdown_pct": 12.0,
+      "per_trade_risk_pct": 1.0
+    },
+    "exit_rules": {
+      "profit_target_pct": null,
+      "stop_loss_pct": null,
+      "time_based_review_hours": 24,
+      "invalidation_triggers": [
+        "Plan drawdown from peak exceeds 12%",
+        "Hedge on while realized funding cost exceeds 20 bps/day for >= 2 consecutive windows",
+        "Volatility regime flip: ATR% p90 and price < 20D MA by >1.0\u03c3 for >= 2 days without stabilization",
+        "Exchange/mark-index anomalies or liquidity deterioration"
+      ]
+    },
+    "change_cost": {
+      "estimated_fees_bps": 10.0,
+      "estimated_slippage_bps": 5.0,
+      "estimated_funding_change_bps": 2.0,
+      "opportunity_cost_bps": 5.0
+    },
+    "expected_edge_bps": 100.0,
+    "kpis_to_track": [
+      "Net PnL per unit risk",
+      "Spot accumulated vs schedule",
+      "Drawdown vs plan cap",
+      "Net funding (hedge) vs estimate",
+      "Slippage vs estimate"
+    ],
+    "minimum_dwell_minutes": 1440,
+    "compatible_regimes": [
+      "range-bound",
+      "carry-friendly",
+      "trending"
+    ],
+    "avoid_regimes": [],
+    "status": "active",
+    "activated_at": "2025-11-10T20:24:05.267850",
+    "last_reviewed_at": null,
+    "rebalance_progress_pct": 0.0
+  },
+  "last_change_at": "2025-11-10T20:24:05.267850",
+  "rebalance_schedule": null
+}

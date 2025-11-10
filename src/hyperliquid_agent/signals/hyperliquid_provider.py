@@ -142,6 +142,17 @@ class HyperliquidProvider(DataProvider):
         """
         if self.registry and self.registry.is_ready:
             asset_info = self.registry.get_asset_info(coin)
+
+            # Try resolving via registry alias mapping (handles symbols like "UETH")
+            if not asset_info:
+                resolved = self.registry.resolve_symbol(coin)
+                if resolved:
+                    asset_info = self.registry.get_asset_info(resolved[0])
+
+            # Fallback: strip leading "U" if present (Hyperliquid spot prefix)
+            if not asset_info and coin.upper().startswith("U") and len(coin) > 1:
+                asset_info = self.registry.get_asset_info(coin[1:])
+
             if not asset_info:
                 raise ValueError(f"Unknown symbol: {coin}. Not found in market registry.")
 

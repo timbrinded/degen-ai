@@ -67,12 +67,21 @@ class TargetAllocationSchema(BaseModel):
     leverage: float = 1.0
 
 
+class MaxPositionLimitSchema(BaseModel):
+    """Schema describing a single per-asset max position limit."""
+
+    model_config = {"extra": "forbid"}
+
+    coin: str
+    max_pct: float
+
+
 class RiskBudgetSchema(BaseModel):
     """Schema describing the plan risk budget."""
 
     model_config = {"extra": "forbid"}
 
-    max_position_pct: dict[str, float]
+    max_position_pct: list[MaxPositionLimitSchema]
     max_leverage: float
     max_adverse_excursion_pct: float
     plan_max_drawdown_pct: float
@@ -113,7 +122,11 @@ class StrategyPlanSchema(BaseModel):
     time_horizon: Literal["minutes", "hours", "days"]
     key_thesis: str
     target_allocations: list[TargetAllocationSchema]
-    allowed_leverage_range: tuple[float, float]
+    allowed_leverage_range: list[float] = Field(
+        default_factory=lambda: [1.0, 1.0],
+        min_length=2,
+        max_length=2,
+    )
     risk_budget: RiskBudgetSchema
     exit_rules: ExitRulesSchema
     change_cost: ChangeCostSchema
@@ -1114,8 +1127,21 @@ Status: {active_plan.status}
 
         # Parse risk budget
         risk_budget_data = plan_data.get("risk_budget", {})
+        max_position_limits: dict[str, float] = {}
+        raw_limits = risk_budget_data.get("max_position_pct", {})
+        if isinstance(raw_limits, dict):
+            max_position_limits = {str(k): float(v) for k, v in raw_limits.items() if v is not None}
+        elif isinstance(raw_limits, list):
+            for entry in raw_limits:
+                if not isinstance(entry, dict):
+                    continue
+                coin = entry.get("coin")
+                max_pct = entry.get("max_pct")
+                if coin and max_pct is not None:
+                    max_position_limits[str(coin)] = float(max_pct)
+
         risk_budget = RiskBudget(
-            max_position_pct=risk_budget_data.get("max_position_pct", {}),
+            max_position_pct=max_position_limits,
             max_leverage=float(risk_budget_data.get("max_leverage", 2.0)),
             max_adverse_excursion_pct=float(
                 risk_budget_data.get("max_adverse_excursion_pct", 10.0)
