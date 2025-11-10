@@ -4,6 +4,7 @@ This test suite verifies that size rounding works correctly for both spot and pe
 with different sz_decimals values and edge cases.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -62,7 +63,18 @@ def mock_registry_with_decimals():
         return decimals_config.get((coin, market_type), 4)
 
     registry.get_sz_decimals.side_effect = get_sz_decimals
-    registry.get_market_name.side_effect = lambda coin, market_type: f"{coin}/{market_type}"
+
+    def get_market_name(coin, market_type):
+        return coin if market_type == "perp" else f"{coin}/USDC"
+
+    registry.get_market_name.side_effect = get_market_name
+    registry.get_spot_market_info.side_effect = (
+        lambda symbol, quote="USDC", market_identifier=None: SimpleNamespace(
+            market_name=f"{symbol}/{quote.upper()}",
+            quote_symbol=quote.upper(),
+            aliases=[f"{symbol}/{quote.upper()}"],
+        )
+    )
 
     return registry
 

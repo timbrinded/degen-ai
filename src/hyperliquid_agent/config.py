@@ -14,6 +14,9 @@ class RiskConfig:
     target_initial_margin_ratio: float = 1.25
     min_perp_balance_usd: float = 1000.0
     target_spot_usdc_buffer_usd: float = 0.0
+    perp_min_notional_usd: float = 10.0
+    spot_min_notional_quote: float = 10.0
+    spot_quote_notional_overrides: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -253,11 +256,18 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
 
     # Parse risk controls (optional)
     risk_data = data.get("risk", {})
+    overrides = risk_data.get("spot_quote_notional_overrides") or {}
+    if overrides and not isinstance(overrides, dict):
+        raise ValueError("[risk].spot_quote_notional_overrides must be a table of quote -> amount")
+
     risk_config = RiskConfig(
         enable_auto_transfers=bool(risk_data.get("enable_auto_transfers", True)),
         target_initial_margin_ratio=float(risk_data.get("target_initial_margin_ratio", 1.25)),
         min_perp_balance_usd=float(risk_data.get("min_perp_balance_usd", 1000.0)),
         target_spot_usdc_buffer_usd=float(risk_data.get("target_spot_usdc_buffer_usd", 0.0)),
+        perp_min_notional_usd=float(risk_data.get("perp_min_notional_usd", 10.0)),
+        spot_min_notional_quote=float(risk_data.get("spot_min_notional_quote", 10.0)),
+        spot_quote_notional_overrides={k.upper(): float(v) for k, v in overrides.items()},
     )
 
     # Parse Governance config (optional)

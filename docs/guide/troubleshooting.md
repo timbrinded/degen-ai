@@ -411,13 +411,13 @@ Order size must be positive
 **Solutions:**
 
 **Check Minimum Notional:**
-- Hyperliquid requires minimum $5 USDC notional value
-- Example: BTC at $50,000 requires minimum 0.0001 BTC
+- Hyperliquid requires minimum $10 USDC notional value on perps (10 quote units on spot)
+- Example: BTC at $50,000 requires minimum 0.0002 BTC
 
 **Verify Size Calculation:**
 ```python
 # Ensure size is positive and meets minimum
-min_size = 5.0 / current_price  # $5 minimum
+min_size = 10.0 / current_price  # $10 minimum
 size = max(calculated_size, min_size)
 ```
 
@@ -533,7 +533,7 @@ Reason: Price too far from mark
 
 **Invalid Size:**
 - Size doesn't meet `szDecimals` requirement
-- Size below minimum notional ($5 USDC)
+- Size below minimum notional ($10 USDC for perps)
 
 **Market Closed:**
 - Some markets have trading hours
@@ -1066,4 +1066,3 @@ Order ID: 12345678
 - [CLI Reference](/guide/cli-reference) - Command-line interface
 - [Deployment Guide](/guide/deployment) - Production deployment
 - [Architecture Overview](/architecture/overview) - System architecture
-

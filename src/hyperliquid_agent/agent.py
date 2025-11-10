@@ -215,6 +215,7 @@ class TradingAgent:
             config.hyperliquid,
             self.registry,
             identity_registry=self.identity_registry,
+            risk_config=config.risk,
         )
 
         # Initialize portfolio rebalancer

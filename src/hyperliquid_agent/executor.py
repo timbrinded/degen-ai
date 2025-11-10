@@ -12,8 +12,9 @@ from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
 
 from hyperliquid_agent.asset_identity import AssetIdentity
-from hyperliquid_agent.config import HyperliquidConfig
+from hyperliquid_agent.config import HyperliquidConfig, RiskConfig
 from hyperliquid_agent.decision import TradeAction
+from hyperliquid_agent.exchange_limits import NotionalConstraints
 from hyperliquid_agent.identity_registry import AssetIdentityRegistry
 from hyperliquid_agent.market_registry import MarketRegistry
 
@@ -31,14 +32,13 @@ class ExecutionResult:
 class TradeExecutor:
     """Executes trades on Hyperliquid platform."""
 
-    MIN_NOTIONAL_USDC = Decimal("5")
-
     def __init__(
         self,
         config: HyperliquidConfig,
         registry: MarketRegistry,
         *,
         identity_registry: AssetIdentityRegistry | None = None,
+        risk_config: RiskConfig | None = None,
     ) -> None:
         """Initialize the trade executor.
 
@@ -50,6 +50,7 @@ class TradeExecutor:
         self.config = config
         self.registry = registry
         self.identity_registry = identity_registry
+        self.notional_constraints = NotionalConstraints.from_risk_config(risk_config)
         account: LocalAccount = eth_account.Account.from_key(config.secret_key)  # type: ignore[misc]
 
         # Initialize Info first to get spot metadata
@@ -202,19 +203,32 @@ class TradeExecutor:
             self.logger.warning(f"Failed to round size for {coin}, using original value: {e}")
             return size
 
-    def _get_reference_price(self, coin: str, market_type: str, market_name: str) -> Decimal:
+    def _get_reference_price(
+        self,
+        coin: str,
+        market_type: str,
+        market_name: str,
+        *,
+        is_buy: bool | None = None,
+    ) -> Decimal:
         try:
             if market_type == "spot":
-                return self._spot_reference_price(coin, market_name)
+                return self._spot_reference_price(coin, market_name, is_buy=is_buy)
 
-            return self._perp_reference_price(coin)
+            return self._perp_reference_price(coin, is_buy=is_buy)
 
         except Exception as exc:
             raise ValueError(
                 f"Unable to determine reference price for {coin} ({market_type})"
             ) from exc
 
-    def _spot_reference_price(self, coin: str, market_name: str) -> Decimal:
+    def _spot_reference_price(
+        self,
+        coin: str,
+        market_name: str,
+        *,
+        is_buy: bool | None = None,
+    ) -> Decimal:
         identifier_candidates: set[str] = {market_name.upper()}
 
         try:
@@ -245,7 +259,7 @@ class TradeExecutor:
         }
 
         for identifier in identifier_candidates:
-            price = self._ctx_price(ctx_lookup.get(identifier))
+            price = self._ctx_price(ctx_lookup.get(identifier), is_buy=is_buy)
             if price is not None:
                 return price
 
@@ -258,7 +272,7 @@ class TradeExecutor:
         )
         raise ValueError(f"Spot reference price not found for market {market_name}")
 
-    def _perp_reference_price(self, coin: str) -> Decimal:
+    def _perp_reference_price(self, coin: str, *, is_buy: bool | None = None) -> Decimal:
         meta, perp_ctxs = self.info.meta_and_asset_ctxs()
         universe = meta.get("universe", [])
 
@@ -266,7 +280,7 @@ class TradeExecutor:
             if asset.get("name") != coin:
                 continue
 
-            price = self._ctx_price(ctx)
+            price = self._ctx_price(ctx, is_buy=is_buy)
             if price is not None:
                 return price
             break
@@ -274,22 +288,41 @@ class TradeExecutor:
         raise ValueError(f"Perp reference price not found for coin {coin}")
 
     @staticmethod
-    def _ctx_price(ctx: Mapping[str, Any] | None) -> Decimal | None:
+    def _ctx_price(
+        ctx: Mapping[str, Any] | None,
+        *,
+        is_buy: bool | None = None,
+    ) -> Decimal | None:
         if not ctx:
             return None
 
-        for key in ("markPx", "midPx"):
+        if is_buy is True:
+            price_keys = ("askPx", "markPx", "midPx", "oraclePx", "lastPx")
+        elif is_buy is False:
+            price_keys = ("bidPx", "markPx", "midPx", "oraclePx", "lastPx")
+        else:
+            price_keys = ("markPx", "midPx", "bidPx", "askPx", "oraclePx", "lastPx")
+
+        for key in price_keys:
             price_str = ctx.get(key)
             if not price_str:
                 continue
-            price = Decimal(price_str)
+            try:
+                price = Decimal(str(price_str))
+            except (ArithmeticError, ValueError):
+                continue
             if price > 0:
                 return price
 
         return None
 
     def _ensure_min_notional(
-        self, size: float, reference_price: Decimal, coin: str, market_type: str
+        self,
+        size: float,
+        reference_price: Decimal,
+        coin: str,
+        market_type: str,
+        quote_symbol: str | None,
     ) -> float:
         if reference_price <= 0:
             raise ValueError(f"Invalid reference price {reference_price} for {coin}")
@@ -297,13 +330,15 @@ class TradeExecutor:
         size_decimal = Decimal(str(size))
         notional = size_decimal * reference_price
 
-        if notional >= self.MIN_NOTIONAL_USDC:
+        min_notional = self._min_notional_requirement(market_type, quote_symbol)
+
+        if notional >= min_notional:
             return size
 
         sz_decimals = self.registry.get_sz_decimals(coin, market_type)  # type: ignore
         quantizer = Decimal(10) ** -sz_decimals
 
-        min_size = (self.MIN_NOTIONAL_USDC / reference_price).quantize(quantizer, rounding=ROUND_UP)
+        min_size = (min_notional / reference_price).quantize(quantizer, rounding=ROUND_UP)
 
         adjusted_size = max(min_size, size_decimal).quantize(quantizer, rounding=ROUND_UP)
 
@@ -312,14 +347,47 @@ class TradeExecutor:
 
         if adjusted_size != size_decimal:
             self.logger.info(
-                "Adjusted %s order size from %s to %s to satisfy %s USDC minimum notional",
+                "Adjusted %s order size from %s to %s to satisfy %s minimum notional",
                 market_type,
                 size_decimal,
                 adjusted_size,
-                self.MIN_NOTIONAL_USDC,
+                self._format_min_notional(market_type, quote_symbol),
             )
 
         return float(adjusted_size)
+
+    def _min_notional_requirement(self, market_type: str, quote_symbol: str | None) -> Decimal:
+        if market_type == "perp":
+            return self.notional_constraints.perp_minimum
+        return self.notional_constraints.spot_minimum(quote_symbol)
+
+    def _format_min_notional(self, market_type: str, quote_symbol: str | None) -> str:
+        if market_type == "perp":
+            return f"{self.notional_constraints.perp_minimum} USDC"
+
+        symbol = (quote_symbol or "quote").upper()
+        value = self.notional_constraints.spot_minimum(symbol)
+        return f"{value} {symbol}"
+
+    def _spot_quote_symbol(self, action: TradeAction, market_name: str) -> str | None:
+        if action.market_type != "spot":
+            return None
+
+        if "/" in market_name:
+            return market_name.rsplit("/", 1)[-1].upper()
+
+        if action.native_symbol and "/" in action.native_symbol:
+            return action.native_symbol.rsplit("/", 1)[-1].upper()
+
+        if hasattr(self.registry, "get_spot_market_info"):
+            try:
+                spot_info = self.registry.get_spot_market_info(action.coin)
+                if getattr(spot_info, "quote_symbol", None):
+                    return spot_info.quote_symbol.upper()
+            except Exception:  # pragma: no cover - registry lookups may fail in mocks
+                pass
+
+        return "USDC"
 
     def _get_market_name(
         self,
@@ -402,32 +470,46 @@ class TradeExecutor:
             market_name,
         )
 
+        quote_symbol = self._spot_quote_symbol(action, market_name)
+
         if action.action_type == "close":
-            return self._submit_close_order(action, market_name, is_buy)
+            return self._submit_close_order(action, market_name, is_buy, quote_symbol)
 
         size = self._require_size(action.size, action.action_type)
         rounded_size = self._round_size(size, action.coin, action.market_type)
-        reference_price = self._reference_price_for(action, market_name)
-        adjusted_size, _ = self._apply_min_notional(action, rounded_size, reference_price)
+        reference_price = self._reference_price_for(action, market_name, is_buy=is_buy)
+        adjusted_size, _ = self._apply_min_notional(
+            action,
+            rounded_size,
+            reference_price,
+            quote_symbol,
+        )
 
         if action.price is None:
             return self._submit_market_order(action, market_name, is_buy, adjusted_size)
 
         return self._submit_limit_order(action, market_name, is_buy, adjusted_size)
 
-    def _submit_close_order(self, action: TradeAction, market_name: str, is_buy: bool) -> dict:
+    def _submit_close_order(
+        self,
+        action: TradeAction,
+        market_name: str,
+        is_buy: bool,
+        quote_symbol: str | None,
+    ) -> dict:
         size = self._require_size(action.size, "close")
         rounded_size = self._round_size(size, action.coin, action.market_type)
-        reference_price = self._reference_price_for(action, market_name)
+        reference_price = self._reference_price_for(action, market_name, is_buy=is_buy)
         adjusted_size, min_enforced = self._apply_min_notional(
             action,
             rounded_size,
             reference_price,
+            quote_symbol,
         )
 
         if min_enforced and action.market_type == "spot":
             raise ValueError(
-                f"Cannot close {action.coin} spot position below {self.MIN_NOTIONAL_USDC} USDC notional"
+                f"Cannot close {action.coin} spot position below {self._format_min_notional(action.market_type, quote_symbol)} notional"
             )
 
         if min_enforced and action.market_type == "perp":
@@ -489,19 +571,35 @@ class TradeExecutor:
             raise ValueError(f"Size must be specified for {label} action")
         return size
 
-    def _reference_price_for(self, action: TradeAction, market_name: str) -> Decimal:
+    def _reference_price_for(
+        self,
+        action: TradeAction,
+        market_name: str,
+        *,
+        is_buy: bool | None = None,
+    ) -> Decimal:
         if action.price is not None:
             return Decimal(str(action.price))
-        return self._get_reference_price(action.coin, action.market_type, market_name)
+        return self._get_reference_price(
+            action.coin,
+            action.market_type,
+            market_name,
+            is_buy=is_buy,
+        )
 
     def _apply_min_notional(
-        self, action: TradeAction, size: float, reference_price: Decimal
+        self,
+        action: TradeAction,
+        size: float,
+        reference_price: Decimal,
+        quote_symbol: str | None,
     ) -> tuple[float, bool]:
         adjusted = self._ensure_min_notional(
             size,
             reference_price,
             action.coin,
             action.market_type,
+            quote_symbol,
         )
 
         changed = Decimal(str(adjusted)) > Decimal(str(size))
