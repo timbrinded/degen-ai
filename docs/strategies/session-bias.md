@@ -2,6 +2,25 @@
 
 A time-based strategy that exploits repeatable intraday session patterns by trading assets that show consistent directional drift during specific time windows.
 
+## Visual Overview
+
+```mermaid
+graph LR
+    A[Analyze Sessions] --> B{Session Has<br/>Positive Edge?}
+    B -->|Yes| C[Enter at<br/>Session Start]
+    C --> D{During Session}
+    D -->|Session End| E[Exit Position]
+    D -->|News Event| E
+    D -->|High Volatility| E
+    D -->|Stop Loss| E
+    
+    style A fill:#e1f5ff
+    style C fill:#e1ffe1
+    style E fill:#ffe1f5
+```
+
+**Key Concept:** Trade specific time windows (e.g., Asian session, US open) that show statistically repeatable directional drift.
+
 ## Strategy Logic
 
 ### Overview

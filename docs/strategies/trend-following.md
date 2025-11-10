@@ -1,6 +1,26 @@
-# Slowrider Trend
+# Trend Following
 
 A patient trend-following strategy that captures sustained directional moves in crypto perpetual futures.
+
+## Visual Overview
+
+```mermaid
+graph LR
+    A[Identify Trend] --> B{Price Above/Below<br/>Key MAs?}
+    B -->|Yes| C[Wait for Pullback]
+    C --> D{Support/Resistance<br/>Touch?}
+    D -->|Yes| E[Enter Position]
+    E --> F{Exit Signal?}
+    F -->|MA Crossover| G[Exit]
+    F -->|Trail Stop Hit| G
+    F -->|Target Reached| G
+    
+    style A fill:#e1f5ff
+    style E fill:#e1ffe1
+    style G fill:#ffe1f5
+```
+
+**Key Concept:** Ride established trends by entering on pullbacks to moving averages, hold until trend reverses.
 
 ## Strategy Logic
 

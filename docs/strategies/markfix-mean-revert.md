@@ -2,6 +2,27 @@
 
 A basis arbitrage strategy that fades sustained mark-index price dislocations in perpetual futures, capturing convergence as the gap closes.
 
+## Visual Overview
+
+```mermaid
+graph LR
+    A[Monitor Mark-Index Gap] --> B{Gap > 20bps<br/>for 3+ min?}
+    B -->|Perp Above Index| C[Short Perp]
+    B -->|Perp Below Index| D[Long Perp]
+    C --> E{Exit Signal?}
+    D --> E
+    E -->|Gap Closes to 5bps| F[Exit]
+    E -->|Gap Widens 2x| F
+    E -->|20min Timeout| F
+    
+    style A fill:#e1f5ff
+    style C fill:#ffe1f5
+    style D fill:#e1ffe1
+    style F fill:#ffd4e1
+```
+
+**Key Concept:** When perp and spot prices diverge significantly, fade the gap expecting convergence to index price.
+
 ## Strategy Logic
 
 ### Overview

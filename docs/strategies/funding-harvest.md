@@ -2,6 +2,27 @@
 
 A low-risk strategy that captures funding rate arbitrage opportunities on Hyperliquid perpetual futures.
 
+## Visual Overview
+
+```mermaid
+graph LR
+    A[Monitor Funding] --> B{Rate Extreme?<br/>> ±0.01%}
+    B -->|High Positive| C[Short Position<br/>Collect Funding]
+    B -->|High Negative| D[Long Position<br/>Collect Funding]
+    C --> E{Exit Trigger?}
+    D --> E
+    E -->|Rate Normalizes| F[Exit]
+    E -->|Loss > 2x Income| F
+    E -->|7 Days Elapsed| F
+    
+    style A fill:#e1f5ff
+    style C fill:#ffe1f5
+    style D fill:#e1ffe1
+    style F fill:#ffd4e1
+```
+
+**Key Concept:** Earn funding payments by taking the opposite side when rates are extreme, exit when rates normalize.
+
 ## Strategy Logic
 
 ### Overview

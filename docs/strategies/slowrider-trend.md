@@ -2,6 +2,26 @@
 
 A patient trend-following strategy that captures sustained directional moves using time-series momentum with ATR-based risk management.
 
+## Visual Overview
+
+```mermaid
+graph LR
+    A[Detect Trend] --> B{EMA21 > EMA55?<br/>ADX > 20?}
+    B -->|Yes| C[Wait for Pullback]
+    C --> D{Price Touches<br/>21 EMA?}
+    D -->|Yes| E[Enter Long]
+    E --> F{Exit Signal?}
+    F -->|EMA Crossover| G[Exit]
+    F -->|3x ATR Trail Hit| G
+    F -->|ADX < 20| G
+    
+    style A fill:#e1f5ff
+    style E fill:#e1ffe1
+    style G fill:#ffe1f5
+```
+
+**Key Concept:** Ride established trends by entering on pullbacks to moving averages, exit when trend weakens.
+
 ## Strategy Logic
 
 ### Overview

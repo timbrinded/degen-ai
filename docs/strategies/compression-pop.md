@@ -2,6 +2,30 @@
 
 A breakout strategy that trades volatility expansion after tight consolidation periods, capturing explosive moves when price breaks out of compression zones.
 
+## Visual Overview
+
+```mermaid
+graph LR
+    A[Detect Tight Range] --> B{ATR Declining?<br/>Volume Dry-Up?}
+    B -->|Yes| C[Wait for Breakout]
+    C --> D{Price > Box High<br/>+ Volume Surge?}
+    D -->|Yes| E[Enter Long]
+    D -->|No| F{Price < Box Low<br/>+ Volume Surge?}
+    F -->|Yes| G[Enter Short]
+    E --> H{Exit Signal?}
+    G --> H
+    H -->|Back Inside Box| I[Exit]
+    H -->|Trailing Stop| I
+    H -->|90min Timeout| I
+    
+    style A fill:#e1f5ff
+    style E fill:#e1ffe1
+    style G fill:#ffe1f5
+    style I fill:#ffd4e1
+```
+
+**Key Concept:** Tight consolidation → Volume dries up → Explosive breakout with volume confirmation.
+
 ## Strategy Logic
 
 ### Overview

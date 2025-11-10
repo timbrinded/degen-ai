@@ -2,6 +2,23 @@
 
 A timing-based strategy that exploits predictable trader behavior around funding rate accrual windows, capturing de-risking patterns before and after funding payments.
 
+## Visual Overview
+
+```mermaid
+graph LR
+    A[Monitor Funding<br/>Window] --> B{High Funding +<br/>OI Roll-off?}
+    B -->|Yes| C[Enter 30-90min<br/>Before Window]
+    C --> D[Funding Payment<br/>Occurs]
+    D --> E[Exit 15-45min<br/>After Window]
+    
+    style A fill:#e1f5ff
+    style C fill:#e1ffe1
+    style D fill:#fff4e1
+    style E fill:#ffe1f5
+```
+
+**Key Concept:** Traders de-risk before funding payments to avoid fees, then re-enter after – capture this predictable flow.
+
 ## Strategy Logic
 
 ### Overview
