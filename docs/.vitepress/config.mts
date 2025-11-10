@@ -80,7 +80,7 @@ export default withMermaid(defineConfig({
     },
 
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/yourusername/hyperliquid-trading-agent' }
+      { icon: 'github', link: 'https://github.com/timbrinded/degen-ai' }
     ]
   }
 }))

@@ -11,7 +11,7 @@
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/hyperliquid-trading-agent.git
+git clone https://github.com/timbrinded/degen-ai.git
 cd hyperliquid-trading-agent
 ```
 
