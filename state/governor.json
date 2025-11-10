@@ -17,7 +17,7 @@
       },
       {
         "coin": "ETH",
-        "target_pct": 5.0,
+        "target_pct": 15.0,
         "market_type": "perp",
         "leverage": 1.0
       },
