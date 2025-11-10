@@ -56,19 +56,84 @@ class DecisionSchema(BaseModel):
     error_reason: str | None = None
 
 
-class GovernanceDecisionSchema(BaseModel):
-    """Schema for governance-aware LLM decision using structured outputs.
+class TargetAllocationSchema(BaseModel):
+    """Schema describing a target allocation row inside a plan card."""
 
-    Note: proposed_plan is intentionally omitted from this schema because OpenAI's
-    structured output API cannot handle bare dict types. The proposed_plan will be
-    extracted from the raw response during parsing if maintain_plan is False.
-    """
+    model_config = {"extra": "forbid"}
+
+    coin: str
+    target_pct: float
+    market_type: Literal["spot", "perp"] = "perp"
+    leverage: float = 1.0
+
+
+class RiskBudgetSchema(BaseModel):
+    """Schema describing the plan risk budget."""
+
+    model_config = {"extra": "forbid"}
+
+    max_position_pct: dict[str, float]
+    max_leverage: float
+    max_adverse_excursion_pct: float
+    plan_max_drawdown_pct: float
+    per_trade_risk_pct: float
+
+
+class ExitRulesSchema(BaseModel):
+    """Schema describing exit and review rules."""
+
+    model_config = {"extra": "forbid"}
+
+    profit_target_pct: float | None = None
+    stop_loss_pct: float | None = None
+    time_based_review_hours: int
+    invalidation_triggers: list[str]
+
+
+class ChangeCostSchema(BaseModel):
+    """Schema describing estimated switching costs."""
+
+    model_config = {"extra": "forbid"}
+
+    estimated_fees_bps: float
+    estimated_slippage_bps: float
+    estimated_funding_change_bps: float
+    opportunity_cost_bps: float
+
+
+class StrategyPlanSchema(BaseModel):
+    """Schema describing a full strategy plan card proposal."""
+
+    model_config = {"extra": "forbid"}
+
+    strategy_name: str
+    strategy_version: str
+    objective: str
+    target_holding_period_hours: int
+    time_horizon: Literal["minutes", "hours", "days"]
+    key_thesis: str
+    target_allocations: list[TargetAllocationSchema]
+    allowed_leverage_range: tuple[float, float]
+    risk_budget: RiskBudgetSchema
+    exit_rules: ExitRulesSchema
+    change_cost: ChangeCostSchema
+    expected_edge_bps: float
+    kpis_to_track: list[str]
+    minimum_dwell_minutes: int
+    compatible_regimes: list[str]
+    avoid_regimes: list[str]
+    status: Literal["active", "rebalancing", "invalidated", "completed"] = "active"
+
+
+class GovernanceDecisionSchema(BaseModel):
+    """Schema for governance-aware LLM decision using structured outputs."""
 
     model_config = {"extra": "forbid"}
 
     maintain_plan: bool = True
     reasoning: str = ""
     micro_adjustments: list[TradeActionSchema] | None = None
+    proposed_plan: StrategyPlanSchema | None = None
 
 
 @dataclass
