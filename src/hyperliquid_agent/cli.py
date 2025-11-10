@@ -466,7 +466,7 @@ def test_executor(
     registry = MarketRegistry(info)
     asyncio.run(registry.hydrate())
 
-    executor = TradeExecutor(cfg.hyperliquid, registry)
+    executor = TradeExecutor(cfg.hyperliquid, registry, risk_config=cfg.risk)
 
     # Create test action
     action = TradeAction(

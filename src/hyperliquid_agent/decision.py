@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TextIO, cast
 
 import frontmatter
 from pydantic import BaseModel, Field
@@ -17,6 +17,17 @@ from hyperliquid_agent.monitor import AccountState, Position
 
 if TYPE_CHECKING:
     from hyperliquid_agent.governance.plan_card import StrategyPlanCard
+
+
+class FrontmatterPost(Protocol):
+    metadata: dict[str, Any]
+    content: str
+
+
+@dataclass
+class ParsedFrontmatter:
+    metadata: dict[str, Any]
+    content: str
 
 
 # Pydantic models for structured outputs
@@ -108,6 +119,30 @@ class GovernanceDecisionResult:
     cost_usd: float = 0.0
 
 
+def _load_strategy_post(file_obj: TextIO) -> FrontmatterPost:
+    """Load frontmatter post with compatibility fallbacks."""
+
+    load_fn = getattr(frontmatter, "load", None)
+    if callable(load_fn):
+        return cast(FrontmatterPost, load_fn(file_obj))
+
+    fm_parser = getattr(frontmatter, "Frontmatter", None)
+    file_obj.seek(0)
+    text = file_obj.read()
+    metadata: dict[str, Any] = {}
+    content = text
+
+    if fm_parser is not None:
+        try:
+            parsed = fm_parser.read(text)
+            metadata = parsed.get("attributes") or {}
+            content = parsed.get("body") or ""
+        except Exception:
+            content = text
+
+    return ParsedFrontmatter(metadata=metadata, content=content)
+
+
 class PromptTemplate:
     """Manages prompt template and strategy loading."""
 
@@ -143,7 +178,7 @@ class PromptTemplate:
         for md_file in sorted(strategy_path.glob("*.md")):
             try:
                 with open(md_file) as f:
-                    post = frontmatter.load(f)
+                    post = _load_strategy_post(f)
                     # Include all strategies found in the directory
                     strategies.append({"metadata": post.metadata, "content": post.content})
             except Exception:

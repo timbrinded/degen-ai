@@ -115,7 +115,10 @@ class GovernedTradingAgent:
 
         # Initialize executor with registry
         self.executor = TradeExecutor(
-            config.hyperliquid, self.registry, identity_registry=self.identity_registry
+            config.hyperliquid,
+            self.registry,
+            identity_registry=self.identity_registry,
+            risk_config=config.risk,
         )
 
         # Initialize governance components with logger

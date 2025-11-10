@@ -26,6 +26,7 @@ class SpotMarketInfo:
         quote_token_idx: Index of quote token in spot metadata
         sz_decimals: Number of decimals for size precision
         px_decimals: Number of decimals for price precision
+        quote_symbol: Human-readable quote currency (e.g., "USDC")
         native_symbol: Exchange-native identifier (e.g., "@1242")
         aliases: Alternate identifiers resolvable by the API client
         lot_size: Minimum order size increment (if available)
@@ -37,6 +38,7 @@ class SpotMarketInfo:
     quote_token_idx: int
     sz_decimals: int
     px_decimals: int
+    quote_symbol: str
     native_symbol: str | None = None
     aliases: list[str] = field(default_factory=list)
     lot_size: Decimal | None = None
@@ -299,6 +301,7 @@ class MarketRegistry:
                 quote_token_idx=quote_token_idx,
                 sz_decimals=sz_decimals_spot,
                 px_decimals=px_decimals_spot,
+                quote_symbol=raw_quote_symbol.upper(),
                 native_symbol=market_name,
                 aliases=unique_aliases,
                 lot_size=lot_size,

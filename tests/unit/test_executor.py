@@ -1,5 +1,6 @@
 """Unit tests for TradeExecutor module."""
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -34,7 +35,13 @@ def mock_registry():
     """Create a mock MarketRegistry."""
     registry = MagicMock()
     registry.is_ready = True
-    registry.get_market_name.side_effect = lambda coin, market_type: coin
+
+    def get_market_name(coin, market_type):
+        if market_type == "perp":
+            return coin
+        return f"{coin}/USDC"
+
+    registry.get_market_name.side_effect = get_market_name
 
     # Return different decimals based on coin
     def get_sz_decimals(coin, market_type):
@@ -42,6 +49,13 @@ def mock_registry():
         return decimals_map.get(coin, 4)
 
     registry.get_sz_decimals.side_effect = get_sz_decimals
+    registry.get_spot_market_info.side_effect = (
+        lambda symbol, quote="USDC", market_identifier=None: SimpleNamespace(
+            market_name=f"{symbol}/{quote.upper()}",
+            quote_symbol=quote.upper(),
+            aliases=[f"{symbol}/{quote.upper()}"],
+        )
+    )
     return registry
 
 
@@ -81,16 +95,28 @@ def configure_mock_info(mock_info, mock_asset_metadata, mock_spot_metadata):
     mock_info.meta_and_asset_ctxs.return_value = (
         mock_asset_metadata,
         [
-            {"markPx": "50000", "midPx": "50000.0"},
-            {"markPx": "3000", "midPx": "3000.0"},
-            {"markPx": "110", "midPx": "110.0"},
+            {"markPx": "50000", "midPx": "50000.0", "bidPx": "49900", "askPx": "50100"},
+            {"markPx": "3000", "midPx": "3000.0", "bidPx": "2990", "askPx": "3010"},
+            {"markPx": "110", "midPx": "110.0", "bidPx": "90", "askPx": "130"},
         ],
     )
     mock_info.spot_meta_and_asset_ctxs.return_value = (
         mock_spot_metadata,
         [
-            {"coin": "ETH/USDC", "markPx": "3000", "midPx": "3000.0"},
-            {"coin": "BTC/USDC", "markPx": "50000", "midPx": "50000.0"},
+            {
+                "coin": "ETH/USDC",
+                "markPx": "3000",
+                "midPx": "3000.0",
+                "bidPx": "2990",
+                "askPx": "3010",
+            },
+            {
+                "coin": "BTC/USDC",
+                "markPx": "50000",
+                "midPx": "50000.0",
+                "bidPx": "49900",
+                "askPx": "50100",
+            },
         ],
     )
 
@@ -401,7 +427,39 @@ def test_market_order_min_notional_adjustment(
 
         mock_exchange.market_open.assert_called_once()
         call_args = mock_exchange.market_open.call_args
-        assert call_args.kwargs["sz"] == pytest.approx(0.0001)
+        assert call_args.kwargs["sz"] == pytest.approx(0.0002)
+
+
+def test_perp_sell_min_notional_uses_bid_price(
+    hyperliquid_config, mock_registry, mock_asset_metadata, mock_spot_metadata
+):
+    """Perp sell orders should size against the bid to satisfy min notional."""
+    mock_exchange = MagicMock()
+    mock_exchange.market_open.return_value = {"status": {"resting": {"oid": "0xbidsell"}}}
+
+    small_sell_action = TradeAction(
+        action_type="sell",
+        coin="SOL",
+        market_type="perp",
+        size=0.01,
+        price=None,
+        reasoning="Respect bidPx for notional",
+    )
+
+    mock_info = configure_mock_info(MagicMock(), mock_asset_metadata, mock_spot_metadata)
+
+    with (
+        patch("hyperliquid_agent.executor.Exchange", return_value=mock_exchange),
+        patch("hyperliquid_agent.executor.Info", return_value=mock_info),
+    ):
+        executor = TradeExecutor(hyperliquid_config, mock_registry)
+        result = executor.execute_action(small_sell_action)
+
+        assert result.success is True
+
+        mock_exchange.market_open.assert_called_once()
+        call_args = mock_exchange.market_open.call_args
+        assert call_args.kwargs["sz"] == pytest.approx(0.12)
 
 
 def test_execute_action_close_position(
@@ -470,7 +528,7 @@ def test_close_order_min_notional_adjustment_perp(
         assert call_args.kwargs["reduce_only"] is True
         assert call_args.kwargs["order_type"] == {"limit": {"tif": "Ioc"}}
         assert call_args.kwargs["is_buy"] is True
-        assert call_args.kwargs["sz"] == pytest.approx(0.05)
+        assert call_args.kwargs["sz"] == pytest.approx(0.08)
         assert call_args.kwargs["limit_px"] == 105.0
 
         mock_exchange.market_open.assert_not_called()
@@ -499,7 +557,7 @@ def test_execute_action_spot_market(
         # Verify sell order was submitted
         mock_exchange.order.assert_called_once()
         call_args = mock_exchange.order.call_args
-        assert call_args.kwargs["name"] == "ETH"
+        assert call_args.kwargs["name"] == "ETH/USDC"
         assert call_args.kwargs["is_buy"] is False  # Sell action
         assert call_args.kwargs["sz"] == 1.5
 
@@ -533,7 +591,7 @@ def test_limit_order_min_notional_adjustment(
 
         mock_exchange.order.assert_called_once()
         call_args = mock_exchange.order.call_args
-        assert call_args.kwargs["sz"] == pytest.approx(0.002)
+        assert call_args.kwargs["sz"] == pytest.approx(0.004)
 
 
 def test_execute_action_api_error(

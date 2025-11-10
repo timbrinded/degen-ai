@@ -15,7 +15,14 @@ class DummyExecutor:
     def _get_market_name(self, coin: str, market_type: str) -> str:
         return f"{coin}/USDC" if market_type == "spot" else coin
 
-    def _get_reference_price(self, coin: str, market_type: str, market_name: str) -> Decimal:
+    def _get_reference_price(
+        self,
+        coin: str,
+        market_type: str,
+        market_name: str,
+        *,
+        is_buy: bool | None = None,
+    ) -> Decimal:
         return Decimal("100")
 
 
