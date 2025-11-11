@@ -168,6 +168,13 @@ class GovernanceConfig:
 
 
 @dataclass
+class ObservabilityConfig:
+    """Observability and tracing configuration."""
+
+    langsmith_api_key: str | None = None
+
+
+@dataclass
 class Config:
     """Complete application configuration."""
 
@@ -177,6 +184,7 @@ class Config:
     risk: RiskConfig = field(default_factory=RiskConfig)
     governance: GovernanceConfig | None = None
     signals: SignalConfig | None = None
+    observability: ObservabilityConfig | None = None
 
 
 def load_config(config_path: str | Path = "config.toml") -> Config:
@@ -398,6 +406,16 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
             cache=cache_config,
         )
 
+    observability_config = None
+    if "observability" in data:
+        obs_data = data["observability"] or {}
+        langsmith_api_key = obs_data.get("langsmith_api_key")
+        if isinstance(langsmith_api_key, str):
+            langsmith_api_key = langsmith_api_key.strip() or None
+        observability_config = ObservabilityConfig(langsmith_api_key=langsmith_api_key)
+        if langsmith_api_key:
+            os.environ["LANGSMITH_API_KEY"] = langsmith_api_key
+
     return Config(
         hyperliquid=hyperliquid_config,
         llm=llm_config,
@@ -405,4 +423,5 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
         risk=risk_config,
         governance=governance_config,
         signals=signal_config,
+        observability=observability_config,
     )

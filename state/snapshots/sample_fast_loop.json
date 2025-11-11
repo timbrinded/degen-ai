@@ -1,0 +1,114 @@
+{
+  "schema": "degen-ai.snapshot.v1",
+  "loop_type": "fast",
+  "captured_at": "2025-01-05T12:00:00+00:00",
+  "account_state": {
+    "portfolio_value": 125000.0,
+    "available_balance": 47000.0,
+    "positions": [
+      {
+        "coin": "BTC",
+        "size": 0.8,
+        "entry_price": 52000.0,
+        "current_price": 52550.0,
+        "unrealized_pnl": 440.0,
+        "market_type": "perp",
+        "timestamp": 1736078400.0,
+        "asset_identity": {
+          "canonical_symbol": "BTC",
+          "perp_symbol": "BTC",
+          "spot_symbol": "BTC",
+          "sector": "layer1"
+        }
+      }
+    ],
+    "timestamp": 1736078400.0,
+    "spot_balances": {
+      "USDC": 32000.0
+    },
+    "account_value": 125000.0,
+    "total_initial_margin": 42000.0,
+    "total_maintenance_margin": 21000.0,
+    "margin_fraction": 0.32,
+    "is_stale": false,
+    "fast_signals": {
+      "spreads": {"BTC": 3.5},
+      "slippage_estimates": {"BTC": 4.0},
+      "short_term_volatility": 0.21,
+      "micro_pnl": 125.0,
+      "partial_fill_rates": {"BTC": 0.94},
+      "order_book_depth": {"BTC": 1800000.0},
+      "api_latency_ms": 120.0,
+      "metadata": {
+        "timestamp": "2025-01-05T11:59:50+00:00",
+        "confidence": 0.92,
+        "staleness_seconds": 5.0,
+        "sources": ["hyperliquid"],
+        "is_cached": false
+      }
+    }
+  },
+  "plan": {
+    "plan_id": "carry-001",
+    "strategy_name": "funding-harvest",
+    "strategy_version": "1.0",
+    "created_at": "2024-12-15T00:00:00+00:00",
+    "objective": "Harvest positive funding",
+    "target_holding_period_hours": 24,
+    "time_horizon": "hours",
+    "key_thesis": "Funding remains positive",
+    "target_allocations": [
+      {"coin": "BTC", "target_pct": 50.0, "market_type": "perp", "leverage": 1.5}
+    ],
+    "allowed_leverage_range": [1.0, 2.0],
+    "risk_budget": {
+      "max_position_pct": {"BTC": 60.0},
+      "max_leverage": 2.0,
+      "max_adverse_excursion_pct": 5.0,
+      "plan_max_drawdown_pct": 10.0,
+      "per_trade_risk_pct": 2.0
+    },
+    "exit_rules": {
+      "profit_target_pct": 10.0,
+      "stop_loss_pct": 5.0,
+      "time_based_review_hours": 24,
+      "invalidation_triggers": ["funding rate drops below 0.005%"]
+    },
+    "change_cost": {
+      "estimated_fees_bps": 10.0,
+      "estimated_slippage_bps": 5.0,
+      "estimated_funding_change_bps": 2.0,
+      "opportunity_cost_bps": 3.0
+    },
+    "expected_edge_bps": 85.0,
+    "kpis_to_track": ["funding_pnl"],
+    "minimum_dwell_minutes": 120,
+    "compatible_regimes": ["carry-friendly"],
+    "avoid_regimes": ["event-risk"],
+    "status": "active",
+    "activated_at": "2024-12-20T00:00:00+00:00",
+    "last_reviewed_at": "2025-01-05T10:30:00+00:00",
+    "rebalance_progress_pct": 100.0
+  },
+  "governance": {
+    "active_plan_id": "carry-001",
+    "plan_status": "active",
+    "rebalance_progress_pct": 100.0,
+    "tripwire_triggers": [],
+    "last_change_at": "2024-12-20T00:00:00+00:00"
+  },
+  "regime": {
+    "current_regime": "carry-friendly",
+    "history_length": 3,
+    "macro_events": [
+      {
+        "name": "FOMC",
+        "impact": "high",
+        "datetime": "2025-01-10T18:00:00+00:00"
+      }
+    ]
+  },
+  "extra": {
+    "tick": 128
+  }
+}

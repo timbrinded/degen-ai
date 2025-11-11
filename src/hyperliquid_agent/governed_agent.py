@@ -5,7 +5,7 @@ import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from hyperliquid.info import Info
 
@@ -36,6 +36,8 @@ from hyperliquid_agent.identity_registry import AssetIdentityRegistry, default_a
 from hyperliquid_agent.market_registry import MarketRegistry
 from hyperliquid_agent.monitor import Position
 from hyperliquid_agent.monitor_enhanced import EnhancedPositionMonitor
+from hyperliquid_agent.observability.langsmith_tracing import loop_span
+from hyperliquid_agent.observability.snapshots import StateSnapshotWriter
 from hyperliquid_agent.price_service import AssetPriceService
 from hyperliquid_agent.signals import EnhancedAccountState, MediumLoopSignals, TechnicalIndicators
 
@@ -76,6 +78,9 @@ class TradingConstants:
 
     # Scorekeeper
     DEFAULT_SLIPPAGE_BPS: float = 5.0
+
+
+LANGGRAPH_BASELINE_PHASE = 0
 
 
 class GovernedTradingAgent:
@@ -153,6 +158,8 @@ class GovernedTradingAgent:
 
         # Trading constants
         self.constants = TradingConstants()
+        self.snapshot_writer = StateSnapshotWriter()
+        self.langgraph_phase = LANGGRAPH_BASELINE_PHASE
 
         # Track which tripwires are currently active to suppress duplicate actions
         self._active_tripwire_triggers: set[str] = set()
@@ -312,6 +319,89 @@ class GovernedTradingAgent:
                 "GovernedTradingAgent.run() cannot be invoked while an event loop is running. "
                 "Use run_async() instead."
             )
+
+    def _loop_metadata(self) -> dict[str, Any]:
+        """Common metadata payload for tracing decorators."""
+
+        plan = self.governor.active_plan
+        return {
+            "plan_id": plan.plan_id if plan else None,
+            "plan_status": plan.status if plan else None,
+            "current_regime": self.regime_detector.current_regime,
+        }
+
+    def _governance_snapshot_meta(self) -> dict[str, Any]:
+        """Serialize governance-relevant state for snapshots."""
+
+        plan = self.governor.active_plan
+        return {
+            "active_plan_id": plan.plan_id if plan else None,
+            "plan_status": plan.status if plan else None,
+            "rebalance_progress_pct": plan.rebalance_progress_pct if plan else None,
+            "tripwire_triggers": sorted(self._active_tripwire_triggers),
+            "last_change_at": self.governor.last_change_at.isoformat()
+            if self.governor.last_change_at
+            else None,
+        }
+
+    def _regime_snapshot_meta(self) -> dict[str, Any]:
+        """Extract lightweight regime detector state."""
+
+        macro_calendar = getattr(self.regime_detector, "macro_calendar", [])
+        regime_history = getattr(self.regime_detector, "regime_history", [])
+        simplified_calendar = []
+        for event in macro_calendar[:3]:
+            event_time = event.get("datetime")
+            simplified_calendar.append(
+                {
+                    "name": event.get("name"),
+                    "impact": event.get("impact"),
+                    "datetime": event_time.isoformat()
+                    if isinstance(event_time, datetime)
+                    else event_time,
+                }
+            )
+
+        return {
+            "current_regime": self.regime_detector.current_regime,
+            "history_length": len(regime_history),
+            "macro_events": simplified_calendar,
+        }
+
+    def _capture_snapshot(
+        self, loop_type: str, account_state: EnhancedAccountState | None
+    ) -> str | None:
+        """Persist a sanitized snapshot if account_state exists."""
+
+        if account_state is None:
+            return None
+
+        try:
+            snapshot_path = self.snapshot_writer.write(
+                loop_type=loop_type,
+                account_state=account_state,
+                plan=self.governor.active_plan,
+                governance_meta=self._governance_snapshot_meta(),
+                regime_state=self._regime_snapshot_meta(),
+                extra={"tick": self.tick_count},
+            )
+            return str(snapshot_path)
+        except Exception as exc:  # pragma: no cover - snapshotting is best-effort
+            self.logger.warning(
+                f"Failed to persist {loop_type} snapshot",
+                exc_info=exc,
+                extra={"tick": self.tick_count, "loop_type": loop_type},
+            )
+            return None
+
+    def _log_loop_summary(self, loop_type: str, **fields: Any) -> None:
+        """Emit a structured summary log for each loop iteration."""
+
+        context = {"tick": self.tick_count, "loop_type": loop_type}
+        for key, value in fields.items():
+            if value is not None:
+                context[key] = value
+        self.logger.info(f"{loop_type.title()} loop summary", extra=context)
 
     def run(self) -> NoReturn:
         """Run the main governed loop indefinitely (synchronous version for backward compatibility)."""
@@ -897,68 +987,97 @@ class GovernedTradingAgent:
         Args:
             current_time: Current timestamp
         """
-        self.logger.info(
-            "Fast loop: executing active plan",
-            extra={"tick": self.tick_count, "loop_type": "fast"},
-        )
+        loop_metrics: dict[str, Any] = {"decisions_count": 0, "tripwire_violations": 0}
+        metadata = {**self._loop_metadata(), "loop": "fast"}
 
-        # Get account state with fast signals
-        try:
-            account_state = self.monitor.get_current_state_with_signals(
-                "fast", active_plan=self.governor.active_plan
-            )
-        except Exception as e:
-            self.logger.error(
-                "Failed to retrieve account state in fast loop",
-                exc_info=e,
-                extra={"tick": self.tick_count},
-            )
-            self.tripwire_service.record_api_failure()
-            return
+        with loop_span(
+            "fast",
+            tick=self.tick_count,
+            metadata=metadata,
+            langgraph_phase=self.langgraph_phase,
+        ) as span:
+            account_state: EnhancedAccountState | None = None
+            try:
+                self.logger.info(
+                    "Fast loop: executing active plan",
+                    extra={"tick": self.tick_count, "loop_type": "fast"},
+                )
 
-        # Reset API failure count on success
-        self.tripwire_service.reset_api_failure_count()
+                try:
+                    account_state = self.monitor.get_current_state_with_signals(
+                        "fast", active_plan=self.governor.active_plan
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        "Failed to retrieve account state in fast loop",
+                        exc_info=e,
+                        extra={"tick": self.tick_count},
+                    )
+                    self.tripwire_service.record_api_failure()
+                    return
 
-        # Log account state
-        self.logger.info(
-            "Account state retrieved",
-            extra={
-                "tick": self.tick_count,
-                "portfolio_value": account_state.portfolio_value,
-                "available_balance": account_state.available_balance,
-                "num_positions": len(account_state.positions),
-                "is_stale": account_state.is_stale,
-            },
-        )
+                snapshot_path = self._capture_snapshot("fast", account_state)
+                loop_metrics["snapshot_path"] = snapshot_path
 
-        # Check all tripwires
-        tripwire_events = self.tripwire_service.check_all_tripwires(
-            account_state, self.governor.active_plan
-        )
+                # Reset API failure count on success
+                self.tripwire_service.reset_api_failure_count()
 
-        # Handle tripwire events
-        should_skip_execution = self._handle_tripwire_events(tripwire_events)
-        if should_skip_execution:
-            return
+                self.logger.info(
+                    "Account state retrieved",
+                    extra={
+                        "tick": self.tick_count,
+                        "portfolio_value": account_state.portfolio_value,
+                        "available_balance": account_state.available_balance,
+                        "num_positions": len(account_state.positions),
+                        "is_stale": account_state.is_stale,
+                    },
+                )
 
-        # Execute active plan if exists and is active
-        if self.governor.active_plan and self.governor.active_plan.status == "active":
-            self._execute_plan_targets(account_state, self.governor.active_plan)
-        elif self.governor.active_plan and self.governor.active_plan.status == "rebalancing":
-            self.logger.info(
-                "Plan is rebalancing - executing rebalance schedule",
-                extra={"tick": self.tick_count, "plan_id": self.governor.active_plan.plan_id},
-            )
-            self._execute_plan_targets(account_state, self.governor.active_plan)
-        else:
-            self.logger.info(
-                "No active plan to execute",
-                extra={"tick": self.tick_count},
-            )
+                tripwire_events = self.tripwire_service.check_all_tripwires(
+                    account_state, self.governor.active_plan
+                )
+                loop_metrics["tripwire_violations"] = len(tripwire_events)
 
-        # Update scorekeeper metrics
-        if self.governor.active_plan:
-            self.scorekeeper.update_metrics(account_state, self.governor.active_plan)
+                should_skip_execution = self._handle_tripwire_events(tripwire_events)
+                if should_skip_execution:
+                    return
+
+                executed_actions = 0
+                if self.governor.active_plan and self.governor.active_plan.status == "active":
+                    executed_actions = self._execute_plan_targets(
+                        account_state, self.governor.active_plan
+                    )
+                elif (
+                    self.governor.active_plan and self.governor.active_plan.status == "rebalancing"
+                ):
+                    self.logger.info(
+                        "Plan is rebalancing - executing rebalance schedule",
+                        extra={
+                            "tick": self.tick_count,
+                            "plan_id": self.governor.active_plan.plan_id,
+                        },
+                    )
+                    executed_actions = self._execute_plan_targets(
+                        account_state, self.governor.active_plan
+                    )
+                else:
+                    self.logger.info(
+                        "No active plan to execute",
+                        extra={"tick": self.tick_count},
+                    )
+
+                loop_metrics["decisions_count"] = executed_actions
+
+                if self.governor.active_plan:
+                    self.scorekeeper.update_metrics(account_state, self.governor.active_plan)
+            finally:
+                loop_metrics["trace_id"] = span.trace_id
+                span.record(
+                    decisions_count=loop_metrics["decisions_count"],
+                    tripwire_violations=loop_metrics["tripwire_violations"],
+                    snapshot_path=loop_metrics.get("snapshot_path"),
+                )
+                self._log_loop_summary("fast", **loop_metrics)
 
     def _execute_medium_loop(self, current_time: datetime):
         """Execute medium loop: plan review and maintenance.
@@ -974,162 +1093,191 @@ class GovernedTradingAgent:
         Args:
             current_time: Current timestamp
         """
-        self.logger.info(
-            "Medium loop: plan review and maintenance",
-            extra={"tick": self.tick_count, "loop_type": "medium"},
-        )
+        loop_metrics: dict[str, Any] = {
+            "decisions_count": 0,
+            "micro_adjustments_executed": 0,
+            "regime": self.regime_detector.current_regime,
+            "plan_change_proposed": False,
+        }
+        metadata = {**self._loop_metadata(), "loop": "medium"}
 
-        # Get account state with medium signals
-        try:
-            account_state = self.monitor.get_current_state_with_signals(
-                "medium", active_plan=self.governor.active_plan
-            )
-        except Exception as e:
-            self.logger.error(
-                "Failed to retrieve account state in medium loop",
-                exc_info=e,
-                extra={"tick": self.tick_count},
-            )
-            return
-
-        # Extract regime signals and classify regime
-        regime_signals = self._extract_regime_signals(account_state)
-        classification = self.regime_detector.classify_regime(regime_signals)
-
-        self.logger.info(
-            f"Regime classified: {classification.regime} (confidence: {classification.confidence:.2f})",
-            extra={
-                "tick": self.tick_count,
-                "regime": classification.regime,
-                "confidence": classification.confidence,
-            },
-        )
-
-        # Update regime detector and check for regime change
-        regime_changed, regime_msg = self.regime_detector.update_and_confirm(classification)
-
-        if regime_changed:
-            self.logger.info(
-                f"Regime change confirmed: {regime_msg}",
-                extra={"tick": self.tick_count, "regime_change": regime_msg},
-            )
-
-        # Check if plan review is permitted
-        can_review, review_msg = self.governor.can_review_plan(current_time)
-
-        # Check event lock window
-        in_event_lock, event_msg = self.regime_detector.is_in_event_lock_window(current_time)
-        if in_event_lock:
-            self.logger.info(
-                f"Plan review blocked by event lock: {event_msg}",
-                extra={"tick": self.tick_count, "event_lock": event_msg},
-            )
-            return
-
-        # Override dwell time if regime changed
-        if regime_changed:
-            can_review = True
-            review_msg = f"Regime change override: {regime_msg}"
-            self.logger.info(
-                "Dwell time overridden due to regime change",
-                extra={"tick": self.tick_count, "override_reason": regime_msg},
-            )
-
-        if not can_review:
-            self.logger.info(
-                f"Plan review not permitted: {review_msg}",
-                extra={"tick": self.tick_count, "review_status": review_msg},
-            )
-            return
-
-        # Plan review is permitted - query LLM for governance decision
-        self.logger.info(
-            "Plan review permitted - querying LLM for governance decision",
-            extra={"tick": self.tick_count, "review_reason": review_msg},
-        )
-
-        # Get governance-aware decision from LLM
-        decision = self.base_agent.decision_engine.get_decision_with_governance(
-            account_state=account_state,
-            active_plan=self.governor.active_plan,
-            current_regime=self.regime_detector.current_regime,
-            can_review=can_review,
-        )
-
-        if not decision.success:
-            self.logger.error(
-                f"Governance decision engine failed: {decision.error}",
-                extra={"tick": self.tick_count, "error": decision.error},
-            )
-            return
-
-        # Log LLM response
-        self.logger.info(
-            f"Governance decision received: maintain_plan={decision.maintain_plan}",
-            extra={
-                "tick": self.tick_count,
-                "maintain_plan": decision.maintain_plan,
-                "has_proposed_plan": decision.proposed_plan is not None,
-                "has_micro_adjustments": decision.micro_adjustments is not None,
-                "llm_cost_usd": decision.cost_usd,
-            },
-        )
-
-        # Handle governance decision
-        if decision.maintain_plan:
-            self.logger.info(
-                f"LLM maintaining current plan: {decision.reasoning}",
-                extra={"tick": self.tick_count, "reasoning": decision.reasoning},
-            )
-
-            # Execute micro-adjustments if provided
-            if decision.micro_adjustments:
+        with loop_span(
+            "medium",
+            tick=self.tick_count,
+            metadata=metadata,
+            langgraph_phase=self.langgraph_phase,
+        ) as span:
+            account_state: EnhancedAccountState | None = None
+            try:
                 self.logger.info(
-                    f"Executing {len(decision.micro_adjustments)} micro-adjustments",
+                    "Medium loop: plan review and maintenance",
+                    extra={"tick": self.tick_count, "loop_type": "medium"},
+                )
+
+                try:
+                    account_state = self.monitor.get_current_state_with_signals(
+                        "medium", active_plan=self.governor.active_plan
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        "Failed to retrieve account state in medium loop",
+                        exc_info=e,
+                        extra={"tick": self.tick_count},
+                    )
+                    return
+
+                snapshot_path = self._capture_snapshot("medium", account_state)
+                loop_metrics["snapshot_path"] = snapshot_path
+
+                regime_signals = self._extract_regime_signals(account_state)
+                classification = self.regime_detector.classify_regime(regime_signals)
+                loop_metrics["regime"] = classification.regime
+                loop_metrics["regime_confidence"] = round(classification.confidence, 3)
+
+                self.logger.info(
+                    f"Regime classified: {classification.regime} (confidence: {classification.confidence:.2f})",
                     extra={
                         "tick": self.tick_count,
-                        "num_adjustments": len(decision.micro_adjustments),
+                        "regime": classification.regime,
+                        "confidence": classification.confidence,
                     },
                 )
 
-                for action in decision.micro_adjustments:
-                    try:
-                        result = self.executor.execute_action(action)
-                        log_level = logging.INFO if result.success else logging.ERROR
-                        self.logger.log(
-                            log_level,
-                            f"Micro-adjustment: {action.action_type} {action.coin} - {'success' if result.success else 'failed'}",
+                regime_changed, regime_msg = self.regime_detector.update_and_confirm(classification)
+                loop_metrics["regime_changed"] = regime_changed
+
+                if regime_changed:
+                    self.logger.info(
+                        f"Regime change confirmed: {regime_msg}",
+                        extra={"tick": self.tick_count, "regime_change": regime_msg},
+                    )
+
+                can_review, review_msg = self.governor.can_review_plan(current_time)
+                loop_metrics["review_status"] = review_msg
+
+                in_event_lock, event_msg = self.regime_detector.is_in_event_lock_window(
+                    current_time
+                )
+                if in_event_lock:
+                    self.logger.info(
+                        f"Plan review blocked by event lock: {event_msg}",
+                        extra={"tick": self.tick_count, "event_lock": event_msg},
+                    )
+                    loop_metrics["event_lock"] = event_msg
+                    return
+
+                if regime_changed:
+                    can_review = True
+                    review_msg = f"Regime change override: {regime_msg}"
+                    self.logger.info(
+                        "Dwell time overridden due to regime change",
+                        extra={"tick": self.tick_count, "override_reason": regime_msg},
+                    )
+                    loop_metrics["review_status"] = review_msg
+
+                if not can_review:
+                    self.logger.info(
+                        f"Plan review not permitted: {review_msg}",
+                        extra={"tick": self.tick_count, "review_status": review_msg},
+                    )
+                    return
+
+                self.logger.info(
+                    "Plan review permitted - querying LLM for governance decision",
+                    extra={"tick": self.tick_count, "review_reason": review_msg},
+                )
+
+                decision = self.base_agent.decision_engine.get_decision_with_governance(
+                    account_state=account_state,
+                    active_plan=self.governor.active_plan,
+                    current_regime=self.regime_detector.current_regime,
+                    can_review=can_review,
+                )
+
+                if not decision.success:
+                    self.logger.error(
+                        f"Governance decision engine failed: {decision.error}",
+                        extra={"tick": self.tick_count, "error": decision.error},
+                    )
+                    return
+
+                loop_metrics["decisions_count"] = 1
+
+                self.logger.info(
+                    f"Governance decision received: maintain_plan={decision.maintain_plan}",
+                    extra={
+                        "tick": self.tick_count,
+                        "maintain_plan": decision.maintain_plan,
+                        "has_proposed_plan": decision.proposed_plan is not None,
+                        "has_micro_adjustments": decision.micro_adjustments is not None,
+                        "llm_cost_usd": decision.cost_usd,
+                    },
+                )
+
+                if decision.maintain_plan:
+                    self.logger.info(
+                        f"LLM maintaining current plan: {decision.reasoning}",
+                        extra={"tick": self.tick_count, "reasoning": decision.reasoning},
+                    )
+
+                    if decision.micro_adjustments:
+                        loop_metrics["micro_adjustments_executed"] = len(decision.micro_adjustments)
+                        self.logger.info(
+                            f"Executing {len(decision.micro_adjustments)} micro-adjustments",
                             extra={
                                 "tick": self.tick_count,
-                                "action_type": action.action_type,
-                                "coin": action.coin,
-                                "success": result.success,
-                                "error": result.error,
+                                "num_adjustments": len(decision.micro_adjustments),
                             },
                         )
-                    except Exception as e:
-                        self.logger.error(
-                            f"Failed to execute micro-adjustment: {action.action_type} {action.coin}",
-                            exc_info=e,
-                            extra={"tick": self.tick_count, "coin": action.coin},
+
+                        for action in decision.micro_adjustments:
+                            try:
+                                result = self.executor.execute_action(action)
+                                log_level = logging.INFO if result.success else logging.ERROR
+                                self.logger.log(
+                                    log_level,
+                                    f"Micro-adjustment: {action.action_type} {action.coin} - {'success' if result.success else 'failed'}",
+                                    extra={
+                                        "tick": self.tick_count,
+                                        "action_type": action.action_type,
+                                        "coin": action.coin,
+                                        "success": result.success,
+                                        "error": result.error,
+                                    },
+                                )
+                            except Exception as e:
+                                self.logger.error(
+                                    f"Failed to execute micro-adjustment: {action.action_type} {action.coin}",
+                                    exc_info=e,
+                                    extra={"tick": self.tick_count, "coin": action.coin},
+                                )
+                else:
+                    if decision.proposed_plan:
+                        loop_metrics["plan_change_proposed"] = True
+                        self.logger.info(
+                            f"LLM proposing plan change: {decision.reasoning}",
+                            extra={
+                                "tick": self.tick_count,
+                                "proposed_strategy": decision.proposed_plan.strategy_name,
+                                "reasoning": decision.reasoning,
+                            },
                         )
-        else:
-            # LLM proposing a plan change
-            if decision.proposed_plan:
-                self.logger.info(
-                    f"LLM proposing plan change: {decision.reasoning}",
-                    extra={
-                        "tick": self.tick_count,
-                        "proposed_strategy": decision.proposed_plan.strategy_name,
-                        "reasoning": decision.reasoning,
-                    },
+                        self._handle_plan_change_proposal(decision.proposed_plan, current_time)
+                    else:
+                        self.logger.warning(
+                            "LLM indicated plan change but no proposed plan provided",
+                            extra={"tick": self.tick_count},
+                        )
+            finally:
+                loop_metrics["trace_id"] = span.trace_id
+                span.record(
+                    decisions_count=loop_metrics["decisions_count"],
+                    micro_adjustments_executed=loop_metrics.get("micro_adjustments_executed"),
+                    plan_change_proposed=loop_metrics.get("plan_change_proposed"),
+                    regime=loop_metrics.get("regime"),
+                    snapshot_path=loop_metrics.get("snapshot_path"),
                 )
-                self._handle_plan_change_proposal(decision.proposed_plan, current_time)
-            else:
-                self.logger.warning(
-                    "LLM indicated plan change but no proposed plan provided",
-                    extra={"tick": self.tick_count},
-                )
+                self._log_loop_summary("medium", **loop_metrics)
 
     def _execute_slow_loop(self, current_time: datetime):
         """Execute slow loop: regime detection and macro analysis.
@@ -1143,66 +1291,89 @@ class GovernedTradingAgent:
         Args:
             current_time: Current timestamp
         """
-        self.logger.info(
-            "Slow loop: macro analysis and regime detection",
-            extra={"tick": self.tick_count, "loop_type": "slow"},
-        )
+        loop_metrics: dict[str, Any] = {
+            "decisions_count": 0,
+            "regime": self.regime_detector.current_regime,
+        }
+        metadata = {**self._loop_metadata(), "loop": "slow"}
 
-        # Get account state with slow signals
-        try:
-            account_state = self.monitor.get_current_state_with_signals(
-                "slow", active_plan=self.governor.active_plan
-            )
-        except Exception as e:
-            self.logger.error(
-                "Failed to retrieve account state in slow loop",
-                exc_info=e,
-                extra={"tick": self.tick_count},
-            )
-            return
+        with loop_span(
+            "slow",
+            tick=self.tick_count,
+            metadata=metadata,
+            langgraph_phase=self.langgraph_phase,
+        ) as span:
+            account_state: EnhancedAccountState | None = None
+            try:
+                self.logger.info(
+                    "Slow loop: macro analysis and regime detection",
+                    extra={"tick": self.tick_count, "loop_type": "slow"},
+                )
 
-        # Update macro calendar
-        # In a full implementation, this would fetch upcoming macro events
-        # For now, we'll just log that the calendar would be updated
-        self.logger.info(
-            "Macro calendar update (placeholder - would fetch FOMC, CPI, jobs reports, etc.)",
-            extra={"tick": self.tick_count},
-        )
+                try:
+                    account_state = self.monitor.get_current_state_with_signals(
+                        "slow", active_plan=self.governor.active_plan
+                    )
+                except Exception as e:
+                    self.logger.error(
+                        "Failed to retrieve account state in slow loop",
+                        exc_info=e,
+                        extra={"tick": self.tick_count},
+                    )
+                    return
 
-        # Force regime re-evaluation with slow signals
-        regime_signals = self._extract_regime_signals(account_state)
-        classification = self.regime_detector.classify_regime(regime_signals)
+                snapshot_path = self._capture_snapshot("slow", account_state)
+                loop_metrics["snapshot_path"] = snapshot_path
 
-        self.logger.info(
-            f"Slow loop regime classification: {classification.regime} (confidence: {classification.confidence:.2f})",
-            extra={
-                "tick": self.tick_count,
-                "regime": classification.regime,
-                "confidence": classification.confidence,
-                "current_regime": self.regime_detector.current_regime,
-            },
-        )
+                self.logger.info(
+                    "Macro calendar update (placeholder - would fetch FOMC, CPI, jobs reports, etc.)",
+                    extra={"tick": self.tick_count},
+                )
 
-        # Check for structural market changes
-        # This would analyze slow signals for major shifts
-        if account_state.slow_signals:
-            self.logger.info(
-                "Slow signals collected for macro analysis",
-                extra={
-                    "tick": self.tick_count,
-                    "has_macro_events": bool(account_state.slow_signals.macro_events_upcoming),
-                },
-            )
+                regime_signals = self._extract_regime_signals(account_state)
+                classification = self.regime_detector.classify_regime(regime_signals)
+                loop_metrics["regime"] = classification.regime
+                loop_metrics["regime_confidence"] = round(classification.confidence, 3)
+                loop_metrics["decisions_count"] = 1
 
-        # Log current regime status
-        self.logger.info(
-            f"Slow loop complete. Current regime: {self.regime_detector.current_regime}",
-            extra={
-                "tick": self.tick_count,
-                "current_regime": self.regime_detector.current_regime,
-                "regime_history_length": len(self.regime_detector.regime_history),
-            },
-        )
+                self.logger.info(
+                    f"Slow loop regime classification: {classification.regime} (confidence: {classification.confidence:.2f})",
+                    extra={
+                        "tick": self.tick_count,
+                        "regime": classification.regime,
+                        "confidence": classification.confidence,
+                        "current_regime": self.regime_detector.current_regime,
+                    },
+                )
+
+                if account_state.slow_signals:
+                    macro_events = account_state.slow_signals.macro_events_upcoming or []
+                    loop_metrics["macro_events_collected"] = len(macro_events)
+                    self.logger.info(
+                        "Slow signals collected for macro analysis",
+                        extra={
+                            "tick": self.tick_count,
+                            "has_macro_events": bool(macro_events),
+                        },
+                    )
+
+                self.logger.info(
+                    f"Slow loop complete. Current regime: {self.regime_detector.current_regime}",
+                    extra={
+                        "tick": self.tick_count,
+                        "current_regime": self.regime_detector.current_regime,
+                        "regime_history_length": len(self.regime_detector.regime_history),
+                    },
+                )
+            finally:
+                loop_metrics["trace_id"] = span.trace_id
+                span.record(
+                    decisions_count=loop_metrics["decisions_count"],
+                    regime=loop_metrics.get("regime"),
+                    macro_events_collected=loop_metrics.get("macro_events_collected"),
+                    snapshot_path=loop_metrics.get("snapshot_path"),
+                )
+                self._log_loop_summary("slow", **loop_metrics)
 
     def _handle_plan_change_proposal(self, proposed_plan: StrategyPlanCard, current_time: datetime):
         """Handle a proposed plan change from LLM.
@@ -1326,12 +1497,17 @@ class GovernedTradingAgent:
                 },
             )
 
-    def _execute_plan_targets(self, account_state: EnhancedAccountState, plan: StrategyPlanCard):
+    def _execute_plan_targets(
+        self, account_state: EnhancedAccountState, plan: StrategyPlanCard
+    ) -> int:
         """Execute trades to move toward plan targets.
 
         Args:
             account_state: Current enhanced account state
             plan: Active strategy plan card
+
+        Returns:
+            Number of trade actions dispatched to the executor.
         """
         self.logger.info(
             f"Executing plan targets for {plan.strategy_name}",
@@ -1443,6 +1619,8 @@ class GovernedTradingAgent:
             target_allocations_data, current_allocations, total_value, account_state
         )
 
+        actions_executed = 0
+
         # Execute trades via base agent's executor
         if actions:
             self.logger.info(
@@ -1452,6 +1630,7 @@ class GovernedTradingAgent:
 
             for action in actions:
                 try:
+                    actions_executed += 1
                     result = self.executor.execute_action(action)
 
                     # Log execution result
@@ -1492,6 +1671,8 @@ class GovernedTradingAgent:
                 "No rebalancing trades needed - allocations within threshold",
                 extra={"tick": self.tick_count},
             )
+
+        return actions_executed
 
     def _calculate_change_cost(
         self, old_plan: StrategyPlanCard | None, new_plan: StrategyPlanCard
