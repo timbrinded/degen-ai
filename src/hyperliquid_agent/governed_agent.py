@@ -34,6 +34,7 @@ from hyperliquid_agent.governance.tripwire import (
 )
 from hyperliquid_agent.identity_registry import AssetIdentityRegistry, default_assets_config_path
 from hyperliquid_agent.market_registry import MarketRegistry
+from hyperliquid_agent.monitor import Position
 from hyperliquid_agent.monitor_enhanced import EnhancedPositionMonitor
 from hyperliquid_agent.price_service import AssetPriceService
 from hyperliquid_agent.signals import EnhancedAccountState, MediumLoopSignals, TechnicalIndicators
@@ -1596,13 +1597,16 @@ class GovernedTradingAgent:
         Returns:
             Selected coin symbol or None if no valid indicators available
         """
+        indicator_key_map = {coin.upper(): coin for coin in medium.technical_indicators}
+
         # Priority 1: BTC if available
-        if "BTC" in medium.technical_indicators and medium.technical_indicators["BTC"] is not None:
+        btc_key = indicator_key_map.get("BTC")
+        if btc_key and medium.technical_indicators[btc_key] is not None:
             self.logger.debug(
                 "Selected BTC as representative asset for regime classification",
                 extra={"tick": self.tick_count, "selection_reason": "btc_preferred"},
             )
-            return "BTC"
+            return btc_key
 
         # Priority 2: Largest position by notional value
         if account_state.positions:
@@ -1613,13 +1617,22 @@ class GovernedTradingAgent:
                 default=None,
             )
 
+            if largest_position:
+                candidate_symbol = GovernedTradingAgent._resolve_position_symbol(
+                    largest_position, candidate_keys=set(indicator_key_map.keys())
+                )
+            else:
+                candidate_symbol = None
+
             if (
                 largest_position
-                and largest_position.coin in medium.technical_indicators
-                and medium.technical_indicators[largest_position.coin] is not None
+                and candidate_symbol
+                and candidate_symbol in indicator_key_map
+                and medium.technical_indicators[indicator_key_map[candidate_symbol]] is not None
             ):
+                resolved_key = indicator_key_map[candidate_symbol]
                 self.logger.debug(
-                    f"Selected {largest_position.coin} as representative asset (largest position)",
+                    f"Selected {resolved_key} as representative asset (largest position)",
                     extra={
                         "tick": self.tick_count,
                         "coin": largest_position.coin,
@@ -1627,7 +1640,7 @@ class GovernedTradingAgent:
                         "selection_reason": "largest_position",
                     },
                 )
-                return largest_position.coin
+                return resolved_key
 
         # Priority 3: First available coin with complete indicators
         for coin, indicators in medium.technical_indicators.items():
@@ -1647,6 +1660,55 @@ class GovernedTradingAgent:
             "No valid technical indicators available for any coin",
             extra={"tick": self.tick_count, "selection_reason": "none_available"},
         )
+        return None
+
+    @staticmethod
+    def _resolve_position_symbol(
+        position: Position | None,
+        *,
+        candidate_keys: set[str] | None = None,
+    ) -> str | None:
+        """Resolve a position's coin into a canonical symbol optionally constrained by keys."""
+
+        if position is None or not position.coin:
+            return None
+
+        raw = position.coin.upper()
+        candidates: list[str] = []
+
+        if position.asset_identity:
+            if position.asset_identity.perp_symbol:
+                candidates.append(position.asset_identity.perp_symbol.upper())
+            if position.asset_identity.canonical_symbol:
+                candidates.append(position.asset_identity.canonical_symbol.upper())
+
+        if position.market_type == "spot" and raw.startswith("U") and len(raw) > 1:
+            candidates.append(raw[1:])
+
+        candidates.append(raw)
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            if candidate_keys and candidate not in candidate_keys:
+                continue
+            return candidate
+
+        return None
+
+    @staticmethod
+    def _resolve_indicator_key(
+        coin: str | None, indicators: dict[str, TechnicalIndicators | None]
+    ) -> str | None:
+        if not coin:
+            return None
+
+        target = coin.upper()
+        for key in indicators:
+            if key.upper() == target:
+                return key
         return None
 
     def _validate_indicators(self, indicators: TechnicalIndicators) -> bool:
@@ -1672,17 +1734,20 @@ class GovernedTradingAgent:
         Returns:
             (adx, sma_20, sma_50) or (0.0, 0.0, 0.0) if unavailable/invalid
         """
-        if representative_coin and representative_coin in medium.technical_indicators:
-            indicators = medium.technical_indicators[representative_coin]
+        resolved_key = GovernedTradingAgent._resolve_indicator_key(
+            representative_coin, medium.technical_indicators
+        )
+        if resolved_key and resolved_key in medium.technical_indicators:
+            indicators = medium.technical_indicators[resolved_key]
             if indicators and self._validate_indicators(indicators):
                 self.logger.debug(
-                    f"Using {representative_coin} indicators: "
+                    f"Using {resolved_key} indicators: "
                     f"ADX={indicators.adx:.1f}, "
                     f"SMA20={indicators.sma_20:.2f}, "
                     f"SMA50={indicators.sma_50:.2f}",
                     extra={
                         "tick": self.tick_count,
-                        "coin": representative_coin,
+                        "coin": resolved_key,
                         "adx": indicators.adx,
                         "sma_20": indicators.sma_20,
                         "sma_50": indicators.sma_50,
@@ -1691,8 +1756,8 @@ class GovernedTradingAgent:
                 return indicators.adx, indicators.sma_20, indicators.sma_50
             else:
                 self.logger.warning(
-                    f"Invalid indicators for {representative_coin}, using fallback",
-                    extra={"tick": self.tick_count, "coin": representative_coin},
+                    f"Invalid indicators for {resolved_key}, using fallback",
+                    extra={"tick": self.tick_count, "coin": resolved_key},
                 )
 
         return 0.0, 0.0, 0.0
@@ -1716,16 +1781,24 @@ class GovernedTradingAgent:
             )
             return 0.0
 
+        normalized_basis = {coin.upper(): rate for coin, rate in medium.funding_basis.items()}
+        candidate_keys = set(normalized_basis.keys())
+
         total_weighted_funding = 0.0
         total_notional = 0.0
 
         for position in account_state.positions:
-            if position.coin in medium.funding_basis:
-                notional = abs(position.size * position.current_price)
-                funding_rate = medium.funding_basis[position.coin]
+            normalized_coin = GovernedTradingAgent._resolve_position_symbol(
+                position, candidate_keys=candidate_keys
+            )
+            if not normalized_coin:
+                continue
 
-                total_weighted_funding += funding_rate * notional
-                total_notional += notional
+            notional = abs(position.size * position.current_price)
+            funding_rate = normalized_basis[normalized_coin]
+
+            total_weighted_funding += funding_rate * notional
+            total_notional += notional
 
         if total_notional > 0:
             avg_funding = total_weighted_funding / total_notional
@@ -1914,9 +1987,15 @@ class GovernedTradingAgent:
         # Get current price from positions
         current_price = 0.0
         if representative_coin and account_state.positions:
-            matching_pos = next(
-                (p for p in account_state.positions if p.coin == representative_coin), None
-            )
+            target_key = representative_coin.upper()
+            matching_pos = None
+            for position in account_state.positions:
+                if GovernedTradingAgent._resolve_position_symbol(
+                    position, candidate_keys={target_key}
+                ):
+                    matching_pos = position
+                    break
+
             if matching_pos:
                 current_price = matching_pos.current_price
 

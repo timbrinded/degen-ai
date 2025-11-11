@@ -518,191 +518,162 @@ class MediumSignalCollector(SignalCollectorBase):
         # Focus medium-loop analytics on perpetual markets; spot balances lack required data
         perp_positions = [p for p in account_state.positions if p.market_type == "perp"]
 
+        analysis_coins = self._select_analysis_coins(account_state, perp_positions)
         if not perp_positions:
-            metadata = SignalQualityMetadata(
-                timestamp=datetime.now(),
-                confidence=0.0,
-                staleness_seconds=0.0,
-                sources=["hyperliquid"],
-                is_cached=False,
+            logger.debug(
+                "No perp positions detected; using fallback coins for medium-loop analytics: %s",
+                analysis_coins,
             )
 
-            return MediumLoopSignals(
-                realized_vol_1h=0.0,
-                realized_vol_24h=0.0,
-                trend_score=0.0,
-                funding_basis=funding_basis,
-                perp_spot_basis=perp_spot_basis,
-                concentration_ratios=concentration_ratios,
-                drift_from_targets=drift_from_targets,
-                technical_indicators=technical_indicators,
-                open_interest_change_24h=open_interest_change_24h,
-                oi_to_volume_ratio=oi_to_volume_ratio,
-                funding_rate_trend={},
-                metadata=metadata,
-            )
+        position_lookup: dict[str, Position] = {}
+        for position in perp_positions:
+            normalized = self._normalize_symbol(position.coin)
+            if normalized and normalized not in position_lookup:
+                position_lookup[normalized] = position
 
         # Initialize tracking variables
         successful_fetches = 0
         total_confidence = 0.0
-        funding_responses: Any = []
-        oi_responses: Any = []
-        candles_responses: Any = []
+        funding_responses: list[Any] = []
+        oi_responses: list[Any] = []
+        candles_responses: list[Any] = []
 
-        # Collect data for all positions concurrently
-        if perp_positions:
-            # Create concurrent tasks for each position
-            funding_tasks = []
-            oi_tasks = []
-            candles_tasks = []
+        # Collect data for all analysis coins concurrently
+        funding_tasks = []
+        oi_tasks = []
+        candles_tasks = []
 
-            for position in perp_positions:
-                coin = position.coin
+        for coin in analysis_coins:
+            start_time, end_time = self._get_timestamp_range(hours_back=24)
+            funding_tasks.append(
+                self.hyperliquid_provider.fetch_funding_history(coin, start_time, end_time)
+            )
 
-                # Funding rate history (last 24 hours)
-                start_time, end_time = self._get_timestamp_range(hours_back=24)
-                funding_tasks.append(
-                    self.hyperliquid_provider.fetch_funding_history(coin, start_time, end_time)
+            oi_tasks.append(self.hyperliquid_provider.fetch_open_interest(coin))
+
+            start_time_candles, end_time_candles = self._get_timestamp_range(hours_back=168)
+            candles_tasks.append(
+                self.hyperliquid_provider.fetch_candles(
+                    coin, "1h", start_time_candles, end_time_candles
                 )
+            )
 
-                # Open interest data
-                oi_tasks.append(self.hyperliquid_provider.fetch_open_interest(coin))
+        funding_responses = await asyncio.gather(*funding_tasks, return_exceptions=True)
+        oi_responses = await asyncio.gather(*oi_tasks, return_exceptions=True)
+        candles_responses = await asyncio.gather(*candles_tasks, return_exceptions=True)
 
-                # Candles for technical indicators (last 7 days of 1h candles)
-                start_time_candles, end_time_candles = self._get_timestamp_range(hours_back=168)
-                candles_tasks.append(
-                    self.hyperliquid_provider.fetch_candles(
-                        coin, "1h", start_time_candles, end_time_candles
-                    )
-                )
+        for i, coin in enumerate(analysis_coins):  # type: ignore[assignment]
+            position = position_lookup.get(coin)
 
-            # Execute all tasks concurrently
-            funding_responses = await asyncio.gather(*funding_tasks, return_exceptions=True)
-            oi_responses = await asyncio.gather(*oi_tasks, return_exceptions=True)
-            candles_responses = await asyncio.gather(*candles_tasks, return_exceptions=True)
-
-            for i, position in enumerate(perp_positions):  # type: ignore[assignment]
-                coin = position.coin
-
-                # Calculate concentration
+            # Calculate concentration
+            if position:
                 position_value = abs(position.size * position.current_price)
                 concentration_ratios[coin] = (
                     position_value / total_value if total_value > 0 else 0.0
                 )
+            else:
+                concentration_ratios[coin] = 0.0
 
-                # Drift from targets (would need target allocations from active plan)
-                drift_from_targets[coin] = 0.0
+            drift_from_targets[coin] = 0.0
+            perp_spot_basis[coin] = 0.0
 
-                # Perp-spot basis (not directly available on Hyperliquid)
-                perp_spot_basis[coin] = 0.0
+            # Process funding rate data
+            funding_response = funding_responses[i]
+            if not isinstance(funding_response, BaseException):
+                funding_rates = funding_response.data
+                if funding_rates:
+                    rates = [fr.rate for fr in funding_rates]
+                    avg_funding = sum(rates) / len(rates) if rates else 0.0
+                    funding_basis[coin] = avg_funding * 100  # Convert to percentage
+                    funding_rate_trend[coin] = self._calculate_funding_trend(rates)
 
-                # Process funding rate data
-                funding_response = funding_responses[i]
-                if not isinstance(funding_response, BaseException):
-                    funding_rates = funding_response.data
-                    if funding_rates:
-                        # Calculate average funding rate
-                        rates = [fr.rate for fr in funding_rates]
-                        avg_funding = sum(rates) / len(rates) if rates else 0.0
-                        funding_basis[coin] = avg_funding * 100  # Convert to percentage
-
-                        # Calculate funding rate trend
-                        funding_rate_trend[coin] = self._calculate_funding_trend(rates)
-
-                        successful_fetches += 1
-                        total_confidence += funding_response.confidence
-                    else:
-                        funding_basis[coin] = 0.0
-                        funding_rate_trend[coin] = "stable"
+                    successful_fetches += 1
+                    total_confidence += funding_response.confidence
                 else:
                     funding_basis[coin] = 0.0
                     funding_rate_trend[coin] = "stable"
+            else:
+                funding_basis[coin] = 0.0
+                funding_rate_trend[coin] = "stable"
 
-                # Process open interest data
-                oi_response = oi_responses[i]
-                if not isinstance(oi_response, BaseException):
-                    oi_data = oi_response.data
+            # Process open interest data
+            oi_response = oi_responses[i]
+            if not isinstance(oi_response, BaseException):
+                oi_data = oi_response.data
 
-                    # Update OI history for this coin
-                    if coin not in self.oi_history:
-                        self.oi_history[coin] = OpenInterestHistory()
+                if coin not in self.oi_history:
+                    self.oi_history[coin] = OpenInterestHistory()
 
-                    # Use actual data timestamp instead of datetime.now() to prevent drift
-                    self.oi_history[coin].add_value(oi_data.open_interest, oi_data.timestamp)
+                self.oi_history[coin].add_value(oi_data.open_interest, oi_data.timestamp)
 
-                    # Calculate 24h OI change from historical data
-                    # Preserve None to indicate insufficient data for transparency
-                    oi_change = self.oi_history[coin].calculate_24h_change()
-                    open_interest_change_24h[coin] = oi_change
+                oi_change = self.oi_history[coin].calculate_24h_change()
+                open_interest_change_24h[coin] = oi_change
 
-                    # Calculate OI-to-volume ratio
-                    # Fetch 24h volume from candles
-                    candles_response = candles_responses[i]
-                    if not isinstance(candles_response, BaseException):
-                        candles = candles_response.data
-                        if candles:
-                            # Sum volume from last 24 candles (24 hours)
-                            volume_24h = sum(c.volume for c in candles[-24:])
-                            if volume_24h > 0:
-                                oi_to_volume_ratio[coin] = oi_data.open_interest / volume_24h
-                            else:
-                                oi_to_volume_ratio[coin] = 0.0
-                        else:
-                            oi_to_volume_ratio[coin] = 0.0
-                    else:
-                        oi_to_volume_ratio[coin] = 0.0
-
-                    successful_fetches += 1
-                    total_confidence += oi_response.confidence
-                else:
-                    open_interest_change_24h[coin] = None
-                    oi_to_volume_ratio[coin] = 0.0
-
-                # Process candles for technical indicators and price history
                 candles_response = candles_responses[i]
                 if not isinstance(candles_response, BaseException):
                     candles = candles_response.data
                     if candles:
-                        if coin not in self.price_history:
-                            self.price_history[coin] = PriceHistory()
-
-                        history = self.price_history[coin]
-                        last_timestamp = history.timestamps[-1] if history.timestamps else None
-
-                        for candle in candles:
-                            if last_timestamp and candle.timestamp <= last_timestamp:
-                                continue
-
-                            history.add_candle(
-                                close=candle.close,
-                                high=candle.high,
-                                low=candle.low,
-                                timestamp=candle.timestamp,
-                            )
-                            last_timestamp = candle.timestamp
-
-                        if len(candles) >= 50:
-                            try:
-                                indicators = (
-                                    await self.computed_processor.calculate_technical_indicators(
-                                        candles
-                                    )
-                                )
-                                technical_indicators[coin] = indicators
-
-                                successful_fetches += 1
-                                total_confidence += candles_response.confidence
-                            except Exception as e:
-                                logger.warning(
-                                    f"Failed to calculate technical indicators for {coin}: {e}"
-                                )
-                                technical_indicators[coin] = None
+                        volume_24h = sum(c.volume for c in candles[-24:])
+                        if volume_24h > 0:
+                            oi_to_volume_ratio[coin] = oi_data.open_interest / volume_24h
                         else:
+                            oi_to_volume_ratio[coin] = 0.0
+                    else:
+                        oi_to_volume_ratio[coin] = 0.0
+                else:
+                    oi_to_volume_ratio[coin] = 0.0
+
+                successful_fetches += 1
+                total_confidence += oi_response.confidence
+            else:
+                open_interest_change_24h[coin] = None
+                oi_to_volume_ratio[coin] = 0.0
+
+            # Process candles for technical indicators and price history
+            candles_response = candles_responses[i]
+            if not isinstance(candles_response, BaseException):
+                candles = candles_response.data
+                if candles:
+                    if coin not in self.price_history:
+                        self.price_history[coin] = PriceHistory()
+
+                    history = self.price_history[coin]
+                    last_timestamp = history.timestamps[-1] if history.timestamps else None
+
+                    for candle in candles:
+                        if last_timestamp and candle.timestamp <= last_timestamp:
+                            continue
+
+                        history.add_candle(
+                            close=candle.close,
+                            high=candle.high,
+                            low=candle.low,
+                            timestamp=candle.timestamp,
+                        )
+                        last_timestamp = candle.timestamp
+
+                    if len(candles) >= 50:
+                        try:
+                            indicators = (
+                                await self.computed_processor.calculate_technical_indicators(
+                                    candles
+                                )
+                            )
+                            technical_indicators[coin] = indicators
+
+                            successful_fetches += 1
+                            total_confidence += candles_response.confidence
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to calculate technical indicators for {coin}: {e}"
+                            )
                             technical_indicators[coin] = None
                     else:
                         technical_indicators[coin] = None
                 else:
                     technical_indicators[coin] = None
+            else:
+                technical_indicators[coin] = None
 
         # Calculate realized volatility and trend using the largest position
         realized_vol_1h, realized_vol_24h, trend_score = await self._calculate_volatility_and_trend(
@@ -717,12 +688,10 @@ class MediumSignalCollector(SignalCollectorBase):
             staleness_seconds=0.0,
             sources=["hyperliquid"],
             is_cached=any(
-                not isinstance(r, BaseException) and r.is_cached
-                for responses in [funding_responses, oi_responses, candles_responses]
-                for r in responses
-            )
-            if perp_positions
-            else False,
+                not isinstance(response, BaseException) and response.is_cached
+                for response_group in (funding_responses, oi_responses, candles_responses)
+                for response in response_group
+            ),
         )
 
         # Type cast for funding_rate_trend to satisfy type checker
@@ -744,6 +713,68 @@ class MediumSignalCollector(SignalCollectorBase):
             funding_rate_trend=funding_rate_trend_typed,
             metadata=metadata,
         )
+
+    def _select_analysis_coins(
+        self, account_state: AccountState, perp_positions: list[Position]
+    ) -> list[str]:
+        perp_symbols = self._dedupe_preserve_order(
+            [self._normalize_symbol(position.coin) for position in perp_positions]
+        )
+        if perp_symbols:
+            return perp_symbols
+
+        fallback = self._build_fallback_coins(account_state)
+        if fallback:
+            return fallback
+
+        return ["BTC", "ETH"]
+
+    def _build_fallback_coins(self, account_state: AccountState, limit: int = 4) -> list[str]:
+        fallback: list[str] = []
+        seen: set[str] = set()
+
+        for position in account_state.positions:
+            if position.market_type == "perp" or not position.asset_identity:
+                continue
+
+            candidate = (
+                position.asset_identity.perp_symbol
+                or position.asset_identity.canonical_symbol
+                or position.coin
+            )
+            normalized = self._normalize_symbol(candidate)
+            if not normalized or normalized in seen:
+                continue
+
+            fallback.append(normalized)
+            seen.add(normalized)
+            if len(fallback) >= limit:
+                break
+
+        for major in ("BTC", "ETH"):
+            if len(fallback) >= limit:
+                break
+            if major in seen:
+                continue
+            fallback.append(major)
+            seen.add(major)
+
+        return fallback
+
+    def _normalize_symbol(self, symbol: str | None) -> str | None:
+        if not symbol:
+            return None
+        return symbol.upper().strip()
+
+    def _dedupe_preserve_order(self, symbols: list[str | None]) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for symbol in symbols:
+            if not symbol or symbol in seen:
+                continue
+            ordered.append(symbol)
+            seen.add(symbol)
+        return ordered
 
     def _calculate_funding_trend(
         self, rates: list[float]
@@ -1206,14 +1237,20 @@ class SlowSignalCollector(SignalCollectorBase):
             return "medium"
 
         try:
-            # Sample liquidity from largest position
+            perp_positions = [p for p in positions if p.market_type == "perp"]
+            reference_positions = perp_positions if perp_positions else positions
+
             largest_position = max(
-                positions,
+                reference_positions,
                 key=lambda p: abs(p.size * p.current_price),
             )
 
+            coin = self._resolve_perp_symbol(largest_position)
+            if not coin:
+                return "medium"
+
             # Fetch order book using async provider
-            ob_response = await self.hyperliquid_provider.fetch_order_book(largest_position.coin)
+            ob_response = await self.hyperliquid_provider.fetch_order_book(coin)
             ob_data = ob_response.data
 
             if ob_data.bids and ob_data.asks:
@@ -1243,6 +1280,25 @@ class SlowSignalCollector(SignalCollectorBase):
             logger.warning(f"Failed to assess liquidity regime: {e}")
 
         return "medium"
+
+    def _resolve_perp_symbol(self, position: Position) -> str | None:
+        """Resolve a position's symbol to a valid perp market identifier."""
+
+        raw = position.coin.upper() if position.coin else ""
+
+        if position.market_type == "perp" and raw:
+            return raw
+
+        if position.asset_identity:
+            if position.asset_identity.perp_symbol:
+                return position.asset_identity.perp_symbol.upper()
+            if position.asset_identity.canonical_symbol:
+                return position.asset_identity.canonical_symbol.upper()
+
+        if position.market_type == "spot" and raw.startswith("U") and len(raw) > 1:
+            return raw[1:]
+
+        return raw or None
 
     async def _calculate_risk_on_score(self) -> float:
         """Calculate cross-asset risk-on score using BTC funding as proxy.
