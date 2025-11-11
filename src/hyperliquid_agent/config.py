@@ -175,6 +175,17 @@ class ObservabilityConfig:
 
 
 @dataclass
+class LangGraphConfig:
+    """LangGraph runtime configuration."""
+
+    enabled: bool = False
+    checkpoint_backend: Literal["sqlite", "memory"] = "sqlite"
+    storage_path: str = "state/langgraph/checkpoints.db"
+    snapshot_dir: str = "state/snapshots"
+    phase_tag: str = "langgraph_phase_1"
+
+
+@dataclass
 class Config:
     """Complete application configuration."""
 
@@ -185,6 +196,7 @@ class Config:
     governance: GovernanceConfig | None = None
     signals: SignalConfig | None = None
     observability: ObservabilityConfig | None = None
+    langgraph: LangGraphConfig | None = None
 
 
 def load_config(config_path: str | Path = "config.toml") -> Config:
@@ -416,6 +428,24 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
         if langsmith_api_key:
             os.environ["LANGSMITH_API_KEY"] = langsmith_api_key
 
+    langgraph_config = None
+    if "langgraph" in data:
+        langgraph_data = data["langgraph"] or {}
+        checkpoint_backend = langgraph_data.get("checkpoint_backend", "sqlite")
+        if checkpoint_backend not in {"sqlite", "memory"}:
+            raise ValueError(
+                "[langgraph].checkpoint_backend must be 'sqlite' or 'memory' "
+                f"(got {checkpoint_backend!r})"
+            )
+
+        langgraph_config = LangGraphConfig(
+            enabled=bool(langgraph_data.get("enabled", False)),
+            checkpoint_backend=checkpoint_backend,
+            storage_path=langgraph_data.get("storage_path", "state/langgraph/checkpoints.db"),
+            snapshot_dir=langgraph_data.get("snapshot_dir", "state/snapshots"),
+            phase_tag=langgraph_data.get("phase_tag", "langgraph_phase_1"),
+        )
+
     return Config(
         hyperliquid=hyperliquid_config,
         llm=llm_config,
@@ -424,4 +454,5 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
         governance=governance_config,
         signals=signal_config,
         observability=observability_config,
+        langgraph=langgraph_config,
     )

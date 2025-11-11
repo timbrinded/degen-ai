@@ -201,6 +201,73 @@ def status(
 
 
 @app.command()
+def dry_run(
+    config: Path = typer.Option(
+        "config.toml",
+        "--config",
+        "-c",
+        help="Path to configuration file",
+    ),
+    using_langgraph: bool = typer.Option(
+        False,
+        "--using-langgraph/--no-langgraph",
+        help="Execute the LangGraph skeleton (guardrail flag).",
+    ),
+    loop: str = typer.Option(
+        "fast",
+        "--loop",
+        "-l",
+        help="Loop snapshot to seed the dry-run (fast|medium|slow).",
+        metavar="LOOP",
+    ),
+    snapshot: Path | None = typer.Option(
+        None,
+        "--snapshot",
+        help="Optional explicit snapshot JSON to load.",
+    ),
+) -> None:
+    """Execute a single LangGraph scheduler tick in dry-run mode."""
+
+    from hyperliquid_agent.config import load_config
+    from hyperliquid_agent.langgraph.graph import build_langgraph, load_dry_run_state
+
+    if not using_langgraph:
+        typer.echo("Add --using-langgraph to acknowledge the experimental runtime.")
+        raise typer.Exit(code=1)
+
+    cfg = load_config(str(config))
+    if cfg.langgraph is None:
+        typer.echo("Error: missing [langgraph] section in config.toml", err=True)
+        raise typer.Exit(code=1)
+
+    loop_choice = loop.lower()
+    if loop_choice not in {"fast", "medium", "slow"}:
+        typer.echo("Loop must be one of: fast, medium, slow", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        metadata, snapshot_state = load_dry_run_state(
+            cfg,
+            snapshot_path=str(snapshot) if snapshot else None,
+            loop_type=loop_choice,
+        )
+    except FileNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+    compiled_graph = build_langgraph(cfg)
+    result_state = compiled_graph.invoke(snapshot_state)
+    telemetry = result_state.get("telemetry", {})
+    scheduler_state = result_state.get("scheduler", {})
+
+    typer.echo("LangGraph dry-run complete")
+    typer.echo(f"  Snapshot:   {metadata.tag}")
+    typer.echo(f"  Loop seed:  {metadata.loop_type}")
+    typer.echo(f"  Phase tag:  {telemetry.get('langgraph_phase')}")
+    typer.echo(f"  Next loops: {', '.join(scheduler_state.get('pending_loops', [])) or 'n/a'}")
+
+
+@app.command()
 def gov_plan(
     config: Path = typer.Option(
         "config.toml",

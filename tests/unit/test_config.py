@@ -32,6 +32,13 @@ max_retries = 3
 retry_backoff_base = 1.5
 log_level = "DEBUG"
 prompt_template_path = "prompts/custom.txt"
+
+[langgraph]
+enabled = true
+checkpoint_backend = "sqlite"
+storage_path = "state/langgraph/test.db"
+snapshot_dir = "state/snapshots"
+phase_tag = "phase_1"
 """
 
 
@@ -83,6 +90,14 @@ def test_load_valid_config(valid_config_toml):
         assert config.agent.retry_backoff_base == 1.5
         assert config.agent.log_level == "DEBUG"
         assert config.agent.prompt_template_path == "prompts/custom.txt"
+
+        # Verify LangGraph config
+        assert config.langgraph is not None
+        assert config.langgraph.enabled is True
+        assert config.langgraph.checkpoint_backend == "sqlite"
+        assert config.langgraph.storage_path == "state/langgraph/test.db"
+        assert config.langgraph.snapshot_dir == "state/snapshots"
+        assert config.langgraph.phase_tag == "phase_1"
     finally:
         os.unlink(config_path)
 
@@ -109,6 +124,7 @@ def test_load_minimal_config_with_defaults(minimal_config_toml):
         assert config.agent.retry_backoff_base == 2.0
         assert config.agent.log_level == "INFO"
         assert config.agent.prompt_template_path == "prompts/default.txt"
+        assert config.langgraph is None
     finally:
         os.unlink(config_path)
 
@@ -256,6 +272,28 @@ def test_log_level_environment_variable_override(minimal_config_toml):
         # Clean up environment variable
         if "LOG_LEVEL" in os.environ:
             del os.environ["LOG_LEVEL"]
+
+
+def test_invalid_langgraph_backend(minimal_config_toml):
+    """Invalid checkpoint backend should raise ValueError."""
+    config_content = (
+        minimal_config_toml
+        + """
+[langgraph]
+checkpoint_backend = "redis"
+"""
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".toml", delete=False) as f:
+        f.write(config_content)
+        config_path = f.name
+
+    try:
+        with pytest.raises(
+            ValueError, match=r"\[langgraph\]\.checkpoint_backend must be 'sqlite' or 'memory'"
+        ):
+            load_config(config_path)
+    finally:
+        os.unlink(config_path)
 
 
 def test_load_signal_config():

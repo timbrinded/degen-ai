@@ -17,9 +17,9 @@ dependencies = [
     "matplotlib>=3.7.0",
     "tqdm>=4.65.0",
     "langsmith>=0.4.42",
+    "langgraph>=1.0.0",
     "pytest>=8.4.2",
     "yfinance>=0.2.0",
-    "frontmatter>=3.0.8",
 ]
 
 [project.optional-dependencies]
