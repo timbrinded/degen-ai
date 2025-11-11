@@ -27,6 +27,8 @@ def collect_signals(state: GlobalState, config: Config) -> StatePatch:
     tick = fast_state.get("tick_id", 0)
     fast_signals = account_state.get("fast_signals", {})
 
+    telemetry = cast(dict[str, Any], state.get("telemetry", {}) or {})
+
     patch: StatePatch = {
         "fast": {
             "signals": fast_signals,
@@ -35,16 +37,17 @@ def collect_signals(state: GlobalState, config: Config) -> StatePatch:
         "telemetry": {
             "tick": tick,
             "last_loop": FAST_LOOP,
-            "last_snapshot_id": state.get("telemetry", {}).get("last_snapshot_id"),
-            "langgraph_phase": state.get("telemetry", {}).get("langgraph_phase", "phase_1"),
-            "trace_id": state.get("telemetry", {}).get("trace_id"),
+            "last_snapshot_id": telemetry.get("last_snapshot_id"),
+            "langgraph_phase": telemetry.get("langgraph_phase", "phase_1"),
+            "trace_id": telemetry.get("trace_id"),
         },
     }
 
     metadata = {
         "loop": FAST_LOOP,
         "tick": tick,
-        "phase": state.get("telemetry", {}).get("langgraph_phase"),
+        "langgraph_phase": telemetry.get("langgraph_phase"),
+        "snapshot_id": telemetry.get("last_snapshot_id"),
     }
     with node_trace(
         "collect_signals", metadata=metadata, inputs={"has_signals": bool(fast_signals)}

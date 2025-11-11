@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 from hyperliquid_agent.config import Config
 from hyperliquid_agent.langgraph.instrumentation import node_trace, summarize_patch
@@ -31,6 +31,8 @@ def execution_planner(state: GlobalState, config: Config) -> StatePatch:
         for alloc in allocations
     ]
 
+    telemetry = cast(dict[str, Any], state.get("telemetry", {}) or {})
+
     patch: StatePatch = {
         "fast": {
             "execution": {
@@ -46,6 +48,8 @@ def execution_planner(state: GlobalState, config: Config) -> StatePatch:
         "loop": FAST_LOOP,
         "tick": fast_state.get("tick_id", 0),
         "actions": len(planned_actions),
+        "langgraph_phase": telemetry.get("langgraph_phase"),
+        "snapshot_id": telemetry.get("last_snapshot_id"),
     }
     with node_trace("execution_planner", metadata=metadata, inputs={"has_plan": bool(plan)}) as run:
         if run is not None:

@@ -22,6 +22,8 @@ def regime_detector(state: GlobalState, config: Config) -> StatePatch:
     macro_events = slow_state.get("macro_events") or regime_snapshot.get("macro_events") or []
     current_regime = regime_snapshot.get("current_regime")
 
+    telemetry = cast(dict[str, Any], state.get("telemetry", {}) or {})
+
     patch: StatePatch = {
         "slow": {
             "regime_snapshot": regime_snapshot,
@@ -37,7 +39,12 @@ def regime_detector(state: GlobalState, config: Config) -> StatePatch:
         },
     }
 
-    metadata = {"regime": current_regime, "macro_events": len(macro_events)}
+    metadata = {
+        "regime": current_regime,
+        "macro_events": len(macro_events),
+        "langgraph_phase": telemetry.get("langgraph_phase"),
+        "snapshot_id": telemetry.get("last_snapshot_id"),
+    }
     with node_trace(
         "regime_detector", metadata=metadata, inputs={"has_regime": bool(current_regime)}
     ) as run:

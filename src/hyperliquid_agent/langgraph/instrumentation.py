@@ -25,11 +25,17 @@ def node_trace(
         yield None
         return
 
+    metadata = dict(metadata or {})
+    phase_tag = metadata.get("langgraph_phase")
+    tags = ["langgraph", f"node:{node_name}"]
+    if phase_tag:
+        tags.append(f"langgraph_phase:{phase_tag}")
+
     cm = _langsmith_trace(
         name=f"langgraph.nodes.{node_name}",
         run_type="chain",
-        metadata=metadata or {},
-        tags=["langgraph", f"node:{node_name}"],
+        metadata=metadata,
+        tags=tags,
         inputs=inputs or {},
     )
     run = cm.__enter__()

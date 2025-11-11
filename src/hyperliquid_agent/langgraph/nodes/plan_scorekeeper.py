@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 from hyperliquid_agent.config import Config
 from hyperliquid_agent.langgraph.instrumentation import node_trace, summarize_patch
@@ -36,6 +36,8 @@ def plan_scorekeeper(state: GlobalState, config: Config) -> StatePatch:
         },
     }
 
+    telemetry = cast(dict[str, Any], state.get("telemetry", {}) or {})
+
     patch: StatePatch = {
         "governance": {
             "plan_history": [score_entry],
@@ -48,7 +50,12 @@ def plan_scorekeeper(state: GlobalState, config: Config) -> StatePatch:
         },
     }
 
-    metadata = {"plan_id": score_entry["plan_id"], "regime": score_entry["regime"]}
+    metadata = {
+        "plan_id": score_entry["plan_id"],
+        "regime": score_entry["regime"],
+        "langgraph_phase": telemetry.get("langgraph_phase"),
+        "snapshot_id": telemetry.get("last_snapshot_id"),
+    }
     with node_trace(
         "plan_scorekeeper", metadata=metadata, inputs={"has_plan": bool(score_entry["plan_id"])}
     ) as run:

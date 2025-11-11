@@ -4,6 +4,7 @@ from pathlib import Path
 
 import typer
 from hyperliquid.info import Info
+from langchain_core.runnables.config import RunnableConfig
 
 from hyperliquid_agent.backtesting.cli import backtest_command
 from hyperliquid_agent.identity_registry import AssetIdentityRegistry, default_assets_config_path
@@ -256,7 +257,14 @@ def dry_run(
         raise typer.Exit(code=1) from exc
 
     compiled_graph = build_langgraph(cfg)
-    result_state = compiled_graph.invoke(snapshot_state)
+    run_config: RunnableConfig = {
+        "configurable": {
+            "thread_id": f"dry-run-{metadata.snapshot_id}",
+            "checkpoint_ns": cfg.langgraph.phase_tag if cfg.langgraph else "phase_1",
+            "checkpoint_id": metadata.snapshot_id,
+        }
+    }
+    result_state = compiled_graph.invoke(snapshot_state, run_config)
     telemetry = result_state.get("telemetry", {})
     scheduler_state = result_state.get("scheduler", {})
 
