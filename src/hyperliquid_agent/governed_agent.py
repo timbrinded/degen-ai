@@ -3,15 +3,17 @@
 import asyncio
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, NoReturn
 
 from hyperliquid.info import Info
+from langgraph.errors import GraphInterrupt
 
 from hyperliquid_agent.agent import TradingAgent
 from hyperliquid_agent.asset_identity import AssetIdentity
-from hyperliquid_agent.config import Config
+from hyperliquid_agent.config import Config, LangGraphConfig
 from hyperliquid_agent.decision import TradeAction
 from hyperliquid_agent.executor import TradeExecutor
 from hyperliquid_agent.governance.governor import (
@@ -33,6 +35,10 @@ from hyperliquid_agent.governance.tripwire import (
     TripwireService,
 )
 from hyperliquid_agent.identity_registry import AssetIdentityRegistry, default_assets_config_path
+from hyperliquid_agent.langgraph.context import LangGraphRuntimeContext, LLMBudgetBook
+from hyperliquid_agent.langgraph.graph import build_langgraph
+from hyperliquid_agent.langgraph.state import GlobalState, empty_state
+from hyperliquid_agent.llm_client import LLMClient
 from hyperliquid_agent.market_registry import MarketRegistry
 from hyperliquid_agent.monitor import Position
 from hyperliquid_agent.monitor_enhanced import EnhancedPositionMonitor
@@ -163,6 +169,18 @@ class GovernedTradingAgent:
 
         # Track which tripwires are currently active to suppress duplicate actions
         self._active_tripwire_triggers: set[str] = set()
+
+        self.langgraph_enabled = bool(config.langgraph and config.langgraph.enabled)
+        self._langgraph_graph: Any | None = None
+        self._langgraph_context: LangGraphRuntimeContext | None = None
+        self._langgraph_state: GlobalState = empty_state()
+        if self.langgraph_enabled:
+            try:
+                self._init_langgraph_runtime()
+                self.langgraph_phase = 2
+            except Exception as exc:
+                self.logger.error("Failed to initialize LangGraph runtime: %s", exc, exc_info=True)
+                self.langgraph_enabled = False
 
         # Note: _startup_hydration() is called explicitly in run() and run_async()
         # BEFORE the main loop starts to ensure proper initialization sequence
@@ -974,6 +992,68 @@ class GovernedTradingAgent:
 
         return None
 
+    def _init_langgraph_runtime(self) -> None:
+        """Instantiate LangGraph runtime using existing agent services."""
+
+        context = self._build_langgraph_context()
+        graph, _ = build_langgraph(self.config, context=context)
+        self._langgraph_context = context
+        self._langgraph_graph = graph
+        self._langgraph_state = empty_state()
+        self.logger.info("LangGraph runtime initialized (feature flag enabled)")
+
+    def _build_langgraph_context(self) -> LangGraphRuntimeContext:
+        """Reuse agent services inside LangGraph runtime context."""
+
+        if self.config.governance is None:
+            raise ValueError("Governance config required for LangGraph runtime")
+
+        llm_client = LLMClient(self.config.llm, logger=self.logger)
+        return LangGraphRuntimeContext(
+            config=self.config,
+            langgraph_config=self.config.langgraph or LangGraphConfig(),
+            governance=self.config.governance,
+            risk=self.config.risk,
+            logger=self.logger,
+            info=self.info,
+            market_registry=self.registry,
+            identity_registry=self.identity_registry,
+            price_service=self.price_service,
+            monitor=self.monitor,
+            executor=self.executor,
+            governor=self.governor,
+            tripwire=self.tripwire_service,
+            regime_detector=self.regime_detector,
+            scorekeeper=self.scorekeeper,
+            llm_client=llm_client,
+            prompt_template=self.base_agent.decision_engine.prompt_template,
+            decision_engine=self.base_agent.decision_engine,
+            budgets=LLMBudgetBook(),
+            cache={},
+        )
+
+    def _invoke_langgraph_loop(self, loop_name: str) -> bool:
+        """Execute a specific LangGraph loop when enabled."""
+
+        if not self.langgraph_enabled or self._langgraph_graph is None:
+            return False
+
+        scheduler = self._langgraph_state.setdefault("scheduler", {})
+        scheduler["pending_loops"] = [loop_name]
+        scheduler["next_loop"] = loop_name
+
+        try:
+            self._langgraph_state = self._langgraph_graph.invoke(self._langgraph_state)
+            return True
+        except GraphInterrupt as interrupt:
+            payloads = []
+            if interrupt.args:
+                candidate = interrupt.args[0]
+                if isinstance(candidate, Sequence):
+                    payloads = [getattr(item, "value", {}) for item in candidate]
+            self.logger.warning("LangGraph interrupt: %s", payloads or ["unknown"])
+            return False
+
     def _execute_fast_loop(self, current_time: datetime):
         """Execute fast loop: follow active plan deterministically.
 
@@ -987,6 +1067,18 @@ class GovernedTradingAgent:
         Args:
             current_time: Current timestamp
         """
+        if self.langgraph_enabled and self._langgraph_graph is not None:
+            if self._invoke_langgraph_loop("fast_loop"):
+                self.logger.info(
+                    "LangGraph fast loop executed (experimental runtime enabled)",
+                    extra={"tick": self.tick_count},
+                )
+                return
+            self.logger.warning(
+                "LangGraph fast loop invocation failed; falling back to legacy implementation",
+                extra={"tick": self.tick_count},
+            )
+
         loop_metrics: dict[str, Any] = {"decisions_count": 0, "tripwire_violations": 0}
         metadata = {**self._loop_metadata(), "loop": "fast"}
 
@@ -1093,6 +1185,17 @@ class GovernedTradingAgent:
         Args:
             current_time: Current timestamp
         """
+        if self.langgraph_enabled and self._langgraph_graph is not None:
+            if self._invoke_langgraph_loop("medium_loop"):
+                self.logger.info(
+                    "LangGraph medium loop executed (experimental runtime enabled)",
+                    extra={"tick": self.tick_count},
+                )
+                return
+            self.logger.warning(
+                "LangGraph medium loop invocation failed; falling back to legacy implementation",
+                extra={"tick": self.tick_count},
+            )
         loop_metrics: dict[str, Any] = {
             "decisions_count": 0,
             "micro_adjustments_executed": 0,
@@ -1291,6 +1394,17 @@ class GovernedTradingAgent:
         Args:
             current_time: Current timestamp
         """
+        if self.langgraph_enabled and self._langgraph_graph is not None:
+            if self._invoke_langgraph_loop("slow_loop"):
+                self.logger.info(
+                    "LangGraph slow loop executed (experimental runtime enabled)",
+                    extra={"tick": self.tick_count},
+                )
+                return
+            self.logger.warning(
+                "LangGraph slow loop invocation failed; falling back to legacy implementation",
+                extra={"tick": self.tick_count},
+            )
         loop_metrics: dict[str, Any] = {
             "decisions_count": 0,
             "regime": self.regime_detector.current_regime,

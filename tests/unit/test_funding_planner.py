@@ -2,9 +2,11 @@
 
 import logging
 from decimal import Decimal
+from typing import Any, cast
 
 from hyperliquid_agent.config import RiskConfig
 from hyperliquid_agent.decision import TradeAction
+from hyperliquid_agent.executor import TradeExecutor
 from hyperliquid_agent.funding import FundingPlanner
 from hyperliquid_agent.monitor import AccountState
 
@@ -29,7 +31,7 @@ class DummyExecutor:
 def make_account_state(**overrides) -> AccountState:
     """Helper to create baseline AccountState objects for tests."""
 
-    base = {
+    base: dict[str, Any] = {
         "portfolio_value": 2000.0,
         "available_balance": 1000.0,
         "positions": [],
@@ -52,7 +54,8 @@ def test_funding_planner_inserts_transfer_when_spot_insufficient():
         target_spot_usdc_buffer_usd=50.0,
     )
 
-    planner = FundingPlanner(risk, DummyExecutor(), logger=logging.getLogger("funding-test"))
+    executor = cast(TradeExecutor, DummyExecutor())
+    planner = FundingPlanner(risk, executor, logger=logging.getLogger("funding-test"))
     account_state = make_account_state()
 
     actions = [
@@ -67,7 +70,7 @@ def test_funding_planner_inserts_transfer_when_spot_insufficient():
     transfer_action = result.actions[0]
     assert transfer_action.action_type == "transfer"
     assert transfer_action.market_type == "spot"
-    assert transfer_action.size > 0
+    assert transfer_action.size is not None and transfer_action.size > 0
     assert result.actions[1].action_type == "buy"
 
 
@@ -79,7 +82,8 @@ def test_funding_planner_skips_buy_when_buffer_would_break():
         target_spot_usdc_buffer_usd=50.0,
     )
 
-    planner = FundingPlanner(risk, DummyExecutor(), logger=logging.getLogger("funding-test"))
+    executor = cast(TradeExecutor, DummyExecutor())
+    planner = FundingPlanner(risk, executor, logger=logging.getLogger("funding-test"))
 
     # Account value equals required capital; no headroom to transfer
     total_initial_margin = 500.0
@@ -105,7 +109,8 @@ def test_funding_planner_skips_buy_when_buffer_would_break():
 
 def test_funding_planner_allows_sell_to_increase_spot_balance():
     risk = RiskConfig(enable_auto_transfers=True)
-    planner = FundingPlanner(risk, DummyExecutor(), logger=logging.getLogger("funding-test"))
+    executor = cast(TradeExecutor, DummyExecutor())
+    planner = FundingPlanner(risk, executor, logger=logging.getLogger("funding-test"))
     account_state = make_account_state(spot_balances={"USDC": 0.0})
 
     actions = [

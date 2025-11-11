@@ -85,6 +85,7 @@ class GovernanceState(TypedDict, total=False):
     """State shared between loops for governance + plan enforcement."""
 
     active_plan: dict[str, Any] | None
+    approved_plan: dict[str, Any] | None
     plan_history: list[dict[str, Any]]
     regime: dict[str, Any]
     tripwire: TripwireState
@@ -98,6 +99,7 @@ class SchedulerState(TypedDict, total=False):
     medium_last_run: str | None
     slow_last_run: str | None
     pending_loops: list[str]
+    next_loop: str | None
 
 
 class GlobalState(TypedDict, total=False):

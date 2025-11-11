@@ -1,13 +1,19 @@
 """CLI entry point for the Hyperliquid trading agent."""
 
+import json
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import typer
 from hyperliquid.info import Info
 from langchain_core.runnables.config import RunnableConfig
+from langgraph.errors import GraphInterrupt, Interrupt
 
 from hyperliquid_agent.backtesting.cli import backtest_command
 from hyperliquid_agent.identity_registry import AssetIdentityRegistry, default_assets_config_path
+from hyperliquid_agent.langgraph.graph import build_langgraph, load_dry_run_state
+from hyperliquid_agent.langgraph.state import GlobalState
 
 app = typer.Typer()
 
@@ -96,6 +102,46 @@ def _create_governed_agent(config_path: str):
 
     agent = GovernedTradingAgent(cfg, gov_config)
     return cfg, agent
+
+
+def _interrupt_payloads(exc: GraphInterrupt) -> list[dict[str, Any]]:
+    if not exc.args:
+        return [{}]
+    candidate = exc.args[0]
+    if isinstance(candidate, Sequence):
+        return [getattr(item, "value", {}) for item in candidate]
+    if isinstance(candidate, Interrupt):
+        return [getattr(candidate, "value", {})]
+    return [{}]
+
+
+def _handle_graph_interrupt_cli(state: GlobalState, interrupt: GraphInterrupt) -> bool:
+    """Interactive handler for LangGraph interrupts."""
+
+    payloads = _interrupt_payloads(interrupt)
+    payload = payloads[0] if payloads else {}
+    reason = payload.get("type", "unknown")
+    typer.echo(f"\nGraph interrupt encountered: {reason}")
+
+    if reason == "plan_change_proposed":
+        plan = payload.get("plan", {})
+        typer.echo("Proposed plan:")
+        typer.echo(json.dumps(plan, indent=2))
+        plan_payload = plan if isinstance(plan, dict) else None
+        if plan_payload is None:
+            typer.echo("Invalid plan payload; halting.\n")
+            return False
+        if typer.confirm("Approve this plan change?", default=False):
+            governance = state.setdefault("governance", {})
+            governance["approved_plan"] = plan_payload
+            typer.echo("Plan approved. Resuming LangGraph execution...\n")
+            return True
+        typer.echo("Plan rejected. Halting LangGraph execution.\n")
+        return False
+
+    typer.echo("Interrupt payload:")
+    typer.echo(json.dumps(payload, indent=2))
+    return False
 
 
 @app.command()
@@ -230,7 +276,6 @@ def dry_run(
     """Execute a single LangGraph scheduler tick in dry-run mode."""
 
     from hyperliquid_agent.config import load_config
-    from hyperliquid_agent.langgraph.graph import build_langgraph, load_dry_run_state
 
     if not using_langgraph:
         typer.echo("Add --using-langgraph to acknowledge the experimental runtime.")
@@ -256,7 +301,7 @@ def dry_run(
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
-    compiled_graph = build_langgraph(cfg)
+    compiled_graph, runtime = build_langgraph(cfg)
     run_config: RunnableConfig = {
         "configurable": {
             "thread_id": f"dry-run-{metadata.snapshot_id}",
@@ -264,7 +309,16 @@ def dry_run(
             "checkpoint_id": metadata.snapshot_id,
         }
     }
-    result_state = compiled_graph.invoke(snapshot_state, run_config)
+    current_state: GlobalState = snapshot_state
+    while True:
+        try:
+            result_state = compiled_graph.invoke(current_state, run_config)
+            break
+        except GraphInterrupt as interrupt:
+            if _handle_graph_interrupt_cli(current_state, interrupt):
+                continue
+            result_state = current_state
+            break
     telemetry = result_state.get("telemetry", {})
     scheduler_state = result_state.get("scheduler", {})
 
@@ -273,6 +327,7 @@ def dry_run(
     typer.echo(f"  Loop seed:  {metadata.loop_type}")
     typer.echo(f"  Phase tag:  {telemetry.get('langgraph_phase')}")
     typer.echo(f"  Next loops: {', '.join(scheduler_state.get('pending_loops', [])) or 'n/a'}")
+    runtime.shutdown()
 
 
 @app.command()

@@ -1,12 +1,17 @@
 """CLI commands for regime backtesting."""
 
 import asyncio
+import json
 import logging
 import time
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import typer
+from langchain_core.runnables.config import RunnableConfig
+from langgraph.errors import GraphInterrupt, Interrupt
 
 from hyperliquid_agent.backtesting.historical_data import HistoricalDataManager
 from hyperliquid_agent.backtesting.reports import ReportGenerator
@@ -14,11 +19,83 @@ from hyperliquid_agent.backtesting.runner import BacktestRunner
 from hyperliquid_agent.backtesting.signal_reconstructor import SignalReconstructor
 from hyperliquid_agent.config import load_config
 from hyperliquid_agent.governance.regime import RegimeDetector, RegimeDetectorConfig
+from hyperliquid_agent.langgraph.graph import build_langgraph, load_dry_run_state
+from hyperliquid_agent.langgraph.state import GlobalState
 from hyperliquid_agent.signals.cache import SQLiteCacheLayer
 from hyperliquid_agent.signals.hyperliquid_provider import HyperliquidProvider
 from hyperliquid_agent.signals.processor import ComputedSignalProcessor
 
 logger = logging.getLogger(__name__)
+
+
+def _interrupt_payloads(exc: GraphInterrupt) -> list[dict[str, Any]]:
+    if not exc.args:
+        return [{}]
+    candidate = exc.args[0]
+    if isinstance(candidate, Sequence):
+        return [getattr(item, "value", {}) for item in candidate]
+    if isinstance(candidate, Interrupt):
+        return [getattr(candidate, "value", {})]
+    return [{}]
+
+
+def _handle_graph_interrupt_backtest(state: GlobalState, interrupt: GraphInterrupt) -> bool:
+    payloads = _interrupt_payloads(interrupt)
+    payload = payloads[0] if payloads else {}
+    reason = payload.get("type", "unknown")
+    typer.echo(f"\nLangGraph interrupt during replay: {reason}")
+
+    if reason == "plan_change_proposed":
+        plan = payload.get("plan", {})
+        typer.echo("Proposed plan:")
+        typer.echo(json.dumps(plan, indent=2))
+        plan_payload = plan if isinstance(plan, dict) else None
+        if plan_payload is None:
+            typer.echo("Invalid plan payload; halting replay.\n")
+            return False
+        if typer.confirm("Approve this plan change?", default=False):
+            governance = state.setdefault("governance", {})
+            governance["approved_plan"] = plan_payload
+            typer.echo("Plan approved. Resuming replay...\n")
+            return True
+        typer.echo("Plan rejected. Halting replay.\n")
+        return False
+
+    typer.echo("Interrupt payload:")
+    typer.echo(json.dumps(payload, indent=2))
+    return False
+
+
+def _run_langgraph_replay(cfg, *, loop_choice: str | None) -> None:
+    compiled_graph, runtime = build_langgraph(cfg)
+    metadata, replay_state = load_dry_run_state(
+        cfg,
+        loop_type=loop_choice,
+    )
+    run_config: RunnableConfig = {
+        "configurable": {
+            "thread_id": f"backtest-replay-{metadata.snapshot_id}",
+            "checkpoint_ns": cfg.langgraph.phase_tag if cfg.langgraph else "phase_1",
+            "checkpoint_id": metadata.snapshot_id,
+        }
+    }
+
+    current_state: GlobalState = replay_state
+    while True:
+        try:
+            result_state = compiled_graph.invoke(current_state, run_config)
+            break
+        except GraphInterrupt as interrupt:
+            if _handle_graph_interrupt_backtest(current_state, interrupt):
+                continue
+            result_state = current_state
+            break
+
+    telemetry = result_state.get("telemetry", {})
+    typer.echo("\nLangGraph replay complete")
+    typer.echo(f"  Snapshot:   {metadata.tag}")
+    typer.echo(f"  Phase tag:  {telemetry.get('langgraph_phase')}")
+    runtime.shutdown()
 
 
 def validate_date_range(start_date: datetime, end_date: datetime) -> None:
@@ -259,6 +336,21 @@ def backtest_command(
         "--clear-cache",
         help="Clear cached historical data before running backtest",
     ),
+    using_langgraph: bool = typer.Option(
+        False,
+        "--using-langgraph/--no-langgraph",
+        help="Replay LangGraph after the backtest completes.",
+    ),
+    graph_fast_only: bool = typer.Option(
+        False,
+        "--graph-fast-only",
+        help="Replay only the fast loop (requires --using-langgraph).",
+    ),
+    graph_full_cycle: bool = typer.Option(
+        False,
+        "--graph-full-cycle",
+        help="Replay fast+medium+slow loops via scheduler (requires --using-langgraph).",
+    ),
 ) -> None:
     """Run regime detection backtest on historical Hyperliquid data.
 
@@ -369,3 +461,18 @@ def backtest_command(
         typer.echo(f"\n\nBacktest failed: {e}", err=True)
         logger.error("Backtest failed", exc_info=True)
         raise typer.Exit(code=1) from e
+
+    if using_langgraph:
+        if graph_fast_only and graph_full_cycle:
+            typer.echo("Choose only one of --graph-fast-only or --graph-full-cycle.", err=True)
+            raise typer.Exit(code=1)
+        if cfg.langgraph is None:
+            typer.echo("Error: missing [langgraph] section in config.toml", err=True)
+            raise typer.Exit(code=1)
+
+        if not graph_fast_only and not graph_full_cycle:
+            graph_full_cycle = True
+
+        loop_choice = "fast" if graph_fast_only else None
+        typer.echo("\nReplaying LangGraph using snapshot data...")
+        _run_langgraph_replay(cfg, loop_choice=loop_choice)

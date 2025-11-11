@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
+from typing import Any
 
 from langgraph.checkpoint.memory import MemorySaver  # type: ignore[import-not-found]
 
@@ -14,15 +16,23 @@ except Exception:  # pragma: no cover - optional dependency
 from langgraph.graph import END, START, StateGraph
 
 from hyperliquid_agent.config import Config, LangGraphConfig
+from hyperliquid_agent.langgraph.context import LangGraphRuntimeContext
 from hyperliquid_agent.langgraph.nodes import (
     collect_signals,
+    emergency_unwind,
     execution_planner,
+    llm_decision_engine,
+    plan_health_check,
     plan_scorekeeper,
+    regime_data_prep,
     regime_detector,
+    strategy_governor,
+    trade_executor,
     tripwire_check,
 )
 from hyperliquid_agent.langgraph.state import (
     FAST_LOOP,
+    MEDIUM_LOOP,
     GlobalState,
     SnapshotMetadata,
     StatePatch,
@@ -31,59 +41,125 @@ from hyperliquid_agent.langgraph.state import (
 )
 
 
-def _deep_merge(target: StatePatch, incoming: StatePatch) -> StatePatch:
-    """Recursively merge state patches."""
+def _scheduler_node(state: GlobalState, *, context: LangGraphRuntimeContext) -> StatePatch:
+    """Decide which loop should run next."""
 
-    for key, value in incoming.items():
-        if isinstance(value, dict) and isinstance(target.get(key), dict):
-            _deep_merge(target[key], value)  # type: ignore[arg-type]
-        else:
-            target[key] = value
-    return target
+    scheduler: dict[str, Any] = dict(state.get("scheduler", {}) or {})
+    raw_pending = scheduler.get("pending_loops", [])
+    pending: list[str] = list(raw_pending) if isinstance(raw_pending, list) else []
+    now = datetime.now(UTC)
 
+    def _interval_seconds(loop: str) -> int:
+        if loop == "fast":
+            return context.governance.fast_loop_interval_seconds
+        if loop == "medium":
+            return context.governance.medium_loop_interval_minutes * 60
+        return context.governance.slow_loop_interval_hours * 3600
 
-def _merge_patches(*patches: StatePatch) -> StatePatch:
-    merged: StatePatch = {}
-    for patch in patches:
-        _deep_merge(merged, patch)
-    return merged
+    def _due(loop: str) -> bool:
+        last_run = scheduler.get(f"{loop}_last_run")
+        if not isinstance(last_run, str):
+            return True
+        try:
+            last_dt = datetime.fromisoformat(last_run)
+        except ValueError:
+            return True
+        return (now - last_dt).total_seconds() >= _interval_seconds(loop)
 
+    if not pending:
+        if _due("fast"):
+            pending.append("fast_loop")
+        if _due("medium"):
+            pending.append("medium_loop")
+        if _due("slow"):
+            pending.append("slow_loop")
 
-def _scheduler_node(state: GlobalState, *, app_config: Config) -> StatePatch:
-    """Seed telemetry values + pending loop order."""
+    next_loop = pending.pop(0) if pending else "idle"
+    scheduler["pending_loops"] = pending
+    scheduler["next_loop"] = next_loop
 
-    langgraph_cfg = app_config.langgraph or LangGraphConfig()
     telemetry = state.get("telemetry", {}) or {}
-    pending = ["fast_loop", "medium_loop", "slow_loop"]
-    patch: StatePatch = {
-        "telemetry": {
-            **telemetry,
-            "langgraph_phase": langgraph_cfg.phase_tag,
-            "last_loop": telemetry.get("last_loop", "scheduler"),
-        },
-        "scheduler": {
-            "pending_loops": pending,
-        },
+    telemetry_patch = {
+        **telemetry,
+        "langgraph_phase": context.langgraph_config.phase_tag,
+        "last_loop": telemetry.get("last_loop", "scheduler"),
+        "scheduler_run_at": now.isoformat(),
     }
-    return patch
+
+    return {
+        "telemetry": telemetry_patch,
+        "scheduler": scheduler,
+    }
 
 
-def _fast_loop_node(state: GlobalState, *, app_config: Config) -> StatePatch:
-    patch = _merge_patches(
-        collect_signals(state, app_config),
-        tripwire_check(state, app_config),
-        execution_planner(state, app_config),
+def _scheduler_router(state: GlobalState) -> str:
+    scheduler = state.get("scheduler", {}) or {}
+    next_loop = scheduler.get("next_loop")
+    return next_loop if isinstance(next_loop, str) else "idle"
+
+
+def _build_fast_subgraph(config: Config, context: LangGraphRuntimeContext):
+    graph = StateGraph(GlobalState)
+    graph.add_node(
+        "collect_signals",
+        partial(collect_signals, config=config, context=context, loop=FAST_LOOP),
     )
-    patch.setdefault("telemetry", {})["last_loop"] = FAST_LOOP
-    return patch
+    graph.add_node("tripwire_check", partial(tripwire_check, config=config, context=context))
+    graph.add_node("execution_planner", partial(execution_planner, config=config, context=context))
+    graph.add_node("trade_executor", partial(trade_executor, config=config, context=context))
+    graph.add_node("emergency_unwind", partial(emergency_unwind, config=config, context=context))
+
+    graph.add_edge(START, "collect_signals")
+    graph.add_edge("collect_signals", "tripwire_check")
+    graph.add_conditional_edges(
+        "tripwire_check",
+        lambda state: (
+            "emergency"
+            if (state.get("fast", {}).get("tripwire") or {}).get("emergency_unwind_required")
+            else "normal"
+        ),
+        {
+            "emergency": "emergency_unwind",
+            "normal": "execution_planner",
+        },
+    )
+    graph.add_edge("execution_planner", "trade_executor")
+    graph.add_edge("trade_executor", END)
+    graph.add_edge("emergency_unwind", END)
+    return graph.compile()
 
 
-def _medium_loop_node(state: GlobalState, *, app_config: Config) -> StatePatch:
-    return plan_scorekeeper(state, app_config)
+def _build_medium_subgraph(config: Config, context: LangGraphRuntimeContext):
+    graph = StateGraph(GlobalState)
+    graph.add_node(
+        "collect_signals",
+        partial(collect_signals, config=config, context=context, loop=MEDIUM_LOOP),
+    )
+    graph.add_node("plan_health_check", partial(plan_health_check, config=config, context=context))
+    graph.add_node(
+        "llm_decision_engine", partial(llm_decision_engine, config=config, context=context)
+    )
+    graph.add_node("plan_scorekeeper", partial(plan_scorekeeper, config=config, context=context))
+
+    graph.add_edge(START, "collect_signals")
+    graph.add_edge("collect_signals", "plan_health_check")
+    graph.add_edge("plan_health_check", "llm_decision_engine")
+    graph.add_edge("llm_decision_engine", "plan_scorekeeper")
+    graph.add_edge("plan_scorekeeper", END)
+    return graph.compile()
 
 
-def _slow_loop_node(state: GlobalState, *, app_config: Config) -> StatePatch:
-    return regime_detector(state, app_config)
+def _build_slow_subgraph(config: Config, context: LangGraphRuntimeContext):
+    graph = StateGraph(GlobalState)
+    graph.add_node("regime_data_prep", partial(regime_data_prep, config=config, context=context))
+    graph.add_node("regime_detector", partial(regime_detector, config=config, context=context))
+    graph.add_node("strategy_governor", partial(strategy_governor, config=config, context=context))
+
+    graph.add_edge(START, "regime_data_prep")
+    graph.add_edge("regime_data_prep", "regime_detector")
+    graph.add_edge("regime_detector", "strategy_governor")
+    graph.add_edge("strategy_governor", END)
+    return graph.compile()
 
 
 def _build_checkpointer(config: Config):
@@ -100,22 +176,37 @@ def _build_checkpointer(config: Config):
     return MemorySaver()
 
 
-def build_langgraph(config: Config):
-    """Compile the scaffolding StateGraph."""
+def build_langgraph(
+    config: Config,
+    *,
+    context: LangGraphRuntimeContext | None = None,
+):
+    """Compile the LangGraph runtime accompanied by its shared context."""
 
+    runtime = context or LangGraphRuntimeContext.from_config(config)
     graph = StateGraph(GlobalState)
-    graph.add_node("scheduler", partial(_scheduler_node, app_config=config))
-    graph.add_node("fast_loop", partial(_fast_loop_node, app_config=config))
-    graph.add_node("medium_loop", partial(_medium_loop_node, app_config=config))
-    graph.add_node("slow_loop", partial(_slow_loop_node, app_config=config))
+    graph.add_node("scheduler", partial(_scheduler_node, context=runtime))
+    graph.add_node("fast_loop", _build_fast_subgraph(config, runtime))
+    graph.add_node("medium_loop", _build_medium_subgraph(config, runtime))
+    graph.add_node("slow_loop", _build_slow_subgraph(config, runtime))
 
     graph.add_edge(START, "scheduler")
-    graph.add_edge("scheduler", "fast_loop")
-    graph.add_edge("fast_loop", "medium_loop")
-    graph.add_edge("medium_loop", "slow_loop")
-    graph.add_edge("slow_loop", END)
+    graph.add_conditional_edges(
+        "scheduler",
+        _scheduler_router,
+        {
+            "fast_loop": "fast_loop",
+            "medium_loop": "medium_loop",
+            "slow_loop": "slow_loop",
+            "idle": END,
+        },
+    )
+    graph.add_edge("fast_loop", "scheduler")
+    graph.add_edge("medium_loop", "scheduler")
+    graph.add_edge("slow_loop", "scheduler")
 
-    return graph.compile(checkpointer=_build_checkpointer(config))
+    compiled = graph.compile(checkpointer=_build_checkpointer(config))
+    return compiled, runtime
 
 
 def load_dry_run_state(
