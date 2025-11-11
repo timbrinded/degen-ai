@@ -178,11 +178,14 @@ class ObservabilityConfig:
 class LangGraphConfig:
     """LangGraph runtime configuration."""
 
-    enabled: bool = False
+    enabled: bool = True
     checkpoint_backend: Literal["sqlite", "memory"] = "sqlite"
     storage_path: str = "state/langgraph/checkpoints.db"
     snapshot_dir: str = "state/snapshots"
-    phase_tag: str = "langgraph_phase_1"
+    phase_tag: str = "langgraph_phase_3"
+    thread_id_prefix: str = "degen-governed"
+    prometheus_textfile: str | None = None
+    interrupt_poll_seconds: float = 5.0
 
 
 @dataclass
@@ -428,9 +431,11 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
         if langsmith_api_key:
             os.environ["LANGSMITH_API_KEY"] = langsmith_api_key
 
-    langgraph_config = None
-    if "langgraph" in data:
-        langgraph_data = data["langgraph"] or {}
+    langgraph_data = data.get("langgraph")
+    if langgraph_data is None:
+        langgraph_config = LangGraphConfig()
+    else:
+        langgraph_data = langgraph_data or {}
         checkpoint_backend = langgraph_data.get("checkpoint_backend", "sqlite")
         if checkpoint_backend not in {"sqlite", "memory"}:
             raise ValueError(
@@ -439,11 +444,14 @@ def load_config(config_path: str | Path = "config.toml") -> Config:
             )
 
         langgraph_config = LangGraphConfig(
-            enabled=bool(langgraph_data.get("enabled", False)),
+            enabled=bool(langgraph_data.get("enabled", True)),
             checkpoint_backend=checkpoint_backend,
             storage_path=langgraph_data.get("storage_path", "state/langgraph/checkpoints.db"),
             snapshot_dir=langgraph_data.get("snapshot_dir", "state/snapshots"),
-            phase_tag=langgraph_data.get("phase_tag", "langgraph_phase_1"),
+            phase_tag=langgraph_data.get("phase_tag", "langgraph_phase_3"),
+            thread_id_prefix=str(langgraph_data.get("thread_id_prefix", "degen-governed")),
+            prometheus_textfile=langgraph_data.get("prometheus_textfile"),
+            interrupt_poll_seconds=float(langgraph_data.get("interrupt_poll_seconds", 5.0)),
         )
 
     return Config(

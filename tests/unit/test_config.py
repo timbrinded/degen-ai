@@ -124,7 +124,9 @@ def test_load_minimal_config_with_defaults(minimal_config_toml):
         assert config.agent.retry_backoff_base == 2.0
         assert config.agent.log_level == "INFO"
         assert config.agent.prompt_template_path == "prompts/default.txt"
-        assert config.langgraph is None
+        assert config.langgraph is not None
+        assert config.langgraph.enabled is True
+        assert config.langgraph.phase_tag == "langgraph_phase_3"
     finally:
         os.unlink(config_path)
 

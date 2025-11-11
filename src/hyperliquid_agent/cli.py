@@ -1,27 +1,43 @@
 """CLI entry point for the Hyperliquid trading agent."""
 
 import json
+import logging
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import typer
 from hyperliquid.info import Info
 from langchain_core.runnables.config import RunnableConfig
-from langgraph.errors import GraphInterrupt, Interrupt
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Command, Interrupt
 
 from hyperliquid_agent.backtesting.cli import backtest_command
+from hyperliquid_agent.config import Config
 from hyperliquid_agent.identity_registry import AssetIdentityRegistry, default_assets_config_path
 from hyperliquid_agent.langgraph.graph import build_langgraph, load_dry_run_state
+from hyperliquid_agent.langgraph.migrations import ensure_state_version
+from hyperliquid_agent.langgraph.runtime import (
+    InterruptResolution,
+    LangGraphOrchestrator,
+    default_thread_id,
+)
 from hyperliquid_agent.langgraph.state import GlobalState
 
 app = typer.Typer()
+graph_app = typer.Typer(help="LangGraph runtime tooling")
+snapshot_app = typer.Typer(help="Checkpoint & snapshot helpers")
+interrupt_app = typer.Typer(help="Human-in-the-loop commands")
+
+graph_app.add_typer(snapshot_app, name="snapshot")
+graph_app.add_typer(interrupt_app, name="interrupt")
+app.add_typer(graph_app, name="graph")
 
 # Register backtest command
 app.command(name="backtest")(backtest_command)
 
 
-def _create_governed_agent(config_path: str):
+def _create_governed_agent(config_path: str, *, cfg: Config | None = None):
     """Helper to create a GovernedTradingAgent instance from config.
 
     Args:
@@ -39,7 +55,7 @@ def _create_governed_agent(config_path: str):
     from hyperliquid_agent.governance.tripwire import TripwireConfig
     from hyperliquid_agent.governed_agent import GovernedAgentConfig, GovernedTradingAgent
 
-    cfg = load_config(config_path)
+    cfg = cfg or load_config(config_path)
 
     if cfg.governance is None:
         typer.echo("Error: [governance] section missing in config file", err=True)
@@ -104,22 +120,25 @@ def _create_governed_agent(config_path: str):
     return cfg, agent
 
 
-def _interrupt_payloads(exc: GraphInterrupt) -> list[dict[str, Any]]:
+def _interrupt_payloads(exc: GraphInterrupt) -> list[Interrupt]:
     if not exc.args:
-        return [{}]
+        return []
     candidate = exc.args[0]
     if isinstance(candidate, Sequence):
-        return [getattr(item, "value", {}) for item in candidate]
+        return [item for item in candidate if isinstance(item, Interrupt)]
     if isinstance(candidate, Interrupt):
-        return [getattr(candidate, "value", {})]
-    return [{}]
+        return [candidate]
+    return []
 
 
-def _handle_graph_interrupt_cli(state: GlobalState, interrupt: GraphInterrupt) -> bool:
+def _handle_graph_interrupt_cli(
+    state: GlobalState, interrupt: GraphInterrupt
+) -> InterruptResolution | None:
     """Interactive handler for LangGraph interrupts."""
 
-    payloads = _interrupt_payloads(interrupt)
-    payload = payloads[0] if payloads else {}
+    events = _interrupt_payloads(interrupt)
+    event = events[0] if events else None
+    payload = event.value if (event and isinstance(event.value, dict)) else {}
     reason = payload.get("type", "unknown")
     typer.echo(f"\nGraph interrupt encountered: {reason}")
 
@@ -127,21 +146,44 @@ def _handle_graph_interrupt_cli(state: GlobalState, interrupt: GraphInterrupt) -
         plan = payload.get("plan", {})
         typer.echo("Proposed plan:")
         typer.echo(json.dumps(plan, indent=2))
-        plan_payload = plan if isinstance(plan, dict) else None
-        if plan_payload is None:
+        if not isinstance(plan, dict):
             typer.echo("Invalid plan payload; halting.\n")
-            return False
+            return None
         if typer.confirm("Approve this plan change?", default=False):
-            governance = state.setdefault("governance", {})
-            governance["approved_plan"] = plan_payload
             typer.echo("Plan approved. Resuming LangGraph execution...\n")
-            return True
+            return InterruptResolution(
+                value={"decision": "approve", "plan": plan},
+                interrupt_id=event.id if event else None,
+            )
         typer.echo("Plan rejected. Halting LangGraph execution.\n")
-        return False
+        return InterruptResolution(
+            value={"decision": "reject", "plan_id": plan.get("plan_id")},
+            interrupt_id=event.id if event else None,
+        )
 
     typer.echo("Interrupt payload:")
     typer.echo(json.dumps(payload, indent=2))
-    return False
+    return None
+
+
+def _interactive_interrupt_handler(
+    state: GlobalState, interrupts: Sequence[Interrupt]
+) -> InterruptResolution | None:
+    return _handle_graph_interrupt_cli(state, GraphInterrupt(tuple(interrupts)))
+
+
+def _build_langgraph_cli_runtime(
+    cfg, *, thread_id: str | None = None, namespace: str | None = None
+):
+    compiled_graph, runtime = build_langgraph(cfg)
+    run_config: RunnableConfig = {
+        "configurable": {
+            "thread_id": thread_id or default_thread_id(cfg),
+            "checkpoint_ns": namespace
+            or (cfg.langgraph.phase_tag if cfg.langgraph else "langgraph"),
+        }
+    }
+    return compiled_graph, runtime, run_config
 
 
 @app.command()
@@ -163,14 +205,39 @@ def start(
         "--async/--sync",
         help="Use async concurrent loop execution (default: async)",
     ),
+    legacy_orchestrator: bool = typer.Option(
+        False,
+        "--legacy-orchestrator",
+        help="Use the legacy governed loops instead of the LangGraph runtime.",
+    ),
+    thread_id: str | None = typer.Option(
+        None,
+        "--thread-id",
+        help="Override the LangGraph thread id (defaults to account-derived value).",
+    ),
 ) -> None:
     """Start the Hyperliquid trading agent."""
     import asyncio
 
+    from hyperliquid_agent.agent import TradingAgent
     from hyperliquid_agent.config import load_config
 
+    cfg = load_config(str(config))
+
+    if governed and not legacy_orchestrator and (cfg.langgraph is None or cfg.langgraph.enabled):
+        typer.echo("Starting agent in GOVERNED LangGraph mode...")
+        orchestrator = LangGraphOrchestrator(
+            cfg,
+            logger=logging.getLogger("hyperliquid_agent.langgraph.orchestrator"),
+            thread_id=thread_id or default_thread_id(cfg),
+            checkpoint_namespace=cfg.langgraph.phase_tag if cfg.langgraph else None,
+            interrupt_handler=_interactive_interrupt_handler,
+        )
+        orchestrator.run_forever()
+        return
+
     if governed:
-        cfg, agent = _create_governed_agent(str(config))
+        cfg, agent = _create_governed_agent(str(config), cfg=cfg)
 
         typer.echo("Starting agent in GOVERNED mode...")
         if cfg.governance:
@@ -186,14 +253,11 @@ def start(
         else:
             typer.echo("  Execution mode: SYNC (sequential loops)")
             agent.run()
-    else:
-        from hyperliquid_agent.agent import TradingAgent
-        from hyperliquid_agent.config import load_config
+        return
 
-        cfg = load_config(str(config))
-        typer.echo("Starting agent in STANDARD mode...")
-        agent = TradingAgent(cfg)
-        agent.run()
+    typer.echo("Starting agent in STANDARD mode...")
+    agent = TradingAgent(cfg)
+    agent.run()
 
 
 @app.command()
@@ -315,10 +379,17 @@ def dry_run(
             result_state = compiled_graph.invoke(current_state, run_config)
             break
         except GraphInterrupt as interrupt:
-            if _handle_graph_interrupt_cli(current_state, interrupt):
-                continue
-            result_state = current_state
-            break
+            resolution = _handle_graph_interrupt_cli(current_state, interrupt)
+            if resolution is None:
+                result_state = current_state
+                break
+            current_state = cast(
+                GlobalState,
+                compiled_graph.invoke(
+                    Command(resume=resolution.as_resume_argument()),
+                    run_config,
+                ),
+            )
     telemetry = result_state.get("telemetry", {})
     scheduler_state = result_state.get("scheduler", {})
 
@@ -327,6 +398,190 @@ def dry_run(
     typer.echo(f"  Loop seed:  {metadata.loop_type}")
     typer.echo(f"  Phase tag:  {telemetry.get('langgraph_phase')}")
     typer.echo(f"  Next loops: {', '.join(scheduler_state.get('pending_loops', [])) or 'n/a'}")
+    runtime.shutdown()
+
+
+@snapshot_app.command("list")
+def graph_snapshot_list(
+    config: Path = typer.Option("config.toml", "--config", "-c"),
+    limit: int = typer.Option(10, "--limit", help="Maximum number of checkpoints to list."),
+    thread_id: str | None = typer.Option(
+        None, "--thread-id", help="Thread id to inspect (defaults to derived value)."
+    ),
+    namespace: str | None = typer.Option(
+        None, "--namespace", help="Override checkpoint namespace / phase tag."
+    ),
+) -> None:
+    """List LangGraph checkpoints stored in the configured checkpointer."""
+
+    from hyperliquid_agent.config import load_config
+
+    cfg = load_config(str(config))
+    compiled_graph, runtime, run_config = _build_langgraph_cli_runtime(
+        cfg, thread_id=thread_id, namespace=namespace
+    )
+    snapshots = list(compiled_graph.get_state_history(run_config, limit=limit))
+    if not snapshots:
+        typer.echo("No checkpoints available.")
+        runtime.shutdown()
+        return
+
+    typer.echo("Checkpoint history:")
+    for snapshot in snapshots:
+        metadata = snapshot.metadata or {}
+        created = snapshot.created_at or "n/a"
+        next_nodes = ",".join(snapshot.next) if snapshot.next else "END"
+        typer.echo(f"- id={metadata.get('step', 'n/a')} created_at={created} next={next_nodes}")
+    runtime.shutdown()
+
+
+@snapshot_app.command("export")
+def graph_snapshot_export(
+    config: Path = typer.Option("config.toml", "--config", "-c"),
+    checkpoint_id: str | None = typer.Option(
+        None, "--checkpoint-id", help="Explicit checkpoint id to export (defaults to latest)."
+    ),
+    thread_id: str | None = typer.Option(None, "--thread-id"),
+    namespace: str | None = typer.Option(None, "--namespace"),
+    output: Path | None = typer.Option(None, "--output", help="Path to write JSON export."),
+) -> None:
+    """Export a checkpoint's state to JSON for offline inspection."""
+
+    from hyperliquid_agent.config import load_config
+
+    cfg = load_config(str(config))
+    compiled_graph, runtime, run_config = _build_langgraph_cli_runtime(
+        cfg, thread_id=thread_id, namespace=namespace
+    )
+    state_config = run_config
+    if checkpoint_id:
+        state_config = cast(
+            RunnableConfig,
+            {
+                "configurable": {
+                    **run_config["configurable"],
+                    "checkpoint_id": checkpoint_id,
+                }
+            },
+        )
+    snapshot = compiled_graph.get_state(state_config)
+    root = snapshot.values.get("__root__") if isinstance(snapshot.values, dict) else snapshot.values
+    export_payload = {
+        "checkpoint": snapshot.config.get("configurable", {}),
+        "metadata": snapshot.metadata or {},
+        "created_at": snapshot.created_at,
+        "next": snapshot.next,
+        "state": root,
+    }
+    data = json.dumps(export_payload, indent=2, sort_keys=True)
+    if output:
+        output.write_text(data + "\n", encoding="utf-8")
+        typer.echo(f"Wrote checkpoint export to {output}")
+    else:
+        typer.echo(data)
+    runtime.shutdown()
+
+
+@snapshot_app.command("restore")
+def graph_snapshot_restore(
+    config: Path = typer.Option("config.toml", "--config", "-c"),
+    snapshot_file: Path = typer.Argument(
+        ..., help="Path to JSON export created via graph snapshot export."
+    ),
+    thread_id: str | None = typer.Option(None, "--thread-id"),
+    namespace: str | None = typer.Option(None, "--namespace"),
+) -> None:
+    """Restore a LangGraph checkpoint from a previously exported JSON payload."""
+
+    from hyperliquid_agent.config import load_config
+
+    payload = json.loads(snapshot_file.read_text(encoding="utf-8"))
+    state = ensure_state_version(cast(GlobalState, payload.get("state", {})))
+
+    cfg = load_config(str(config))
+    compiled_graph, runtime, run_config = _build_langgraph_cli_runtime(
+        cfg, thread_id=thread_id, namespace=namespace
+    )
+    compiled_graph.update_state(run_config, state)
+    typer.echo("Checkpoint restored. Next invocation will resume from the provided state.")
+    runtime.shutdown()
+
+
+@interrupt_app.command("list")
+def graph_interrupt_list(
+    config: Path = typer.Option("config.toml", "--config", "-c"),
+    thread_id: str | None = typer.Option(None, "--thread-id"),
+    namespace: str | None = typer.Option(None, "--namespace"),
+) -> None:
+    """Show pending LangGraph interrupts awaiting operator action."""
+
+    from hyperliquid_agent.config import load_config
+
+    cfg = load_config(str(config))
+    compiled_graph, runtime, run_config = _build_langgraph_cli_runtime(
+        cfg, thread_id=thread_id, namespace=namespace
+    )
+    snapshot = compiled_graph.get_state(run_config)
+    if not snapshot.interrupts:
+        typer.echo("No pending interrupts.")
+        runtime.shutdown()
+        return
+
+    typer.echo("Pending interrupts:")
+    for intr in snapshot.interrupts:
+        payload = intr.value if isinstance(intr.value, dict) else {"value": intr.value}
+        typer.echo(
+            f"- id={intr.id} type={payload.get('type', 'unknown')} payload={json.dumps(payload)}"
+        )
+    runtime.shutdown()
+
+
+@interrupt_app.command("resolve")
+def graph_interrupt_resolve(
+    interrupt_id: str = typer.Argument(..., help="Interrupt id to resolve."),
+    config: Path = typer.Option("config.toml", "--config", "-c"),
+    decision: str = typer.Option(
+        "approve",
+        "--decision",
+        help="Decision to apply (approve or reject).",
+    ),
+    reason: str | None = typer.Option(None, "--reason", help="Optional human note."),
+    thread_id: str | None = typer.Option(None, "--thread-id"),
+    namespace: str | None = typer.Option(None, "--namespace"),
+) -> None:
+    """Resolve a pending interrupt by sending a resume payload to LangGraph."""
+
+    from hyperliquid_agent.config import load_config
+
+    cfg = load_config(str(config))
+    compiled_graph, runtime, run_config = _build_langgraph_cli_runtime(
+        cfg, thread_id=thread_id, namespace=namespace
+    )
+    snapshot = compiled_graph.get_state(run_config)
+    target = next((intr for intr in snapshot.interrupts if intr.id == interrupt_id), None)
+    if target is None:
+        typer.echo(f"No interrupt with id {interrupt_id} found.", err=True)
+        runtime.shutdown()
+        raise typer.Exit(code=1)
+
+    normalized_decision = decision.lower()
+    if normalized_decision not in {"approve", "reject"}:
+        typer.echo("Decision must be 'approve' or 'reject'.", err=True)
+        runtime.shutdown()
+        raise typer.Exit(code=1)
+
+    payload = target.value if isinstance(target.value, dict) else {}
+    resume_payload: dict[str, Any] = {"decision": normalized_decision}
+    if reason:
+        resume_payload["reason"] = reason
+    if normalized_decision == "approve" and isinstance(payload, dict) and payload.get("plan"):
+        resume_payload.setdefault("plan", payload.get("plan"))
+
+    compiled_graph.invoke(
+        Command(resume={interrupt_id: resume_payload}),
+        run_config,
+    )
+    typer.echo(f"Interrupt {interrupt_id} resolved with decision={normalized_decision}.")
     runtime.shutdown()
 
 

@@ -778,3 +778,9 @@ Always run `status` before starting the agent to verify account state:
 uv run python -m hyperliquid_agent.cli status
 uv run python -m hyperliquid_agent.cli start --governed
 ```
+
+### LangGraph tooling
+
+- `degen graph snapshot list|export|restore` — enumerate, export, or restore LangGraph checkpoints.
+- `degen graph interrupt list|resolve` — review pending interrupts and resume nodes with approve/reject decisions.
+- `--thread-id` / `--namespace` — point the `graph` subcommands at a specific runtime (paper trading vs production) without touching sqlite manually.

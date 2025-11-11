@@ -39,7 +39,9 @@ export default withMermaid(defineConfig({
           { text: 'Monitoring', link: '/architecture/monitoring' },
           { text: 'Decision Engine', link: '/architecture/decision-engine' },
           { text: 'Market Registry', link: '/architecture/market-registry' },
-          { text: 'Performance', link: '/architecture/performance' }
+          { text: 'Performance', link: '/architecture/performance' },
+          { text: 'LangGraph Migration', link: '/architecture/langgraph-migration' },
+          { text: 'Human-in-the-Loop', link: '/architecture/hitl' }
         ]
       },
       {

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from langgraph.errors import GraphInterrupt, Interrupt
+from langgraph.types import interrupt
 
 from hyperliquid_agent.config import Config
 from hyperliquid_agent.langgraph.context import LangGraphRuntimeContext
@@ -47,24 +47,21 @@ def llm_decision_engine(
     if not plan_health.get("can_review", False):
         return {}
 
-    if _budget_available(context, "medium") <= 0:
-        raise GraphInterrupt(
-            [
-                Interrupt(
-                    value={
-                        "type": "llm_budget_exhausted",
-                        "loop": "medium",
-                        "plan_id": plan.plan_id,
-                    }
-                )
-            ]
-        )
-
     metadata = {
         "loop": "medium",
         "plan_id": plan.plan_id,
         "regime": context.regime_detector.current_regime,
     }
+
+    if _budget_available(context, "medium") <= 0:
+        interrupt(
+            {
+                "type": "llm_budget_exhausted",
+                "loop": "medium",
+                "plan_id": plan.plan_id,
+            }
+        )
+        return {}
 
     with node_trace("llm_decision_engine", metadata=metadata) as run:
         decision = context.decision_engine.get_decision_with_governance(
@@ -117,18 +114,31 @@ def llm_decision_engine(
             return patch
 
         if decision.proposed_plan is not None:
-            raise GraphInterrupt(
-                [
-                    Interrupt(
-                        value={
-                            "type": "plan_change_proposed",
-                            "plan": decision.proposed_plan.to_dict(),
-                            "reasoning": decision.reasoning,
-                            "cost_usd": decision.cost_usd,
-                        }
-                    )
-                ]
+            proposal_payload = decision.proposed_plan.to_dict()
+            resume_value = interrupt(
+                {
+                    "type": "plan_change_proposed",
+                    "plan": proposal_payload,
+                    "reasoning": decision.reasoning,
+                    "cost_usd": decision.cost_usd,
+                }
             )
+            resume_dict = resume_value if isinstance(resume_value, dict) else {}
+            if resume_dict.get("decision") == "approve":
+                approved_plan = resume_dict.get("plan", proposal_payload)
+                patch["governance"]["approved_plan"] = approved_plan
+            else:
+                history_entry = {
+                    "plan_id": proposal_payload.get("plan_id"),
+                    "decision": resume_dict.get("decision", "reject"),
+                    "timestamp": _now_iso(),
+                }
+                plan_history = list(state.get("governance", {}).get("plan_history", []))
+                plan_history.append(history_entry)
+                patch["governance"]["plan_history"] = plan_history
+            if run is not None:
+                run.add_outputs(summarize_patch({"medium": decision_patch}))
+            return patch
 
         if run is not None:
             run.add_outputs(summarize_patch({"medium": decision_patch}))

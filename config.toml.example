@@ -314,3 +314,16 @@ vacuum_on_startup = true
 # Maximum cache size (in MB) before triggering cleanup
 # Recommended: 100 MB for hobby trading, 500 MB for active trading
 max_size_mb = 100
+# ============================================================================
+# LANGGRAPH RUNTIME
+# ============================================================================
+
+[langgraph]
+enabled = true
+checkpoint_backend = "sqlite"
+storage_path = "state/langgraph/checkpoints.db"
+snapshot_dir = "state/snapshots"
+phase_tag = "langgraph_phase_3"
+thread_id_prefix = "degen-governed"
+prometheus_textfile = "logs/langgraph_metrics.prom"
+interrupt_poll_seconds = 5.0

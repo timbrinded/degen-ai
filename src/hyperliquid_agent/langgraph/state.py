@@ -32,6 +32,7 @@ class TelemetryState(TypedDict, total=False):
     trace_id: str | None
     llm_cost_usd: float
     total_actions: int
+    state_version: int
 
 
 class TripwireState(TypedDict, total=False):
@@ -185,7 +186,7 @@ def bootstrap_state_from_snapshot(path: str | Path) -> tuple[SnapshotMetadata, G
     metadata, payload = load_snapshot(path)
     state = empty_state()
 
-    fast_state = cast(FastLoopState, state.setdefault("fast", {}))
+    fast_state: FastLoopState = state.setdefault("fast", {})
     fast_state["account_state"] = payload.get("account_state", {})
     fast_state["plan"] = payload.get("plan")
     fast_state.setdefault("tripwire", cast(TripwireState, {}))
@@ -193,24 +194,24 @@ def bootstrap_state_from_snapshot(path: str | Path) -> tuple[SnapshotMetadata, G
     if metadata.tick is not None:
         fast_state["tick_id"] = metadata.tick
 
-    telemetry = cast(TelemetryState, state.setdefault("telemetry", {}))
+    telemetry: TelemetryState = state.setdefault("telemetry", {})
     telemetry["tick"] = metadata.tick or 0
     telemetry["last_loop"] = metadata.loop_type
     telemetry["last_snapshot_id"] = metadata.snapshot_id
 
-    governance = cast(GovernanceState, state.setdefault("governance", {}))
+    governance: GovernanceState = state.setdefault("governance", {})
     governance["active_plan"] = payload.get("plan")
     governance["tripwire"] = payload.get("governance", {}).get("tripwire", cast(TripwireState, {}))
     governance["regime"] = payload.get("regime", {})
     governance["plan_history"] = []
     governance["interrupts"] = []
 
-    slow_state = cast(SlowLoopState, state.setdefault("slow", {}))
+    slow_state: SlowLoopState = state.setdefault("slow", {})
     slow_state["regime_snapshot"] = payload.get("regime", {})
     slow_state["macro_events"] = payload.get("regime", {}).get("macro_events", [])
     slow_state["last_detection_at"] = payload.get("captured_at")
 
-    scheduler = cast(SchedulerState, state.setdefault("scheduler", {"pending_loops": []}))
+    scheduler: SchedulerState = state.setdefault("scheduler", {"pending_loops": []})
     scheduler["fast_last_run"] = payload.get("captured_at")
     scheduler["pending_loops"] = []
 

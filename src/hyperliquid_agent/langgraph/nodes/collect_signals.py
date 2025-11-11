@@ -8,6 +8,7 @@ from typing import Any
 from hyperliquid_agent.config import Config
 from hyperliquid_agent.langgraph.context import LangGraphRuntimeContext, LoopName
 from hyperliquid_agent.langgraph.instrumentation import node_trace, summarize_patch
+from hyperliquid_agent.langgraph.migrations import LANGGRAPH_STATE_VERSION
 from hyperliquid_agent.langgraph.serialization import serialize_account_state, serialize_plan
 from hyperliquid_agent.langgraph.state import (
     FAST_LOOP,
@@ -68,6 +69,7 @@ def collect_signals(
             "last_loop": loop,
             "langgraph_phase": context.langgraph_config.phase_tag,
             "collected_at": _now_iso(),
+            "state_version": LANGGRAPH_STATE_VERSION,
         }
 
         existing_scheduler = dict(state.get("scheduler", {}) or {})

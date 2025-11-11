@@ -7,11 +7,12 @@ import time
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import cast
 
 import typer
 from langchain_core.runnables.config import RunnableConfig
-from langgraph.errors import GraphInterrupt, Interrupt
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Command, Interrupt
 
 from hyperliquid_agent.backtesting.historical_data import HistoricalDataManager
 from hyperliquid_agent.backtesting.reports import ReportGenerator
@@ -20,6 +21,7 @@ from hyperliquid_agent.backtesting.signal_reconstructor import SignalReconstruct
 from hyperliquid_agent.config import load_config
 from hyperliquid_agent.governance.regime import RegimeDetector, RegimeDetectorConfig
 from hyperliquid_agent.langgraph.graph import build_langgraph, load_dry_run_state
+from hyperliquid_agent.langgraph.runtime import InterruptResolution
 from hyperliquid_agent.langgraph.state import GlobalState
 from hyperliquid_agent.signals.cache import SQLiteCacheLayer
 from hyperliquid_agent.signals.hyperliquid_provider import HyperliquidProvider
@@ -28,20 +30,23 @@ from hyperliquid_agent.signals.processor import ComputedSignalProcessor
 logger = logging.getLogger(__name__)
 
 
-def _interrupt_payloads(exc: GraphInterrupt) -> list[dict[str, Any]]:
+def _interrupt_payloads(exc: GraphInterrupt) -> list[Interrupt]:
     if not exc.args:
-        return [{}]
+        return []
     candidate = exc.args[0]
     if isinstance(candidate, Sequence):
-        return [getattr(item, "value", {}) for item in candidate]
+        return [item for item in candidate if isinstance(item, Interrupt)]
     if isinstance(candidate, Interrupt):
-        return [getattr(candidate, "value", {})]
-    return [{}]
+        return [candidate]
+    return []
 
 
-def _handle_graph_interrupt_backtest(state: GlobalState, interrupt: GraphInterrupt) -> bool:
-    payloads = _interrupt_payloads(interrupt)
-    payload = payloads[0] if payloads else {}
+def _handle_graph_interrupt_backtest(
+    state: GlobalState, interrupt: GraphInterrupt
+) -> InterruptResolution | None:
+    events = _interrupt_payloads(interrupt)
+    event = events[0] if events else None
+    payload = event.value if (event and isinstance(event.value, dict)) else {}
     reason = payload.get("type", "unknown")
     typer.echo(f"\nLangGraph interrupt during replay: {reason}")
 
@@ -49,21 +54,24 @@ def _handle_graph_interrupt_backtest(state: GlobalState, interrupt: GraphInterru
         plan = payload.get("plan", {})
         typer.echo("Proposed plan:")
         typer.echo(json.dumps(plan, indent=2))
-        plan_payload = plan if isinstance(plan, dict) else None
-        if plan_payload is None:
+        if not isinstance(plan, dict):
             typer.echo("Invalid plan payload; halting replay.\n")
-            return False
+            return None
         if typer.confirm("Approve this plan change?", default=False):
-            governance = state.setdefault("governance", {})
-            governance["approved_plan"] = plan_payload
             typer.echo("Plan approved. Resuming replay...\n")
-            return True
+            return InterruptResolution(
+                value={"decision": "approve", "plan": plan},
+                interrupt_id=event.id if event else None,
+            )
         typer.echo("Plan rejected. Halting replay.\n")
-        return False
+        return InterruptResolution(
+            value={"decision": "reject", "plan_id": plan.get("plan_id")},
+            interrupt_id=event.id if event else None,
+        )
 
     typer.echo("Interrupt payload:")
     typer.echo(json.dumps(payload, indent=2))
-    return False
+    return None
 
 
 def _run_langgraph_replay(cfg, *, loop_choice: str | None) -> None:
@@ -86,10 +94,14 @@ def _run_langgraph_replay(cfg, *, loop_choice: str | None) -> None:
             result_state = compiled_graph.invoke(current_state, run_config)
             break
         except GraphInterrupt as interrupt:
-            if _handle_graph_interrupt_backtest(current_state, interrupt):
-                continue
-            result_state = current_state
-            break
+            resolution = _handle_graph_interrupt_backtest(current_state, interrupt)
+            if resolution is None:
+                result_state = current_state
+                break
+            current_state = cast(
+                GlobalState,
+                compiled_graph.invoke(Command(resume=resolution.as_resume_argument()), run_config),
+            )
 
     telemetry = result_state.get("telemetry", {})
     typer.echo("\nLangGraph replay complete")

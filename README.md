@@ -15,6 +15,7 @@ LLM-steered trading loops for Hyperliquid spot and perp markets, designed for sm
 - Markdown-defined strategies and prompt templates that non-engineers can edit safely
 - Tripwires, regime detection, and stateful scorekeeping to keep overconfident models in check
 - Backtesting CLI plus structured logs/metrics for the boring but necessary validation work
+- LangGraph orchestrator with snapshot exports, interrupt approvals, and Prometheus-friendly metrics out of the box
 
 ## How The Loop Works
 ```mermaid
@@ -93,8 +94,15 @@ uv pip install -e .  # or uv pip install .
 # Standard agent
 uv run degen start --config config.toml
 
-# Governed multi-timescale mode with concurrent loops
-uv run degen start --config config.toml --governed --async
+# Governed multi-timescale mode (LangGraph runtime, default)
+uv run degen start --config config.toml --governed
+
+# Opt out of LangGraph and fall back to the legacy orchestrator
+uv run degen start --config config.toml --governed --legacy-orchestrator --async
+
+# Inspect checkpoints or pending interrupts
+uv run degen graph snapshot list
+uv run degen graph interrupt resolve <interrupt-id> --decision approve
 
 # Inspect current positions without touching strategies
 uv run degen status --config config.toml
@@ -127,6 +135,7 @@ CLI entry points live in `src/hyperliquid_agent/cli.py`. The script name is `deg
 - Read `docs/guide/cli-reference.md` for every flag the Typer CLI exposes.
 - Browse `docs/architecture/` when extending modules (signal orchestrator, market registry, governance, etc.).
 - Use `tests/` and `pyproject.toml` to see the preferred tooling: `uv`, `pytest`, `pyrefly`, and `ruff`.
+- Follow `docs/architecture/hitl.md` for the human-in-the-loop approval workflow and `degen graph` tooling.
 
 ## Disclaimer
 This project ships without warranties. Hyperliquid trading is risky; start on testnet, size small, and proceed only with capital you can afford to lose.
